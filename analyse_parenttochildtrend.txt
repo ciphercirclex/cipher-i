@@ -1,0 +1,792 @@
+import os
+import cv2
+import numpy as np
+
+# Path configuration
+INPUT_FOLDER = r"C:\xampp\htdocs\CIPHER\cipher i\chart\fetched"
+OUTPUT_FOLDER = r"C:\xampp\htdocs\CIPHER\cipher i\chart\processing"
+MARKET_NAME = "Drift Switch Index 30"
+
+def load_latest_chart():
+    """Find and load the latest chart image containing MARKET_NAME."""
+    files = [os.path.join(INPUT_FOLDER, f) for f in os.listdir(INPUT_FOLDER)
+             if os.path.isfile(os.path.join(INPUT_FOLDER, f)) and MARKET_NAME in f]
+    if not files:
+        print(f"No files found containing '{MARKET_NAME}' in {INPUT_FOLDER}")
+        return None, None
+    chart_path = max(files, key=os.path.getmtime)
+    print(f"Latest chart file found: {chart_path}")
+    img = cv2.imread(chart_path)
+    if img is None:
+        raise ValueError(f"Failed to load image: {chart_path}")
+    base_name = os.path.splitext(os.path.basename(chart_path))[0]
+    return img, base_name
+
+def crop_image(img, height, width):
+    """Crop the image: 200px from left, 30px from bottom, 150px from right."""
+    if height < 20 or width < 350:  # 350 = 200 (left) + 150 (right)
+        raise ValueError(f"Image too small to crop (height: {height}, width: {width})")
+    return img[0:height-20, 0:width-100]
+
+def enhance_colors(img):
+    """Convert to HSV and enhance saturation and brightness for red and green pixels."""
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    red_lower1 = np.array([0, 20, 20])
+    red_upper1 = np.array([15, 255, 255])
+    red_lower2 = np.array([165, 20, 20])
+    red_upper2 = np.array([180, 255, 255])
+    green_lower = np.array([30, 20, 20])
+    green_upper = np.array([100, 255, 255])
+    
+    mask_red1 = cv2.inRange(hsv, red_lower1, red_upper1)
+    mask_red2 = cv2.inRange(hsv, red_lower2, red_upper2)
+    mask_red = cv2.bitwise_or(mask_red1, mask_red2)
+    mask_green = cv2.inRange(hsv, green_lower, green_upper)
+    mask = cv2.bitwise_or(mask_red, mask_green)
+    
+    hsv = hsv.astype(np.float32)
+    h, s, v = cv2.split(hsv)
+    s[mask > 0] = np.clip(s[mask > 0] * 2.0, 0, 255)  # Boost saturation by 2x
+    v[mask > 0] = np.clip(v[mask > 0] * 1.5, 0, 255)  # Boost brightness by 1.5x
+    hsv_enhanced = cv2.merge([h, s, v]).astype(np.uint8)
+    
+    img_enhanced = cv2.cvtColor(hsv_enhanced, cv2.COLOR_HSV2BGR)
+    return img_enhanced, mask_red, mask_green, mask
+
+def replace_near_black_wicks(img_enhanced, mask_red, mask_green):
+    """Replace near-black wick pixels with bold red/green."""
+    near_black_mask = cv2.inRange(img_enhanced, (0, 0, 0), (50, 50, 50))
+    red_proximity = cv2.dilate(mask_red, np.ones((3, 3), np.uint8), iterations=1)
+    img_enhanced[np.logical_and(near_black_mask > 0, red_proximity > 0)] = [0, 0, 255]
+    green_proximity = cv2.dilate(mask_green, np.ones((3, 3), np.uint8), iterations=1)
+    img_enhanced[np.logical_and(near_black_mask > 0, green_proximity > 0)] = [0, 255, 0]
+    return img_enhanced
+
+def sharpen_image(img_enhanced):
+    """Apply sharpening to make candlesticks and wicks bold."""
+    kernel = np.array([[-1, -1, -1],
+                       [-1, 10, -1],
+                       [-1, -1, -1]])
+    return cv2.filter2D(img_enhanced, -1, kernel)
+
+def set_background_black(img_enhanced, mask):
+    """Set the background to pure black."""
+    background_mask = cv2.bitwise_not(mask)
+    img_enhanced[background_mask > 0] = [0, 0, 0]
+    return img_enhanced
+
+def save_enhanced_image(img_enhanced, base_name):
+    """Save the enhanced image."""
+    debug_image_path = os.path.join(OUTPUT_FOLDER, f"{base_name}_enhanced.png")
+    cv2.imwrite(debug_image_path, img_enhanced)
+    print(f"Debug enhanced image saved to: {debug_image_path}")
+    return debug_image_path
+
+def remove_horizontal_lines(img_enhanced, mask_red, mask_green, width):
+    """Remove horizontal lines from the image."""
+    gray = cv2.cvtColor(img_enhanced, cv2.COLOR_BGR2GRAY)
+    binary = cv2.threshold(gray, 1, 255, cv2.THRESH_BINARY)[1]
+    horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (int(width * 0.2), 1))
+    horizontal_lines = cv2.morphologyEx(binary, cv2.MORPH_OPEN, horizontal_kernel, iterations=2)
+    
+    contours, _ = cv2.findContours(horizontal_lines, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    for contour in contours:
+        x, y, w, h = cv2.boundingRect(contour)
+        aspect_ratio = w / float(h)
+        if w > width * 0.1 and aspect_ratio > 10 and h < 5:
+            cv2.drawContours(img_enhanced, [contour], -1, (0, 0, 0), -1)
+            cv2.drawContours(mask_red, [contour], -1, 0, -1)
+            cv2.drawContours(mask_green, [contour], -1, 0, -1)
+    
+    mask = cv2.bitwise_or(mask_red, mask_green)
+    return img_enhanced, mask_red, mask_green, mask
+
+def detect_candlestick_contours(img_enhanced, mask_red, mask_green):
+    """Detect and draw contours for red and green candlesticks."""
+    img_contours = img_enhanced.copy()
+    contours_red, _ = cv2.findContours(mask_red, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    red_count = 0
+    red_positions = []
+    
+    for contour in contours_red:
+        if cv2.contourArea(contour) >= 0.01:
+            red_count += 1
+            x, y, w, h = cv2.boundingRect(contour)
+            red_positions.append((x + w // 2, y, y + h))
+            cv2.drawContours(img_contours, [contour], -1, (255, 0, 0), 1)
+    
+    contours_green, _ = cv2.findContours(mask_green, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    green_count = 0
+    green_positions = []
+    
+    for contour in contours_green:
+        if cv2.contourArea(contour) >= 0.01:
+            green_count += 1
+            x, y, w, h = cv2.boundingRect(contour)
+            green_positions.append((x + w // 2, y, y + h))
+            cv2.drawContours(img_contours, [contour], -1, (255, 255, 255), 1)
+    
+    print(f"Red candlesticks: {red_count}")
+    print(f"Green candlesticks: {green_count}")
+    print(f"Total candlesticks: {red_count + green_count}")
+    return img_contours, red_positions, green_positions
+
+def save_contour_image(img_contours, base_name):
+    """Save the contour image."""
+    contour_image_path = os.path.join(OUTPUT_FOLDER, f"{base_name}_contours.png")
+    cv2.imwrite(contour_image_path, img_contours)
+    print(f"Original contour image saved to: {contour_image_path}")
+    return contour_image_path
+
+def connect_contours(img_contours, red_positions, green_positions):
+    """Connect candlestick contours with lines based on high/low points."""
+    img_connected_contours = img_contours.copy()
+    all_positions = [(pos, 'red') for pos in red_positions] + [(pos, 'green') for pos in green_positions]
+    all_positions.sort(key=lambda x: x[0][0])
+    
+    connection_points = []
+    for i, (pos, color) in enumerate(all_positions):
+        x, top_y, bottom_y = pos
+        is_low = False
+        is_high = False
+        
+        if i > 0 and i < len(all_positions) - 1:
+            prev_bottom_y = all_positions[i-1][0][2]
+            next_bottom_y = all_positions[i+1][0][2]
+            if bottom_y > prev_bottom_y and bottom_y > next_bottom_y:
+                is_low = True
+            prev_top_y = all_positions[i-1][0][1]
+            next_top_y = all_positions[i+1][0][1]
+            if top_y < prev_top_y and top_y < next_top_y:
+                is_high = True
+        elif i == 0 and len(all_positions) > 1:
+            next_bottom_y = all_positions[i+1][0][2]
+            next_top_y = all_positions[i+1][0][1]
+            if bottom_y > next_bottom_y:
+                is_low = True
+            if top_y < next_top_y:
+                is_high = True
+        elif i == len(all_positions) - 1 and len(all_positions) > 1:
+            prev_bottom_y = all_positions[i-1][0][2]
+            prev_top_y = all_positions[i-1][0][1]
+            if bottom_y > prev_bottom_y:
+                is_low = True
+            if top_y < prev_top_y:
+                is_high = True
+        
+        if is_low or is_high:
+            connection_points.append((x, top_y, bottom_y, 'low' if is_low else 'high', color))
+    
+    connection_points.sort(key=lambda x: x[0])
+    
+    for i in range(len(connection_points) - 1):
+        x1, top_y1, bottom_y1, type1, color1 = connection_points[i]
+        x2, top_y2, bottom_y2, type2, color2 = connection_points[i + 1]
+        
+        y1 = top_y1 if type1 == 'high' else bottom_y1
+        y2 = top_y2 if type2 == 'high' else bottom_y2
+        cv2.line(img_connected_contours, (x1, y1), (x2, y2), (255, 255, 255), 1)
+    
+    return img_connected_contours, all_positions
+
+def save_connected_contour_image(img_connected_contours, base_name):
+    """Save the connected contour image."""
+    connected_contour_image_path = os.path.join(OUTPUT_FOLDER, f"{base_name}_connected_contours.png")
+    cv2.imwrite(connected_contour_image_path, img_connected_contours)
+    print(f"Connected contour image saved to: {connected_contour_image_path}")
+    return connected_contour_image_path
+
+def number_all_candlesticks(img_enhanced, all_positions):
+    """Number all candlesticks starting from the second candlestick from the right, with low points numbered below."""
+    img_numbered = img_enhanced.copy()
+    total_candles = len(all_positions)
+    if total_candles < 2:
+        print("Not enough candlesticks to skip the rightmost one.")
+        return img_numbered
+    
+    # Iterate over all positions except the rightmost candlestick
+    for i, (pos, color) in enumerate(reversed(all_positions[:-1]), 1):  # Exclude the last (rightmost) candlestick
+        x, top_y, bottom_y = pos
+        # Calculate the original index in all_positions (left-to-right order)
+        orig_index = total_candles - 1 - i  # Index in original list
+        if orig_index == total_candles - 1:  # Skip the rightmost candlestick (redundant check, but for clarity)
+            continue
+        
+        text_position_top = (x - 10, top_y - 10)
+        cv2.putText(img_numbered, str(i), text_position_top, cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5, (255, 255, 255), 1, cv2.LINE_AA)
+        
+        is_low = False
+        # Check neighbors for low points
+        if orig_index > 0 and orig_index < total_candles - 1:
+            prev_bottom_y = all_positions[orig_index + 1][0][2]  # Next candlestick (left)
+            next_bottom_y = all_positions[orig_index - 1][0][2]  # Previous candlestick (right)
+            if bottom_y > prev_bottom_y and bottom_y > next_bottom_y:
+                is_low = True
+        elif orig_index == 0 and total_candles > 2:  # Second candlestick from right (first numbered)
+            next_bottom_y = all_positions[orig_index + 1][0][2]
+            if bottom_y > next_bottom_y:
+                is_low = True
+        elif orig_index == total_candles - 2 and total_candles > 2:  # Leftmost numbered candlestick
+            prev_bottom_y = all_positions[orig_index - 1][0][2]
+            if bottom_y > prev_bottom_y:
+                is_low = True
+        
+        if is_low:
+            text_position_bottom = (x - 10, bottom_y + 20)
+            cv2.putText(img_numbered, str(i), text_position_bottom, cv2.FONT_HERSHEY_SIMPLEX,
+                        0.5, (255, 255, 255), 1, cv2.LINE_AA)
+    
+    return img_numbered
+
+def save_numbered_candlesticks_image(img_numbered, base_name):
+    """Save the numbered candlesticks image."""
+    numbered_image_path = os.path.join(OUTPUT_FOLDER, f"{base_name}_numbered.png")
+    cv2.imwrite(numbered_image_path, img_numbered)
+    print(f"Numbered candlesticks image saved to: {numbered_image_path}")
+    return numbered_image_path
+
+def number_high_low_candlesticks(img_enhanced, all_positions):
+    """Number only candlesticks with the lowest bottom or highest top, starting from the second candlestick from the right."""
+    img_high_low_numbered = img_enhanced.copy()
+    total_candles = len(all_positions)
+    if total_candles < 2:
+        print("Not enough candlesticks to skip the rightmost one.")
+        return img_high_low_numbered
+    
+    # Iterate over all positions except the rightmost candlestick
+    for i, (pos, color) in enumerate(reversed(all_positions[:-1]), 1):  # Exclude the last (rightmost) candlestick
+        x, top_y, bottom_y = pos
+        # Calculate the original index in all_positions (left-to-right order)
+        orig_index = total_candles - 1 - i  # Index in original list
+        if orig_index == total_candles - 1:  # Skip the rightmost candlestick (redundant check, but for clarity)
+            continue
+        
+        is_low = False
+        is_high = False
+        
+        # Check neighbors for low and high points
+        if orig_index > 0 and orig_index < total_candles - 1:
+            prev_bottom_y = all_positions[orig_index + 1][0][2]  # Next candlestick (left)
+            next_bottom_y = all_positions[orig_index - 1][0][2]  # Previous candlestick (right)
+            if bottom_y > prev_bottom_y and bottom_y > next_bottom_y:
+                is_low = True
+            prev_top_y = all_positions[orig_index + 1][0][1]
+            next_top_y = all_positions[orig_index - 1][0][1]
+            if top_y < prev_top_y and top_y < next_top_y:
+                is_high = True
+        elif orig_index == 0 and total_candles > 2:  # Second candlestick from right
+            next_bottom_y = all_positions[orig_index + 1][0][2]
+            next_top_y = all_positions[orig_index + 1][0][1]
+            if bottom_y > next_bottom_y:
+                is_low = True
+            if top_y < next_top_y:
+                is_high = True
+        elif orig_index == total_candles - 2 and total_candles > 2:  # Leftmost numbered candlestick
+            prev_bottom_y = all_positions[orig_index - 1][0][2]
+            prev_top_y = all_positions[orig_index - 1][0][1]
+            if bottom_y > prev_bottom_y:
+                is_low = True
+            if top_y < prev_top_y:
+                is_high = True
+        
+        if is_low:
+            text_position_bottom = (x - 10, bottom_y + 20)
+            cv2.putText(img_high_low_numbered, str(i), text_position_bottom, cv2.FONT_HERSHEY_SIMPLEX,
+                        0.5, (255, 255, 255), 1, cv2.LINE_AA)
+        if is_high:
+            text_position_top = (x - 10, top_y - 10)
+            cv2.putText(img_high_low_numbered, str(i), text_position_top, cv2.FONT_HERSHEY_SIMPLEX,
+                        0.5, (255, 255, 255), 1, cv2.LINE_AA)
+    
+    return img_high_low_numbered
+
+def save_high_low_numbered_image(img_high_low_numbered, base_name):
+    """Save the high/low numbered candlesticks image."""
+    high_low_numbered_image_path = os.path.join(OUTPUT_FOLDER, f"{base_name}_high_low_numbered.png")
+    cv2.imwrite(high_low_numbered_image_path, img_high_low_numbered)
+    print(f"High/low numbered candlesticks image saved to: {high_low_numbered_image_path}")
+    return high_low_numbered_image_path
+
+def identify_parent_highs_and_lows(img_high_low_numbered, all_positions, base_name, left_required, right_required):
+    """
+    Identify and label Parent Highs (PH) and Parent Lows (PL) on the high/low numbered image.
+    A Parent Low (PL) has the lowest bottom y-coordinate compared to at least 'left_required' low(s) to its left
+    and at least 'right_required' low(s) to its right, where all these lows have higher bottoms than the candidate.
+    A Parent High (PH) has the highest top y-coordinate compared to at least 'left_required' high(s) to its left
+    and at least 'right_required' high(s) to its right, where all these highs have lower tops than the candidate.
+    
+    Args:
+        img_high_low_numbered (numpy.ndarray): Image with numbered high/low candlesticks.
+        all_positions (list): List of tuples containing (position, color) for each candlestick,
+                             where position is (x, top_y, bottom_y).
+        base_name (str): Base name of the input file for saving the output.
+        left_required (int): Number of highs/lows required to the left.
+        right_required (int): Number of highs/lows required to the right.
+    
+    Returns:
+        str: Path to the saved image with PL and PH labels.
+    """
+    # Create a copy of the input image to draw labels on
+    img_parent_labeled = img_high_low_numbered.copy()
+    
+    # Initialize lists to store low and high points with their indices and numbers
+    low_points = []
+    high_points = []
+    total_candles = len(all_positions)
+    
+    # Identify low and high points with their assigned numbers
+    for i, (pos, color) in enumerate(reversed(all_positions[:-1]), 1):  # Exclude rightmost candlestick
+        x, top_y, bottom_y = pos
+        orig_index = total_candles - 1 - i  # Original index in all_positions (left-to-right)
+        
+        is_low = False
+        is_high = False
+        
+        # Check neighbors for low and high points (same logic as number_high_low_candlesticks)
+        if orig_index > 0 and orig_index < total_candles - 1:
+            prev_bottom_y = all_positions[orig_index + 1][0][2]  # Next candlestick (left)
+            next_bottom_y = all_positions[orig_index - 1][0][2]  # Previous candlestick (right)
+            if bottom_y > prev_bottom_y and bottom_y > next_bottom_y:
+                is_low = True
+            prev_top_y = all_positions[orig_index + 1][0][1]
+            next_top_y = all_positions[orig_index - 1][0][1]
+            if top_y < prev_top_y and top_y < next_top_y:
+                is_high = True
+        elif orig_index == 0 and total_candles > 2:  # Second candlestick from right
+            next_bottom_y = all_positions[orig_index + 1][0][2]
+            next_top_y = all_positions[orig_index + 1][0][1]
+            if bottom_y > next_bottom_y:
+                is_low = True
+            if top_y < next_top_y:
+                is_high = True
+        elif orig_index == total_candles - 2 and total_candles > 2:  # Leftmost numbered candlestick
+            prev_bottom_y = all_positions[orig_index - 1][0][2]
+            prev_top_y = all_positions[orig_index - 1][0][1]
+            if bottom_y > prev_bottom_y:
+                is_low = True
+            if top_y < prev_top_y:
+                is_high = True
+        
+        if is_low:
+            low_points.append((orig_index, x, bottom_y, i))  # Store orig_index, x, bottom_y, number
+        if is_high:
+            high_points.append((orig_index, x, top_y, i))  # Store orig_index, x, top_y, number
+    
+    # Sort points by x-coordinate (left to right)
+    low_points.sort(key=lambda x: x[1])
+    high_points.sort(key=lambda x: x[1])
+    
+    # Identify Parent Lows (PL)
+    pl_count = 0
+    pl_labels = []
+    for i, (orig_index, x, bottom_y, number) in enumerate(low_points):
+        left_count = 0
+        right_count = 0
+        is_lowest = True
+        
+        # Check left lows (need at least 'left_required', and they must be higher)
+        for j in range(i - 1, -1, -1):  # Look left
+            if low_points[j][2] < bottom_y:  # Left low is higher
+                left_count += 1
+                if left_count >= left_required:
+                    break
+            else:
+                is_lowest = False  # Left low is lower or equal, so not a PL
+        
+        # Check right lows (need at least 'right_required', and they must be higher)
+        for j in range(i + 1, len(low_points)):
+            if low_points[j][2] < bottom_y:  # Right low is higher
+                right_count += 1
+                if right_count >= right_required:
+                    break
+            else:
+                is_lowest = False  # Right low is lower or equal, so not a PL
+        
+        # Only label as PL if it has the lowest bottom among the checked points
+        if left_count >= left_required and right_count >= right_required and is_lowest:
+            pl_count += 1
+            # Label PL below the existing number
+            text_position = (x - 20, bottom_y + 40)  # Adjusted to be below the number
+            cv2.putText(img_parent_labeled, f"PL{pl_count}", text_position, cv2.FONT_HERSHEY_SIMPLEX,
+                        0.5, (255, 255, 255), 1, cv2.LINE_AA)
+            pl_labels.append((x, bottom_y, f"PL{pl_count}"))
+    
+    # Identify Parent Highs (PH)
+    ph_count = 0
+    ph_labels = []
+    for i, (orig_index, x, top_y, number) in enumerate(high_points):
+        left_count = 0
+        right_count = 0
+        is_highest = True
+        
+        # Check left highs (need at least 'left_required', and they must be lower)
+        for j in range(i - 1, -1, -1):  # Look left
+            if high_points[j][2] > top_y:  # Left high is lower
+                left_count += 1
+                if left_count >= left_required:
+                    break
+            else:
+                is_highest = False  # Left high is higher or equal, so not a PH
+        
+        # Check right highs (need at least 'right_required', and they must be lower)
+        for j in range(i + 1, len(high_points)):
+            if high_points[j][2] > top_y:  # Right high is lower
+                right_count += 1
+                if right_count >= right_required:
+                    break
+            else:
+                is_highest = False  # Right high is higher or equal, so not a PH
+        
+        # Only label as PH if it has the highest top among the checked points
+        if left_count >= left_required and right_count >= right_required and is_highest:
+            ph_count += 1
+            # Label PH above the existing number
+            text_position = (x - 20, top_y - 30)  # Adjusted to be above the number
+            cv2.putText(img_parent_labeled, f"PH{ph_count}", text_position, cv2.FONT_HERSHEY_SIMPLEX,
+                        0.5, (255, 255, 255), 1, cv2.LINE_AA)
+            ph_labels.append((x, top_y, f"PH{ph_count}"))
+    
+    # Print the number of PL and PH identified
+    print(f"Identified {pl_count} Parent Lows (PL) with {left_required} left and {right_required} right lows required")
+    print(f"Identified {ph_count} Parent Highs (PH) with {left_required} left and {right_required} right highs required")
+    
+    # Save the labeled image
+    parent_labeled_image_path = os.path.join(OUTPUT_FOLDER, f"{base_name}_parent_highs_lows.png")
+    cv2.imwrite(parent_labeled_image_path, img_parent_labeled)
+    print(f"Parent highs and lows labeled image saved to: {parent_labeled_image_path}")
+    
+    return parent_labeled_image_path
+
+def controlleftandrighthighsandlows(left, right):
+    """
+    Control the number of highs/lows required to the left and right for PH/PL identification.
+    
+    Args:
+        left (str): Number of highs/lows required to the left (as a string, e.g., "1").
+        right (str): Number of highs/lows required to the right (as a string, e.g., "1").
+    
+    Returns:
+        tuple: (left_count_required, right_count_required) as integers.
+    """
+    try:
+        left_count_required = int(left)
+        right_count_required = int(right)
+        if left_count_required < 0 or right_count_required < 0:
+            raise ValueError("Left and right counts must be non-negative.")
+        return left_count_required, right_count_required
+    except ValueError as e:
+        raise ValueError(f"Invalid input for left or right: {e}")
+
+
+def draw_trendlines(img_parent_labeled, all_positions, base_name, left_required, right_required, min_distance):
+    """
+    Draw trendlines from Parent Highs (PH) to lower highs and Parent Lows (PL) to higher lows on their right.
+    Each parent connects only to unclaimed children (highs or lows) on its right, and no child is claimed by more than one parent.
+    For PL, the bottom of the children lows must be higher than the parent's bottom, not equal, at least min_distance pixels higher,
+    and the child must not be a Parent Low (PL).
+    For PH, the top of the children highs must be lower than the parent's top, not equal, at least min_distance pixels lower,
+    and the child must not be a Parent High (PH).
+    Trendlines are extended to the right edge of the image.
+    """
+    # Create a copy of the input image to draw trendlines on
+    img_trendlines = img_parent_labeled.copy()
+    
+    # Get image dimensions
+    height, width = img_parent_labeled.shape[:2]
+    
+    # Initialize lists to store low and high points with their indices and numbers
+    low_points = []
+    high_points = []
+    pl_points = []
+    ph_points = []
+    total_candles = len(all_positions)
+    
+    # Identify all highs and lows
+    for i, (pos, color) in enumerate(reversed(all_positions[:-1]), 1):  # Exclude rightmost candlestick
+        x, top_y, bottom_y = pos
+        orig_index = total_candles - 1 - i  # Original index in all_positions (left-to-right)
+        
+        is_low = False
+        is_high = False
+        
+        # Check neighbors for low and high points (same logic as number_high_low_candlesticks)
+        if orig_index > 0 and orig_index < total_candles - 1:
+            prev_bottom_y = all_positions[orig_index + 1][0][2]  # Next candlestick (left)
+            next_bottom_y = all_positions[orig_index - 1][0][2]  # Previous candlestick (right)
+            if bottom_y > prev_bottom_y and bottom_y > next_bottom_y:
+                is_low = True
+            prev_top_y = all_positions[orig_index + 1][0][1]
+            next_top_y = all_positions[orig_index - 1][0][1]
+            if top_y < prev_top_y and top_y < next_top_y:
+                is_high = True
+        elif orig_index == 0 and total_candles > 2:  # Second candlestick from right
+            next_bottom_y = all_positions[orig_index + 1][0][2]
+            next_top_y = all_positions[orig_index + 1][0][1]
+            if bottom_y > next_bottom_y:
+                is_low = True
+            if top_y < next_top_y:
+                is_high = True
+        elif orig_index == total_candles - 2 and total_candles > 2:  # Leftmost numbered candlestick
+            prev_bottom_y = all_positions[orig_index - 1][0][2]
+            prev_top_y = all_positions[orig_index - 1][0][1]
+            if bottom_y > prev_bottom_y:
+                is_low = True
+            if top_y < prev_top_y:
+                is_high = True
+        
+        if is_low:
+            low_points.append((orig_index, x, bottom_y, i))
+        if is_high:
+            high_points.append((orig_index, x, top_y, i))
+    
+    # Identify Parent Lows (PL) and Parent Highs (PH)
+    low_points.sort(key=lambda x: x[1])  # Sort by x-coordinate (left to right)
+    high_points.sort(key=lambda x: x[1])
+    
+    for i, (orig_index, x, bottom_y, number) in enumerate(low_points):
+        left_count = 0
+        right_count = 0
+        is_lowest = True
+        
+        # Check left lows (need at least 'left_required', and they must be higher)
+        for j in range(i - 1, -1, -1):
+            if low_points[j][2] < bottom_y:
+                left_count += 1
+                if left_count >= left_required:
+                    break
+            else:
+                is_lowest = False
+        
+        # Check right lows (need at least 'right_required', and they must be higher)
+        for j in range(i + 1, len(low_points)):
+            if low_points[j][2] < bottom_y:
+                right_count += 1
+                if right_count >= right_required:
+                    break
+            else:
+                is_lowest = False
+        
+        if left_count >= left_required and right_count >= right_required and is_lowest:
+            pl_points.append((orig_index, x, bottom_y, number))
+    
+    for i, (orig_index, x, top_y, number) in enumerate(high_points):
+        left_count = 0
+        right_count = 0
+        is_highest = True
+        
+        # Check left highs (need at least 'left_required', and they must be lower)
+        for j in range(i - 1, -1, -1):
+            if high_points[j][2] > top_y:
+                left_count += 1
+                if left_count >= left_required:
+                    break
+            else:
+                is_highest = False
+        
+        # Check right highs (need at least 'right_required', and they must be lower)
+        for j in range(i + 1, len(high_points)):
+            if high_points[j][2] > top_y:
+                right_count += 1
+                if right_count >= right_required:
+                    break
+            else:
+                is_highest = False
+        
+        if left_count >= left_required and right_count >= right_required and is_highest:
+            ph_points.append((orig_index, x, top_y, number))
+    
+    # Create sets of parent numbers to exclude them as children
+    pl_numbers = set(pl[3] for pl in pl_points)  # Numbers of Parent Lows
+    ph_numbers = set(ph[3] for ph in ph_points)  # Numbers of Parent Highs
+    
+    # Sort parents by x-coordinate (right to left for scanning)
+    pl_points.sort(key=lambda x: x[1], reverse=True)  # Right to left
+    ph_points.sort(key=lambda x: x[1], reverse=True)
+    
+    # Track claimed highs and lows to prevent reuse
+    claimed_lows = set()
+    claimed_highs = set()
+    
+    # Process Parent Lows (connect to higher lows on the right)
+    for pl_idx, (orig_index, x, bottom_y, number) in enumerate(pl_points):
+        # Find all unclaimed lows to the right that are higher, not equal, at least min_distance pixels higher, and not PL
+        connectable_lows = []
+        for low_idx, (l_orig_index, l_x, l_bottom_y, l_number) in enumerate(low_points):
+            if (l_x > x and 
+                l_bottom_y < bottom_y and 
+                l_number not in claimed_lows and 
+                l_bottom_y != bottom_y and 
+                abs(l_bottom_y - bottom_y) >= min_distance and 
+                l_number not in pl_numbers):  # Exclude Parent Lows
+                connectable_lows.append((l_x, l_bottom_y, l_number))
+        
+        # Sort connectable lows by x-coordinate (left to right)
+        connectable_lows.sort(key=lambda x: x[0])
+        
+        # Draw trendlines from PL to each connectable low, extending to the right edge
+        for i, (l_x, l_bottom_y, l_number) in enumerate(connectable_lows):
+            # Calculate slope of the trendline
+            if l_x != x:  # Avoid division by zero
+                slope = (l_bottom_y - bottom_y) / (l_x - x)
+                # Calculate y-coordinate at the right edge of the image
+                end_x = width - 1
+                end_y = int(bottom_y + slope * (end_x - x))
+                # Ensure end_y is within image bounds
+                end_y = max(0, min(height - 1, end_y))
+            else:
+                # If x-coordinates are the same (unlikely due to sorting), extend horizontally
+                end_x = width - 1
+                end_y = l_bottom_y
+            
+            # Draw trendline in yellow (BGR: 0, 255, 255) from parent to right edge
+            cv2.line(img_trendlines, (x, bottom_y), (end_x, end_y), (0, 255, 255), 1)
+            # Mark the low as claimed
+            claimed_lows.add(l_number)
+            print(f"PL{number} connected to low {l_number} at ({l_x}, {l_bottom_y}), extended to ({end_x}, {end_y})")
+    
+    # Process Parent Highs (connect to lower highs on the right)
+    for ph_idx, (orig_index, x, top_y, number) in enumerate(ph_points):
+        # Find all unclaimed highs to the right that are lower, not equal, at least min_distance pixels lower, and not PH
+        connectable_highs = []
+        for high_idx, (h_orig_index, h_x, h_top_y, h_number) in enumerate(high_points):
+            if (h_x > x and 
+                h_top_y > top_y and 
+                h_number not in claimed_highs and 
+                h_top_y != top_y and 
+                abs(h_top_y - top_y) >= min_distance and 
+                h_number not in ph_numbers):  # Exclude Parent Highs
+                connectable_highs.append((h_x, h_top_y, h_number))
+        
+        # Sort connectable highs by x-coordinate (left to right)
+        connectable_highs.sort(key=lambda x: x[0])
+        
+        # Draw trendlines from PH to each connectable high, extending to the right edge
+        for i, (h_x, h_top_y, h_number) in enumerate(connectable_highs):
+            # Calculate slope of the trendline
+            if h_x != x:  # Avoid division by zero
+                slope = (h_top_y - top_y) / (h_x - x)
+                # Calculate y-coordinate at the right edge of the image
+                end_x = width - 1
+                end_y = int(top_y + slope * (end_x - x))
+                # Ensure end_y is within image bounds
+                end_y = min(height - 1, end_y)
+                end_y = max(0, end_y)
+            else:
+                # If x-coordinates are the same (unlikely due to sorting), extend horizontally
+                end_x = width - 1
+                end_y = h_top_y
+            
+            # Draw trendline in blue (BGR: 255, 0, 0) from parent to right edge
+            cv2.line(img_trendlines, (x, top_y), (end_x, end_y), (255, 0, 0), 1)
+            # Mark the high as claimed
+            claimed_highs.add(h_number)
+            print(f"PH{number} connected to high {h_number} at ({h_x}, {h_top_y}), extended to ({end_x}, {end_y})")
+    
+    # Save the trendline image
+    trendline_image_path = os.path.join(OUTPUT_FOLDER, f"{base_name}_trendlines.png")
+    cv2.imwrite(trendline_image_path, img_trendlines)
+    print(f"Trendline image saved to: {trendline_image_path}")
+    
+    return trendline_image_path
+
+def highsandlowstrendlinedistance(distance):
+    """
+    Set the minimum pixel distance for trendline connections between Parent Highs/Lows and their children.
+    
+    Args:
+        distance (str): Minimum pixel distance (as a string, e.g., "50").
+    
+    Returns:
+        int: Minimum pixel distance for trendline connections.
+    """
+    try:
+        min_distance = int(distance)
+        if min_distance < 0:
+            raise ValueError("Minimum distance must be non-negative.")
+        return min_distance
+    except ValueError as e:
+        raise ValueError(f"Invalid input for distance: {e}")
+
+
+def main():
+    """Main function to orchestrate image processing pipeline."""
+    # Create output folder
+    os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+    
+    try:
+        #MECHANISM CONTROLS
+        #highs and lows control
+        left_required, right_required = controlleftandrighthighsandlows("1", "1")
+
+        #distance control
+        min_distance = highsandlowstrendlinedistance("50")
+        ##-------------------------##
+        
+        # Load latest chart
+        img, base_name = load_latest_chart()
+        if img is None:
+            return
+        
+        # Get image dimensions
+        height, width = img.shape[:2]
+        
+        # Crop image
+        img = crop_image(img, height, width)
+        
+        # Enhance colors
+        img_enhanced, mask_red, mask_green, mask = enhance_colors(img)
+        
+        # Replace near-black wicks
+        img_enhanced = replace_near_black_wicks(img_enhanced, mask_red, mask_green)
+        
+        # Sharpen image
+        img_enhanced = sharpen_image(img_enhanced)
+        
+        # Set background to black
+        img_enhanced = set_background_black(img_enhanced, mask)
+        
+        # Save enhanced image
+        save_enhanced_image(img_enhanced, base_name)
+        
+        # Remove horizontal lines
+        img_enhanced, mask_red, mask_green, mask = remove_horizontal_lines(img_enhanced, mask_red, mask_green, width)
+        
+        # Detect candlestick contours
+        img_contours, red_positions, green_positions = detect_candlestick_contours(img_enhanced, mask_red, mask_green)
+        
+        # Save contour image
+        save_contour_image(img_contours, base_name)
+        
+        # Connect contours
+        img_connected_contours, all_positions = connect_contours(img_contours, red_positions, green_positions)
+        
+        # Save connected contour image
+        save_connected_contour_image(img_connected_contours, base_name)
+        
+        # Number all candlesticks
+        img_numbered = number_all_candlesticks(img_enhanced, all_positions)
+        
+        # Save numbered candlesticks image
+        save_numbered_candlesticks_image(img_numbered, base_name)
+        
+        # Number high/low candlesticks
+        img_high_low_numbered = number_high_low_candlesticks(img_enhanced, all_positions)
+        
+        # Save high/low numbered image
+        save_high_low_numbered_image(img_high_low_numbered, base_name)
+        
+        # Identify and label Parent Highs and Lows
+        parent_labeled_image_path = identify_parent_highs_and_lows(img_high_low_numbered, all_positions, base_name, left_required, right_required)
+        img_parent_labeled = cv2.imread(parent_labeled_image_path)
+        
+        # Draw trendlines from Parent Highs and Lows to their children
+        trendline_image_path = draw_trendlines(img_parent_labeled, all_positions, base_name, left_required, right_required, min_distance)
+        
+        print("Candlestick contour processing, connection, numbering, parent highs/lows labeling, and trendline drawing complete.")
+        
+    except Exception as e:
+        print(f"Error processing image: {e}")
+
+if __name__ == "__main__":
+    main()

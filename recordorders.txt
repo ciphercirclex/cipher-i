@@ -1,0 +1,703 @@
+def draw_parent_main_trendlines(img_parent_labeled, all_positions, base_name, left_required, right_required, 
+                                main_trendline_position, distance_threshold, num_contracts, allow_latest_main_trendline,
+                                pl_labels, ph_labels):
+    """
+    Draw main trendlines between Parent Highs (PH) and Parent Lows (PL), label position numbers, draw boxes for receivers,
+    and collect main_trendline data for JSON output.
+    """
+    img_main_trendlines = img_parent_labeled.copy()
+    total_candles = len(all_positions)
+    
+    # Get image width for extending main_trendlines to the right edge
+    img_width = img_main_trendlines.shape[1]
+    
+    # Font settings for position numbers and 's' labels
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 0.5
+    text_color = (255, 255, 255)  # White text
+    thickness = 1
+    line_type = cv2.LINE_AA
+    
+    # Draw position numbers for PL and PH
+    for x, bottom_y, label, arrow_number in pl_labels:
+        text_position = (x - 20, bottom_y + 35)  # 20px below PL label
+        cv2.putText(img_main_trendlines, str(arrow_number), text_position, font,
+                    font_scale, text_color, thickness, line_type)
+    
+    for x, top_y, label, arrow_number in ph_labels:
+        text_position = (x - 20, top_y - 25)  # 10px above PH label
+        cv2.putText(img_main_trendlines, str(arrow_number), text_position, font,
+                    font_scale, text_color, thickness, line_type)
+    
+    # Sort all_positions by x-coordinate
+    sorted_positions = sorted(all_positions, key=lambda x: x[0][0])
+    
+    # Track used points for PH-to-PL and PL-to-PH connections
+    used_points_ph_to_pl = set()
+    used_points_pl_to_ph = set()
+    
+    # Initialize list to store main_trendline data for JSON
+    main_trendline_data = []
+    
+    # Initialize list to store parent distances for JSON
+    parent_distances = []
+    
+    # Calculate PH-to-PH vertical distances
+    ph_labels_sorted = sorted(ph_labels, key=lambda x: x[0])  # Sort by x-coordinate
+    for i in range(len(ph_labels_sorted) - 1):
+        x1, top_y1, label1, arrow_number1 = ph_labels_sorted[i]
+        x2, top_y2, label2, arrow_number2 = ph_labels_sorted[i + 1]
+        distance = abs(top_y1 - top_y2)
+        parent_distances.append({
+            "type": "PH-to-PH",
+            "from_label": label1,
+            "to_label": label2,
+            "vertical_distance_px": distance
+        })
+        print(f"PH-to-PH distance from {label1} (x={x1}, y={top_y1}) to {label2} (x={x2}, y={top_y2}): {distance}px")
+    
+    # Calculate PL-to-PL vertical distances
+    pl_labels_sorted = sorted(pl_labels, key=lambda x: x[0])  # Sort by x-coordinate
+    for i in range(len(pl_labels_sorted) - 1):
+        x1, bottom_y1, label1, arrow_number1 = pl_labels_sorted[i]
+        x2, bottom_y2, label2, arrow_number2 = pl_labels_sorted[i + 1]
+        distance = abs(bottom_y1 - bottom_y2)
+        parent_distances.append({
+            "type": "PL-to-PL",
+            "from_label": label1,
+            "to_label": label2,
+            "vertical_distance_px": distance
+        })
+        print(f"PL-to-PL distance from {label1} (x={x1}, y={bottom_y1}) to {label2} (x={x2}, y={bottom_y2}): {distance}px")
+    
+    # Save parent distances to a separate JSON file
+    parent_distances_json_path = os.path.join(OUTPUT_FOLDER, f"{base_name}_parent_distances.json")
+    try:
+        with open(parent_distances_json_path, 'w') as f:
+            json.dump(parent_distances, f, indent=4)
+        print(f"Parent distances saved to: {parent_distances_json_path}")
+    except Exception as e:
+        print(f"Error saving parent distances to JSON: {e}")
+    
+    # Helper function to find candlestick at specified position
+    def get_candle_at_position(receiver_x, position):
+        try:
+            pos = int(position)
+        except ValueError:
+            pos = 1
+        count = 0
+        for pos_data, color in sorted_positions:
+            if pos_data[0] > receiver_x:
+                count += 1
+                if count == pos:
+                    return pos_data, color
+        print(f"No candlestick found at position {position} to the right of x={receiver_x}")
+        return None, None
+    
+    # Helper function to check if a main_trendline crosses another PH or PL
+    def crosses_other_parent(start_x, end_x, start_y, end_y, points_to_check, exclude_labels=None):
+        if exclude_labels is None:
+            exclude_labels = set()
+        for x, y, label, _ in points_to_check:
+            if label in exclude_labels:
+                continue
+            if start_x < x < end_x:
+                if start_x != end_x:
+                    t = (x - start_x) / (end_x - start_x)
+                    line_y = start_y + t * (end_y - start_y)
+                    if abs(line_y - y) < 20:
+                        return True, label
+        return False, None
+    
+    # Helper function to extend line to the right edge of the image
+    def extend_line_to_right_edge(start_x, start_y, target_x, target_y, img_width):
+        if target_x == start_x:
+            return img_width, start_y
+        m = (target_y - start_y) / (target_x - start_x)
+        c = start_y - m * start_x
+        end_y = m * img_width + c
+        return img_width, int(end_y)
+    
+    # Helper function to count parents ahead
+    def count_parents_ahead(x, parent_points):
+        return sum(1 for p in parent_points if p[0] > x)
+    
+    # Helper function to extract position number from label (e.g., PH3 -> 3, PL5 -> 5)
+    def get_position_number_from_label(label):
+        try:
+            return int(label[2:])  # Extract number after "PH" or "PL"
+        except ValueError:
+            return None
+    
+    # Helper function to get position number for a candlestick
+    def get_position_number(x, labels, all_positions):
+        for px, _, label, _ in labels:
+            if px == x:
+                pos_number = get_position_number_from_label(label)
+                if pos_number is not None:
+                    return pos_number
+        for i, (pos, _) in enumerate(reversed(all_positions[:-1]), 1):
+            if pos[0] == x:
+                return i
+        return None
+    
+    # Helper function to get the next two parents after the receiver
+    def get_next_two_parents(receiver_x, pl_labels, ph_labels, main_trendline_type):
+        all_parents = [(x, 'PL', y) for x, y, _, _ in pl_labels] + [(x, 'PH', y) for x, y, _, _ in ph_labels]
+        parents_to_right = sorted([(x, parent_type, y) for x, parent_type, y in all_parents if x > receiver_x], key=lambda p: p[0])
+        if len(parents_to_right) >= 1:
+            first_parent = parents_to_right[0][1]
+            # Validate first parent based on main_trendline type
+            if main_trendline_type == 'PH-to-PL' and first_parent != 'PH':
+                first_parent = 'invalid'
+            elif main_trendline_type == 'PL-to-PH' and first_parent != 'PL':
+                first_parent = 'invalid'
+        else:
+            first_parent = 'invalid'
+        if len(parents_to_right) >= 2:
+            second_parent = parents_to_right[1][1]
+            # Validate second parent based on main_trendline type
+            if main_trendline_type == 'PH-to-PL' and second_parent != 'PH':
+                second_parent = 'invalid'
+            elif main_trendline_type == 'PL-to-PH' and second_parent != 'PL':
+                second_parent = 'invalid'
+        else:
+            second_parent = 'invalid'
+        return first_parent, second_parent
+    
+    # Helper function to find the candlestick that contains a parent (PL or PH) by x-coordinate
+    def get_candle_for_parent(parent_x, all_positions):
+        for pos, color in all_positions:
+            if pos[0] == parent_x:
+                return pos, color
+        return None, None
+    
+    # Helper function to find the next PL or PH to the right
+    def get_next_parent_position(receiver_x, pl_labels, ph_labels, main_trendline_type):
+        all_parents = [(x, 'PL', y) for x, y, _, _ in pl_labels] + [(x, 'PH', y) for x, y, _, _ in ph_labels]
+        parents_to_right = [(x, parent_type, y) for x, parent_type, y in all_parents if x > receiver_x]
+        if not parents_to_right:
+            return None, None, None
+        # Filter parents based on main_trendline type
+        valid_parent_type = 'PH' if main_trendline_type == 'PH-to-PL' else 'PL'
+        valid_parents = [p for p in parents_to_right if p[1] == valid_parent_type]
+        if not valid_parents:
+            return None, None, None
+        closest_parent = min(valid_parents, key=lambda p: p[0])
+        return closest_parent[0], closest_parent[1], closest_parent[2]
+    
+    # Helper function to find the next candlestick touched by a horizontal line at y_level
+    def get_next_candle_touched(receiver_x, y_level, sorted_positions, check_below=False, check_above=False):
+        for pos_data, _ in sorted_positions:
+            if pos_data[0] > receiver_x:
+                if check_below and pos_data[2] > y_level:  # Bottom is below y_level
+                    return pos_data[0]
+                if check_above and pos_data[1] < y_level:  # Top is above y_level
+                    return pos_data[0]
+                if not (check_below or check_above) and pos_data[1] <= y_level <= pos_data[2]:  # Line intersects candlestick body
+                    return pos_data[0]
+        return None
+    
+    # Helper function to find the latest candlestick
+    def get_latest_candle(sorted_positions):
+        if sorted_positions:
+            return sorted_positions[-1][0]  # Return the position tuple of the rightmost candlestick
+        return None
+    
+    # Helper function to draw receiver box and stoploss
+    def draw_receiver_box(img, main_trendline, receiver_x, parent_candle, main_trendline_position, pl_labels, ph_labels, sorted_positions, img_width):
+        """
+        Draw a box around the receiver candlestick, calculate stoploss position, and update order and stoploss statuses.
+        
+        Args:
+            img: Image to draw on
+            main_trendline: Main trendline data dictionary
+            receiver_x: X-coordinate of the receiver parent
+            parent_candle: Candlestick data for the receiver parent (x, top_y, bottom_y)
+            main_trendline_position: Position of the candlestick to connect to
+            pl_labels: List of Parent Low labels
+            ph_labels: List of Parent High labels
+            sorted_positions: Sorted list of all candlestick positions
+            img_width: Image width for boundary checks
+        
+        Returns:
+            tuple: (order_status, stoploss_status) updated based on box and stoploss logic
+        """
+        order_status = "none"
+        stoploss_status = "none"
+        
+        if main_trendline['type'] == 'PH-to-PL':
+            top_y = parent_candle[1]  # Top of PL candlestick
+            bottom_y = parent_candle[2]  # Bottom of PL candlestick
+            # Validate next parent for box drawing
+            first_parent, second_parent = get_next_two_parents(receiver_x, pl_labels, ph_labels, 'PH-to-PL')
+            valid_parent = False
+            next_parent_x = None
+            next_parent_type = None
+            next_parent_y = None
+            if first_parent == 'PH':
+                valid_parent = True
+                next_parent_x, next_parent_type, next_parent_y = get_next_parent_position(receiver_x, pl_labels, ph_labels, 'PH-to-PL')
+            elif second_parent == 'PH':
+                valid_parent = True
+                # Find the second parent
+                all_parents = [(x, parent_type, y) for x, parent_type, y in [(x, 'PL', y) for x, y, _, _ in pl_labels] + [(x, 'PH', y) for x, y, _, _ in ph_labels] if x > receiver_x]
+                if len(all_parents) >= 2:
+                    second_parent_data = sorted(all_parents, key=lambda p: p[0])[1]
+                    next_parent_x, next_parent_type, next_parent_y = second_parent_data
+            if valid_parent:
+                # Check if the horizontal line at top_y touches a candlestick with lower bottom
+                found = False
+                box_end_x = min(receiver_x + 100, img_width)  # Default 100px box
+                if next_parent_x is not None:
+                    next_parent_candle, _ = get_candle_for_parent(next_parent_x, all_positions)
+                    if next_parent_candle and next_parent_candle[2] > top_y:  # Bottom is lower (higher y)
+                        box_end_x = next_parent_x
+                        order_status = "executed"
+                        found = True
+                        print(f"Box will extend to {next_parent_type} at x={next_parent_x} for PL{main_trendline['receiver']['receiver_arrow_number']}")
+                    else:
+                        # Check candlesticks after the next valid PH
+                        for pos_data, _ in sorted_positions:
+                            if pos_data[0] > next_parent_x and pos_data[2] > top_y:  # Bottom is lower
+                                box_end_x = pos_data[0]
+                                order_status = "executed"
+                                found = True
+                                print(f"Box will extend to candlestick at x={pos_data[0]} for PL{main_trendline['receiver']['receiver_arrow_number']}")
+                                break
+                if not found:
+                    print(f"Box will extend 100px to x={box_end_x} for PL{main_trendline['receiver']['receiver_arrow_number']}")
+            else:
+                print(f"No valid PH found as next parent for PL{main_trendline['receiver']['receiver_arrow_number']}, skipping box drawing")
+                order_status = "none"
+                box_end_x = min(receiver_x + 100, img_width)  # Default for JSON consistency
+        else:  # PL-to-PH
+            top_y = parent_candle[1]  # Top of PH candlestick
+            bottom_y = parent_candle[2]  # Bottom of PH candlestick
+            # Validate next parent for box drawing
+            first_parent, second_parent = get_next_two_parents(receiver_x, pl_labels, ph_labels, 'PL-to-PH')
+            valid_parent = False
+            next_parent_x = None
+            next_parent_type = None
+            next_parent_y = None
+            if first_parent == 'PL':
+                valid_parent = True
+                next_parent_x, next_parent_type, next_parent_y = get_next_parent_position(receiver_x, pl_labels, ph_labels, 'PL-to-PH')
+            elif second_parent == 'PL':
+                valid_parent = True
+                # Find the second parent
+                all_parents = [(x, parent_type, y) for x, parent_type, y in [(x, 'PL', y) for x, y, _, _ in pl_labels] + [(x, 'PH', y) for x, y, _, _ in ph_labels] if x > receiver_x]
+                if len(all_parents) >= 2:
+                    second_parent_data = sorted(all_parents, key=lambda p: p[0])[1]
+                    next_parent_x, next_parent_type, next_parent_y = second_parent_data
+            if valid_parent:
+                # Check if the horizontal line at bottom_y touches a candlestick with higher top
+                found = False
+                box_end_x = min(receiver_x + 100, img_width)  # Default 100px box
+                if next_parent_x is not None:
+                    next_parent_candle, _ = get_candle_for_parent(next_parent_x, all_positions)
+                    if next_parent_candle and next_parent_candle[1] < bottom_y:  # Top is higher (lower y)
+                        box_end_x = next_parent_x
+                        order_status = "executed"
+                        found = True
+                        print(f"Box will extend to {next_parent_type} at x={next_parent_x} for PH{main_trendline['receiver']['receiver_arrow_number']}")
+                    else:
+                        # Check candlesticks after the next valid PL
+                        for pos_data, _ in sorted_positions:
+                            if pos_data[0] > next_parent_x and pos_data[1] < bottom_y:  # Top is higher
+                                box_end_x = pos_data[0]
+                                order_status = "executed"
+                                found = True
+                                print(f"Box will extend to candlestick at x={pos_data[0]} for PH{main_trendline['receiver']['receiver_arrow_number']}")
+                                break
+                if not found:
+                    print(f"Box will extend 100px to x={box_end_x} for PH{main_trendline['receiver']['receiver_arrow_number']}")
+            else:
+                print(f"No valid PL found as next parent for PH{main_trendline['receiver']['receiver_arrow_number']}, skipping box drawing")
+                order_status = "none"
+                box_end_x = min(receiver_x + 100, img_width)  # Default for JSON consistency
+        
+        # Draw box and handle stoploss logic only if a valid parent was found
+        if order_status == "none" and valid_parent:
+            # Draw box from top to bottom (PL) or bottom to top (PH), extend 100px to the right
+            cv2.rectangle(img, (receiver_x, top_y), (box_end_x, bottom_y), (255, 255, 255), 1)
+            cv2.arrowedLine(img, (box_end_x - 10, top_y), (box_end_x, top_y), (255, 255, 255), 1, tipLength=0.3)
+            cv2.arrowedLine(img, (box_end_x - 10, bottom_y), (box_end_x, bottom_y), (255, 255, 255), 1, tipLength=0.3)
+            print(f"Drew box from (x={receiver_x}, y={top_y}) to (x={box_end_x}, y={bottom_y}) with right arrows for {main_trendline['type'].split('-')[2]}{main_trendline['receiver']['receiver_arrow_number']}, order_status=none")
+            stoploss_status = "none"
+        elif order_status == "executed":
+            # Calculate 's' label position
+            candle_height = parent_candle[2] - parent_candle[1]  # bottom_y - top_y
+            remaining_distance = 150 - candle_height
+            if remaining_distance < 0:
+                remaining_distance = 0
+                print(f"Warning: Candlestick height {candle_height}px exceeds 150px for {main_trendline['type'].split('-')[2]}{main_trendline['receiver']['receiver_arrow_number']}, setting remaining distance to 0")
+            
+            if main_trendline['type'] == 'PH-to-PL':
+                s_label_y = parent_candle[2] + remaining_distance
+                s_label_position = (receiver_x - 20, s_label_y + 15)  # 15px below the 's' point
+            else:
+                s_label_y = parent_candle[1] - remaining_distance
+                s_label_position = (receiver_x - 20, s_label_y - 5)  # 5px above the 's' point
+            
+            # Check for stoploss hit
+            check_below = main_trendline['type'] == 'PH-to-PL'
+            check_above = main_trendline['type'] == 'PL-to-PH'
+            next_candle_x = get_next_candle_touched(receiver_x, s_label_y, sorted_positions, check_below=check_below, check_above=check_above)
+            if next_candle_x is not None:
+                # Stoploss hit: Draw box to the candlestick touched by the stoploss line, extending to s_label_y
+                stoploss_status = "hit"
+                box_end_x = next_candle_x
+                cv2.rectangle(img, 
+                             (receiver_x, top_y if main_trendline['type'] == 'PH-to-PL' else s_label_y), 
+                             (box_end_x, s_label_y if main_trendline['type'] == 'PH-to-PL' else bottom_y), 
+                             (255, 255, 255), 1)
+                print(f"Drew box from (x={receiver_x}, y={top_y if main_trendline['type'] == 'PH-to-PL' else s_label_y}) to "
+                      f"(x={box_end_x}, y={s_label_y if main_trendline['type'] == 'PH-to-PL' else bottom_y}) for "
+                      f"{main_trendline['type'].split('-')[2]}{main_trendline['receiver']['receiver_arrow_number']}, stoploss_status=hit")
+            else:
+                # Stoploss not hit: Draw box to the candlestick touched by the horizontal line, extend to 's' label
+                stoploss_status = "free"
+                cv2.rectangle(img, 
+                             (receiver_x, top_y if main_trendline['type'] == 'PH-to-PL' else s_label_y), 
+                             (box_end_x, s_label_y if main_trendline['type'] == 'PH-to-PL' else bottom_y), 
+                             (255, 255, 255), 1)
+                # Draw 's' label
+                s_label = f"s={int(remaining_distance)}"
+                cv2.putText(img, s_label, s_label_position, cv2.FONT_HERSHEY_SIMPLEX,
+                            0.5, (255, 255, 255), 1, cv2.LINE_AA)
+                # Draw 10px horizontal line with right arrow at 's' level
+                arrow_end_x = box_end_x + 10
+                if arrow_end_x <= img_width:
+                    cv2.line(img, (box_end_x, s_label_y), (arrow_end_x, s_label_y), (255, 255, 255), 1)
+                    cv2.arrowedLine(img, (arrow_end_x - 10, s_label_y), (arrow_end_x, s_label_y), (255, 255, 255), 1, tipLength=0.3)
+                print(f"Drew box from (x={receiver_x}, y={top_y if main_trendline['type'] == 'PH-to-PL' else s_label_y}) to "
+                      f"(x={box_end_x}, y={s_label_y if main_trendline['type'] == 'PH-to-PL' else bottom_y}) with 's' label "
+                      f"and 10px arrow at y={s_label_y} for {main_trendline['type'].split('-')[2]}{main_trendline['receiver']['receiver_arrow_number']}, "
+                      f"stoploss_status=free")
+        
+        return order_status, stoploss_status
+    
+    # Helper function to record order status
+    def record_orders(main_trendline, order_status, receiver_x, parent_candle, pl_labels, ph_labels, sorted_positions):
+        """
+        Update the order_status for a main trendline based on 'executed' and 'pending order' conditions.
+
+        Args:
+            main_trendline: Main trendline data dictionary
+            order_status: Current order status from draw_receiver_box
+            receiver_x: X-coordinate of the receiver parent
+            parent_candle: Candlestick data for the receiver parent (x, top_y, bottom_y)
+            pl_labels: List of Parent Low labels
+            ph_labels: List of Parent High labels
+            sorted_positions: Sorted list of all candlestick positions
+
+        Returns:
+            str: Updated order_status ('executed', 'pending order', or 'none')
+        """
+        # Return early if order is already executed
+        if order_status == "executed":
+            return order_status
+
+        # Check for pending order condition
+        first_parent, second_parent = get_next_two_parents(receiver_x, pl_labels, ph_labels, main_trendline['type'])
+        valid_parent = first_parent != 'invalid' or second_parent != 'invalid'
+        
+        if valid_parent:
+            latest_candle = get_latest_candle(sorted_positions)
+            if latest_candle:
+                if main_trendline['type'] == 'PH-to-PL':
+                    # For PH-to-PL, check if latest candlestick's bottom is above receiver (PL) top
+                    if latest_candle[2] < parent_candle[1]:  # Latest bottom is higher (lower y)
+                        order_status = "pending order"
+                        print(f"Set order_status to 'pending order' for PL{main_trendline['receiver']['receiver_arrow_number']} "
+                              f"as latest candlestick bottom (y={latest_candle[2]}) is above receiver top (y={parent_candle[1]})")
+                else:  # PL-to-PH
+                    # For PL-to-PH, check if latest candlestick's top is below receiver (PH) bottom
+                    if latest_candle[1] > parent_candle[2]:  # Latest top is lower (higher y)
+                        order_status = "pending order"
+                        print(f"Set order_status to 'pending order' for PH{main_trendline['receiver']['receiver_arrow_number']} "
+                              f"as latest candlestick top (y={latest_candle[1]}) is below receiver bottom (y={parent_candle[2]})")
+        
+        return order_status
+    
+    # PH to PL (top to top of the candlestick at specified position to the right of the nearest PL, green)
+    for i, (x1, top_y1, label1, arrow_number1) in enumerate(ph_labels):
+        if label1 in used_points_ph_to_pl:
+            continue
+        
+        nearest_pl = None
+        min_distance = float('inf')
+        for j, (x2, bottom_y2, label2, arrow_number2) in enumerate(pl_labels):
+            if x2 > x1 and label2 not in used_points_ph_to_pl:
+                distance = x2 - x1
+                if distance < min_distance:
+                    min_distance = distance
+                    nearest_pl = (x2, bottom_y2, label2, arrow_number2)
+        
+        if nearest_pl is None:
+            print(f"No unused PL found to the right of {label1}, skipping connection")
+            continue
+        
+        x2, bottom_y2, label2, arrow_number2 = nearest_pl
+        
+        if not allow_latest_main_trendline:
+            ph_ahead_count = count_parents_ahead(x2, ph_labels)
+            if ph_ahead_count == 0:
+                print(f"No PH found ahead of {label2}, skipping PH-to-PL main_trendline from {label1}")
+                continue
+        
+        next_candle, receiver_color = get_candle_at_position(x2, main_trendline_position)
+        if next_candle is None:
+            print(f"No candlestick found at position {main_trendline_position} to the right of {label2}, skipping connection")
+            continue
+        
+        if next_candle[1] <= top_y1:
+            print(f"Skipping PH-to-PL main_trendline from {label1} to candlestick at position {main_trendline_position} right of {label2} "
+                  f"because receiver top (y={next_candle[1]}) is higher than or equal to sender top (y={top_y1})")
+            continue
+        
+        vertical_distance = abs(top_y1 - next_candle[1])
+        if vertical_distance < distance_threshold:
+            print(f"Skipping PH-to-PL main_trendline from {label1} to candlestick at position {main_trendline_position} right of {label2} "
+                  f"due to vertical distance {vertical_distance} < threshold {distance_threshold}")
+            continue
+        
+        crosses, crossed_label = crosses_other_parent(
+            x1, next_candle[0], top_y1, next_candle[1],
+            pl_labels + ph_labels,
+            exclude_labels={label1, label2}
+        )
+        if crosses:
+            print(f"Skipping PH-to-PL main_trendline from {label1} to candlestick at position {main_trendline_position} right of {label2} "
+                  f"due to crossing {crossed_label}")
+            continue
+        
+        end_x, end_y = extend_line_to_right_edge(x1, top_y1, next_candle[0], next_candle[1], img_width)
+        
+        crosses, crossed_label = crosses_other_parent(
+            next_candle[0], end_x, next_candle[1], end_y,
+            pl_labels + ph_labels,
+            exclude_labels={label1, label2}
+        )
+        if crosses:
+            print(f"Skipping PH-to-PL main_trendline extension from {label1} to candlestick at position {main_trendline_position} right of {label2} "
+                  f"due to crossing {crossed_label} in extension")
+            continue
+        
+        sender_color = [color for pos, color in all_positions if pos[0] == x1][0]
+        sender_pos_number = get_position_number_from_label(label1)
+        receiver_pos_number = get_position_number(next_candle[0], pl_labels + ph_labels, all_positions)
+        
+        first_parent, second_parent = get_next_two_parents(x2, pl_labels, ph_labels, 'PH-to-PL')
+        next_parent_label = first_parent
+        
+        # Initialize order_status and stoploss_status
+        order_status = "none"
+        stoploss_status = "none"
+        
+        # Create main_trendline data entry
+        main_trendline_entry = {
+            "type": "PH-to-PL",
+            "sender": {
+                "candle_color": sender_color,
+                "position_number": sender_pos_number
+            },
+            "receiver": {
+                "candle_color": receiver_color,
+                "position_number": receiver_pos_number,
+                "order_type": "long",
+                "order_status": order_status,
+                "stoploss_status": stoploss_status,
+                "next_parent": next_parent_label,
+                "receiver_arrow_number": arrow_number2
+            }
+        }
+        main_trendline_data.append(main_trendline_entry)
+        
+        used_points_ph_to_pl.add(label1)
+        used_points_ph_to_pl.add(label2)
+    
+    # PL to PH (bottom to bottom of the candlestick at specified position to the right of the nearest PH, yellow)
+    for i, (x1, bottom_y1, label1, arrow_number1) in enumerate(pl_labels):
+        if label1 in used_points_pl_to_ph:
+            continue
+        
+        nearest_ph = None
+        min_distance = float('inf')
+        for j, (x2, top_y2, label2, arrow_number2) in enumerate(ph_labels):
+            if x2 > x1 and label2 not in used_points_pl_to_ph:
+                distance = x2 - x1
+                if distance < min_distance:
+                    min_distance = distance
+                    nearest_ph = (x2, top_y2, label2, arrow_number2)
+        
+        if nearest_ph is None:
+            print(f"No unused PH found to the right of {label1}, skipping connection")
+            continue
+        
+        x2, top_y2, label2, arrow_number2 = nearest_ph
+        
+        if not allow_latest_main_trendline:
+            pl_ahead_count = count_parents_ahead(x2, pl_labels)
+            if pl_ahead_count == 0:
+                print(f"No PL found ahead of {label2}, skipping PL-to-PH main_trendline from {label1}")
+                continue
+        
+        next_candle, receiver_color = get_candle_at_position(x2, main_trendline_position)
+        if next_candle is None:
+            print(f"No candlestick at position {main_trendline_position} to the right of {label2}, skipping connection")
+            continue
+        
+        if next_candle[2] >= bottom_y1:
+            print(f"Skipping PL-to-PH main_trendline from {label1} to candlestick at position {main_trendline_position} right of {label2} "
+                  f"because receiver bottom (y={next_candle[2]}) is lower than or equal to sender bottom (y={bottom_y1})")
+            continue
+        
+        vertical_distance = abs(bottom_y1 - next_candle[2])
+        if vertical_distance < distance_threshold:
+            print(f"Skipping PL-to-PH main_trendline from {label1} to candlestick at position {main_trendline_position} right of {label2} "
+                  f"due to vertical distance {vertical_distance} < threshold {distance_threshold}")
+            continue
+        
+        crosses, crossed_label = crosses_other_parent(
+            x1, next_candle[0], bottom_y1, next_candle[2],
+            pl_labels + ph_labels,
+            exclude_labels={label1, label2}
+        )
+        if crosses:
+            print(f"Skipping PL-to-PH main_trendline from {label1} to candlestick at position {main_trendline_position} right of {label2} "
+                  f"due to crossing {crossed_label}")
+            continue
+        
+        end_x, end_y = extend_line_to_right_edge(x1, bottom_y1, next_candle[0], next_candle[2], img_width)
+        
+        crosses, crossed_label = crosses_other_parent(
+            next_candle[0], end_x, next_candle[2], end_y,
+            pl_labels + ph_labels,
+            exclude_labels={label1, label2}
+        )
+        if crosses:
+            print(f"Skipping PL-to-PH main_trendline extension from {label1} to candlestick at position {main_trendline_position} right of {label2} "
+                  f"due to crossing {crossed_label} in extension")
+            continue
+        
+        sender_color = [color for pos, color in all_positions if pos[0] == x1][0]
+        sender_pos_number = get_position_number_from_label(label1)
+        receiver_pos_number = get_position_number(next_candle[0], pl_labels + ph_labels, all_positions)
+        
+        first_parent, second_parent = get_next_two_parents(x2, pl_labels, ph_labels, 'PL-to-PH')
+        next_parent_label = first_parent
+        
+        # Initialize order_status and stoploss_status
+        order_status = "none"
+        stoploss_status = "none"
+        
+        # Create main_trendline data entry
+        main_trendline_entry = {
+            "type": "PL-to-PH",
+            "sender": {
+                "candle_color": sender_color,
+                "position_number": sender_pos_number
+            },
+            "receiver": {
+                "candle_color": receiver_color,
+                "position_number": receiver_pos_number,
+                "order_type": "short",
+                "order_status": order_status,
+                "stoploss_status": stoploss_status,
+                "next_parent": next_parent_label,
+                "receiver_arrow_number": arrow_number2
+            }
+        }
+        main_trendline_data.append(main_trendline_entry)
+        
+        used_points_pl_to_ph.add(label1)
+        used_points_pl_to_ph.add(label2)
+    
+    # Sort main_trendlines by sender position number (left to right)
+    main_trendline_data.sort(key=lambda x: x['sender']['position_number'])
+    
+    # Select the number of main_trendlines to draw (based on num_contracts, rightmost first)
+    main_trendlines_to_draw = sorted(main_trendline_data, key=lambda x: x['receiver']['position_number'], reverse=True)[:num_contracts]
+    print(f"Total valid main_trendlines: {len(main_trendline_data)}, drawing {min(num_contracts, len(main_trendline_data))} main_trendlines")
+    
+    # If num_contracts is 0, save the image with only position numbers (no main_trendlines or boxes)
+    if num_contracts == 0:
+        print("Number of contracts set to 0, only position numbers drawn")
+        main_trendline_image_path = os.path.join(OUTPUT_FOLDER, f"{base_name}_parent_main_trendlines.png")
+        cv2.imwrite(main_trendline_image_path, img_main_trendlines)
+        print(f"Parent main_trendlines image saved to: {main_trendline_image_path}")
+        return main_trendline_image_path, main_trendline_data
+    
+    # Draw selected main_trendlines, label CPs, draw boxes for receivers, and handle 's' label
+    for main_trendline in main_trendlines_to_draw:
+        # Draw the main_trendline (using coordinates from parent labels)
+        sender_x = next((x for x, _, label, _ in (ph_labels if main_trendline['type'] == 'PH-to-PL' else pl_labels) if label == f"{main_trendline['type'].split('-')[0]}{main_trendline['sender']['position_number']}"), None)
+        sender_y = next((y for x, y, label, _ in (ph_labels if main_trendline['type'] == 'PH-to-PL' else pl_labels) if label == f"{main_trendline['type'].split('-')[0]}{main_trendline['sender']['position_number']}"), None)
+        receiver_x = next((x for x, _, label, _ in (pl_labels if main_trendline['type'] == 'PH-to-PL' else ph_labels) if label == f"{main_trendline['type'].split('-')[2]}{main_trendline['receiver']['receiver_arrow_number']}"), None)
+        receiver_y = next((y for x, y, label, _ in (pl_labels if main_trendline['type'] == 'PH-to-PL' else ph_labels) if label == f"{main_trendline['type'].split('-')[2]}{main_trendline['receiver']['receiver_arrow_number']}"), None)
+        
+        if sender_x is None or sender_y is None or receiver_x is None or receiver_y is None:
+            print(f"Skipping main_trendline drawing for {main_trendline['type']} due to missing coordinates")
+            continue
+        
+        # Get receiver candlestick coordinates for CP
+        receiver_candle, _ = get_candle_at_position(receiver_x, main_trendline_position)
+        if receiver_candle is None:
+            print(f"No candlestick found at position {main_trendline_position} for {main_trendline['type']}, skipping")
+            continue
+        
+        start = (sender_x, sender_y)
+        end = extend_line_to_right_edge(sender_x, sender_y, receiver_candle[0], receiver_candle[1 if main_trendline['type'] == 'PH-to-PL' else 2], img_width)
+        color = (0, 255, 0) if main_trendline['type'] == 'PH-to-PL' else (0, 255, 255)  # Green or Yellow
+        cv2.line(img_main_trendlines, start, end, color, 2)
+        
+        # Label CP and main_trendline type
+        cp_y = receiver_candle[1 if main_trendline['type'] == 'PH-to-PL' else 2]
+        text_position = (receiver_candle[0] - 40 if main_trendline['type'] == 'PH-to-PL' else receiver_candle[0] - 30, cp_y)
+        cv2.putText(img_main_trendlines, 'CP', text_position, cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5, (255, 255, 255), 1, cv2.LINE_AA)
+        
+        type_label = 'PH&PL' if main_trendline['type'] == 'PH-to-PL' else 'PL&PH'
+        type_position = (text_position[0], text_position[1] + 15)
+        cv2.putText(img_main_trendlines, type_label, type_position, cv2.FONT_HERSHEY_SIMPLEX,
+                    0.4, (255, 255, 255), 1, cv2.LINE_AA)
+        
+        # Get the candlestick corresponding to the receiver parent
+        parent_candle, parent_color = get_candle_for_parent(receiver_x, all_positions)
+        if parent_candle is None:
+            print(f"No candlestick found for parent {main_trendline['type'].split('-')[2]}{main_trendline['receiver']['receiver_arrow_number']} at x={receiver_x}, skipping box and 's' label")
+            continue
+        
+        # Draw box and update statuses
+        order_status, stoploss_status = draw_receiver_box(
+            img_main_trendlines, main_trendline, receiver_x, parent_candle, main_trendline_position,
+            pl_labels, ph_labels, sorted_positions, img_width
+        )
+        
+        # Update order_status with pending order check
+        order_status = record_orders(
+            main_trendline, order_status, receiver_x, parent_candle,
+            pl_labels, ph_labels, sorted_positions
+        )
+        
+        # Update order_status and stoploss_status in main_trendline_data
+        main_trendline['receiver']['order_status'] = order_status
+        main_trendline['receiver']['stoploss_status'] = stoploss_status
+        
+        print(f"Connected {main_trendline['type']} from sender (pos={main_trendline['sender']['position_number']}, "
+              f"color={main_trendline['sender']['candle_color']}) "
+              f"to receiver (pos={main_trendline['receiver']['position_number']}, "
+              f"color={main_trendline['receiver']['candle_color']}) "
+              f"with {'green' if main_trendline['type'] == 'PH-to-PL' else 'yellow'} main_trendline, "
+              f"order_type={main_trendline['receiver']['order_type']}, order_status={main_trendline['receiver']['order_status']}, "
+              f"stoploss_status={main_trendline['receiver']['stoploss_status']}, "
+              f"next parent: {main_trendline['receiver'].get('next_parent', 'invalid')}")
+    
+    # Save the main_trendline image
+    main_trendline_image_path = os.path.join(OUTPUT_FOLDER, f"{base_name}_parent_main_trendlines.png")
+    cv2.imwrite(main_trendline_image_path, img_main_trendlines)
+    print(f"Parent main_trendlines image saved to: {main_trendline_image_path}")
+    
+    return main_trendline_image_path, main_trendline_data

@@ -1,0 +1,70 @@
+import MetaTrader5 as mt5
+import pandas as pd
+from datetime import datetime
+import json
+import os
+
+# Configuration (use your provided credentials)
+LOGIN_ID = "101347351"
+PASSWORD = "@Techknowdge12#"
+SERVER = "DerivSVG-Server-02"
+MARKET_NAME = "Drift Switch Index 30"
+TIMEFRAME = mt5.TIMEFRAME_M5  # M5 timeframe
+
+# Initialize MT5 terminal
+if not mt5.initialize():
+    print("Failed to initialize MT5 terminal")
+    quit()
+
+# Log in to the MT5 account
+if not mt5.login(login=int(LOGIN_ID), password=PASSWORD, server=SERVER):
+    print(f"Failed to log in to MT5: {mt5.last_error()}")
+    mt5.shutdown()
+    quit()
+
+print("Successfully logged in to MT5")
+
+# Ensure the market symbol is available
+if not mt5.symbol_select(MARKET_NAME, True):
+    print(f"Failed to select market: {MARKET_NAME}, error: {mt5.last_error()}")
+    mt5.shutdown()
+    quit()
+
+# Fetch the last 300 candles (position 1 to 300)
+candles = mt5.copy_rates_from_pos(MARKET_NAME, TIMEFRAME, 1, 300)
+
+if candles is None or len(candles) < 300:
+    print(f"Failed to fetch candle data for {MARKET_NAME}, error: {mt5.last_error()}")
+    mt5.shutdown()
+    quit()
+
+# Convert to DataFrame for easy access
+df = pd.DataFrame(candles)
+
+# Create dictionary to store all candle data
+candle_data = {}
+
+# Extract details for each of the 300 candles
+for i in range(300):
+    candle = df.iloc[i]
+    candle_details = {
+        "Time": str(pd.to_datetime(candle['time'], unit='s')),
+        "Open": float(candle['open']),
+        "High": float(candle['high']),
+        "Low": float(candle['low']),
+        "Close": float(candle['close'])
+    }
+    # Label candles from Candle_300 (most recent) to Candle_1 (oldest)
+    candle_data[f"Candle_{300-i}"] = candle_details
+
+# Delete existing JSON file if it exists
+json_file_path = "candle_data.json"
+if os.path.exists(json_file_path):
+    os.remove(json_file_path)
+    print(f"Existing {json_file_path} deleted")
+
+# Save candle details to a new JSON file
+with open(json_file_path, "w") as json_file:
+    json.dump(candle_data, json_file, indent=4)
+
+print(f"Candle details saved to {json_file_path}")

@@ -1,0 +1,222 @@
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.support.ui import WebDriverWait, Select
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException, NoSuchElementException
+import time
+import traceback
+
+# Credentials
+LOGIN_ID = "101347351"
+PASSWORD = "@Techknowdge12#"
+SERVER = "DerivSVG-Server-02"
+URL = "https://mt5-real02-web-svg.deriv.com/terminal?login=101347351&server=DerivSVG-Server-02"
+
+# Initialize the Chrome WebDriver
+options = webdriver.ChromeOptions()
+options.add_argument("--start-maximized")
+options.add_argument("--disable-notifications")
+options.add_argument("--disable-autofill")  # Attempt to disable browser autofill
+driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+
+try:
+    # Step 1: Navigate to the Deriv MT5 web terminal
+    print("Navigating to Deriv MT5 web terminal")
+    driver.get(URL)
+
+    # Step 2: Wait for the page to fully load
+    print("Waiting for page to fully load")
+    WebDriverWait(driver, 30).until(
+        lambda d: d.execute_script("return document.readyState") == "complete"
+    )
+    print("Page document is fully loaded")
+
+    # Step 3: Handle login (if login form is present)
+    try:
+        print("Checking for login form")
+        # Wait for login button first to minimize delay later
+        login_button = WebDriverWait(driver, 5).until(
+            EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'Login') or contains(text(), 'Log in') or @type='submit']"))
+        )
+        # Wait for login and password fields to be clickable
+        login_field = WebDriverWait(driver, 5).until(
+            EC.element_to_be_clickable((By.XPATH, "//input[contains(@id, 'login') or contains(@name, 'login') or @type='text']"))
+        )
+        password_field = WebDriverWait(driver, 5).until(
+            EC.element_to_be_clickable((By.XPATH, "//input[contains(@id, 'password') or contains(@name, 'password') or @type='password']"))
+        )
+
+        print("Login form found, clearing and entering credentials")
+        # Disable autofill via JavaScript
+        driver.execute_script("arguments[0].setAttribute('autocomplete', 'off')", login_field)
+        driver.execute_script("arguments[0].setAttribute('autocomplete', 'off')", password_field)
+        login_field.clear()
+        login_field.send_keys(LOGIN_ID)
+        password_field.clear()
+        password_field.send_keys(PASSWORD)
+        print("Credentials entered")
+
+        # Try to find server field (input or dropdown)
+        server_field = None
+        try:
+            server_field = WebDriverWait(driver, 2).until(
+                EC.element_to_be_clickable((By.XPATH, "//input[contains(@id, 'server') or contains(@name, 'server')]"))
+            )
+            print("Server input field found")
+            server_field.clear()
+            server_field.send_keys(SERVER)
+        except (NoSuchElementException, TimeoutException):
+            print("Server input field not found, checking for dropdown")
+            try:
+                server_dropdown = Select(WebDriverWait(driver, 2).until(
+                    EC.presence_of_element_located((By.XPATH, "//select[contains(@id, 'server') or contains(@name, 'server')]"))
+                ))
+                server_dropdown.select_by_visible_text(SERVER)
+                print("Server dropdown selected")
+            except (NoSuchElementException, TimeoutException):
+                print("Server dropdown not found; assuming pre-filled or auto-selected")
+
+        # Wait 1 second after password input before clicking login
+        time.sleep(1)
+        print("Clicking login button")
+        login_button.click()
+        print("Login credentials submitted")
+
+        # Wait for login outcome (chart or error message)
+        print("Waiting for login to complete")
+        try:
+            error_message = WebDriverWait(driver, 5).until(
+                EC.presence_of_element_located((By.XPATH, "//*[contains(text(), 'Invalid') or contains(text(), 'invalid')]"))
+            )
+            print(f"Login error detected: {error_message.text}")
+            print("Browser will remain open for inspection. Press Ctrl+C to close the browser...")
+            while True:
+                time.sleep(3600)
+        except TimeoutException:
+            print("No login error message detected; checking for chart")
+
+        # Wait for chart to confirm successful login
+        WebDriverWait(driver, 60).until(
+            EC.presence_of_element_located((By.TAG_NAME, "canvas"))
+        )
+        print("Login successful, chart detected")
+    except TimeoutException:
+        print("No login form detected; assuming URL auto-authenticated")
+        WebDriverWait(driver, 60).until(
+            EC.presence_of_element_located((By.TAG_NAME, "canvas"))
+        )
+        print("Chart detected, proceeding")
+
+    # Step 4: Deactivate trade status window by clicking the trade icon button
+    print("Attempting to deactivate trade status window")
+    try:
+        # Try the original XPath first
+        trade_icon_button = WebDriverWait(driver, 5).until(
+            EC.element_to_be_clickable((By.XPATH, "//div[contains(@class, 'left-panel')]//div[@title='trade' and contains(@class, 'icon-button')]"))
+        )
+        print("Trade icon button found, clicking to deactivate trade status window")
+        trade_icon_button.click()
+        # Wait briefly to ensure the window closes
+        time.sleep(1)
+        print("Trade status window deactivation attempted")
+    except (TimeoutException, NoSuchElementException):
+        print("Original trade status icon button XPath not found; trying fallback XPath")
+        try:
+            # Fallback XPath with broader title check
+            trade_icon_button = WebDriverWait(driver, 5).until(
+                EC.element_to_be_clickable((By.XPATH, "//div[@title='trade' or @title='Trade']"))
+            )
+            print("Trade icon button found with fallback XPath, clicking to deactivate trade status window")
+            trade_icon_button.click()
+            time.sleep(1)
+            print("Trade status window deactivation attempted with fallback")
+        except (TimeoutException, NoSuchElementException):
+            print("Trade status icon button not found with fallback; assuming trade window is not active or cannot be toggled")
+
+    # Step 5: Wait for chart and trend line tool to be interactable
+    print("Waiting for chart and trend line tool to be ready")
+    try:
+        # Wait for the canvas to be clickable
+        chart_window = WebDriverWait(driver, 20).until(
+            EC.element_to_be_clickable((By.TAG_NAME, "canvas"))
+        )
+        # Verify the canvas has non-zero dimensions to ensure it's fully rendered
+        WebDriverWait(driver, 20).until(
+            lambda d: d.execute_script(
+                "return arguments[0].width > 0 && arguments[0].height > 0",
+                chart_window
+            )
+        )
+        print("Chart window is fully rendered and interactable")
+        # Add a delay to ensure chart data is fully loaded
+        time.sleep(3)
+
+        # Try finding trend line tool by class name, fall back to partial match
+        try:
+            trend_line_tool = WebDriverWait(driver, 10).until(
+                EC.element_to_be_clickable((By.CLASS_NAME, "target.svelte-sem83q"))
+            )
+            print("Trend line tool found with exact class name")
+            # Add a delay to ensure chart is stabilized before activating trend line tool
+            time.sleep(2)
+        except TimeoutException:
+            print("Exact class name 'target.svelte-sem83q' not found, trying partial match")
+            try:
+                trend_line_tool = WebDriverWait(driver, 10).until(
+                    EC.element_to_be_clickable((By.XPATH, "//*[contains(@class, 'target') and contains(@class, 'svelte')]"))
+                )
+                print("Trend line tool found with partial class match")
+                time.sleep(2)
+            except TimeoutException:
+                print("Trend line tool not found with partial match, trying broader match")
+                trend_line_tool = WebDriverWait(driver, 10).until(
+                    EC.element_to_be_clickable((By.XPATH, "//*[contains(@class, 'target')]"))
+                )
+                print("Trend line tool found with broader match")
+                time.sleep(2)
+    except TimeoutException as e:
+        print(f"Error finding chart or trend line tool: {e}")
+        traceback.print_exc()
+        print("Browser will remain open for inspection. Press Ctrl+C to close the browser...")
+        while True:
+            time.sleep(3600)
+
+    # Step 6: Perform trend line drawing
+    print("Performing trend line drawing")
+    actions = ActionChains(driver)
+    try:
+        # Click the trend line tool to activate it
+        actions.click(trend_line_tool).perform()
+        print("Trend line tool activated")
+
+        # Click and hold on chart, drag 100px right, release, and click to place
+        actions.move_to_element(chart_window).click_and_hold().move_by_offset(100, 0).release().click().perform()
+        print("Clicked and held, dragged 100 pixels right, released, and clicked to place trend line")
+        # Add a delay to ensure trend line drawing completes
+        time.sleep(2)
+    except Exception as e:
+        print(f"Error during trend line drawing: {e}")
+        traceback.print_exc()
+        print("Browser will remain open for inspection. Press Ctrl+C to close the browser...")
+        while True:
+            time.sleep(3600)
+
+    # Step 7: Stop here and keep browser open
+    print("Trade window deactivation and trend line drawing complete. Browser will remain open for inspection.")
+    print("Press Ctrl+C in the terminal to close the browser when ready.")
+    while True:
+        time.sleep(3600)  # Keep browser open indefinitely
+
+except KeyboardInterrupt:
+    print("Script interrupted by user. Closing browser.")
+    driver.quit()
+
+except Exception as e:
+    print(f"An unexpected error occurred: {e}")
+    traceback.print_exc()
+    print("Browser will remain open for inspection. Press Ctrl+C to close the browser...")
+    while True:
+        time.sleep(3600)
