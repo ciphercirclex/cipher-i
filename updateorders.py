@@ -1240,8 +1240,44 @@ def candleatorderentry_from_candlesafterbreakoutparent(market: str, timeframe: s
         log_and_print(f"Error processing executioner candle for {market} {timeframe}: {e}", "ERROR")
         return False
 
+def fetch_lot_size_and_risk(market: str, timeframe: str) -> tuple[Optional[float], Optional[float]]:
+    """Fetch lot size and allowed risk from ciphercontracts_lotsizeandrisk table."""
+    log_and_print(f"Fetching lot size and allowed risk for market={market}, timeframe={timeframe}", "INFO")
+    
+    # Convert timeframe to database format
+    db_timeframe = TIMEFRAME_DB_MAPPING.get(timeframe, timeframe)
+    
+    # Prepare SQL query
+    sql_query = f"""
+        SELECT lot_size, allowed_risk
+        FROM ciphercontracts_lotsizeandrisk
+        WHERE market = '{market}' AND timeframe = '{db_timeframe}'
+    """
+    
+    try:
+        # Execute query using connectwithinfinitydb
+        result = db.execute_query(sql_query)
+        if result.get('status') == 'success' and result.get('results'):
+            # Assuming the query returns a list of dictionaries
+            record = result['results'][0]
+            lot_size = float(record.get('lot_size')) if record.get('lot_size') is not None else None
+            allowed_risk = float(record.get('allowed_risk')) if record.get('allowed_risk') is not None else None
+            
+            if lot_size is None or allowed_risk is None:
+                log_and_print(f"No lot_size or allowed_risk found for {market} {timeframe}", "ERROR")
+                return None, None
+            
+            log_and_print(f"Retrieved lot_size={lot_size}, allowed_risk={allowed_risk} for {market} {timeframe}", "SUCCESS")
+            return lot_size, allowed_risk
+        else:
+            log_and_print(f"No records found for {market} {timeframe} in ciphercontracts_lotsizeandrisk table", "ERROR")
+            return None, None
+    except Exception as e:
+        log_and_print(f"Error fetching lot size and risk for {market} {timeframe}: {str(e)}", "ERROR")
+        return None, None
+
 def calculatemarkettimeframescontractspricewiththeirlotsizes(market: str, timeframe: str, json_dir: str) -> bool:
-    """Calculate contract prices with lot sizes and save to contractsorders.json."""
+    """Calculate contract prices with lot sizes from database and save to contractsorders.json."""
     log_and_print(f"Calculating contract prices with lot sizes for market={market}, timeframe={timeframe}", "INFO")
     
     # Define file paths
@@ -1266,31 +1302,10 @@ def calculatemarkettimeframescontractspricewiththeirlotsizes(market: str, timefr
         with open(pricecandle_json_path, 'r') as f:
             pricecandle_data = json.load(f)
         
-        # Lot sizes configuration
-        lot_sizes = {
-            "Volatility 75 Index": {"M5": 0.005, "M15": 0.002, "M30": 0.002, "H1": 0.002},
-            "Drift Switch Index 10": {"M5": 0.2, "M15": 0.1, "M30": 0.1, "H1": 0.1},
-            "Drift Switch Index 20": {"M5": 0.4, "M15": 0.3, "M30": 0.2, "H1": 0.2},
-            "Drift Switch Index 30": {"M5": 0.2, "M15": 0.19, "M30": 0.14, "H1": 0.1},
-            "Step Index": {"M5": 0.1},
-            "XAUUSD": {"M5": 0.01, "M15": 0.04, "M30": 0.03, "H1": 0.03},
-            "USDJPY": {"M5": 0.05, "M15": 0.04, "M30": 0.03, "H1": 0.03},
-            "USDCAD": {"M5": 0.05, "M15": 0.04, "M30": 0.03, "H1": 0.03},
-            "AUDUSD": {"M5": 0.05, "M15": 0.04, "M30": 0.03, "H1": 0.03},
-            "GBPUSD": {"M5": 0.05, "M15": 0.04, "M30": 0.03, "H1": 0.03},
-            "EURUSD": {"M5": 0.05, "M15": 0.04, "M30": 0.03, "H1": 0.03},
-            "NZDUSD": {"M5": 0.05, "M15": 0.04, "M30": 0.03, "H1": 0.03},
-            "US Tech 100": {"M5": 0.05, "M15": 0.04, "M30": 0.03, "H1": 0.03},
-            "Wall Street 30": {"M5": 0.05, "M15": 0.04, "M30": 0.03, "H1": 0.03}
-        }
-        
-        # Max risk
-        MAX_RISK = 3.99
-        
-        # Get lot size for the market and timeframe
-        lot_size = lot_sizes.get(market, {}).get(timeframe, None)
-        if lot_size is None:
-            log_and_print(f"No lot size defined for {market} {timeframe}", "ERROR")
+        # Fetch lot size and allowed risk from database
+        lot_size, allowed_risk = fetch_lot_size_and_risk(market, timeframe)
+        if lot_size is None or allowed_risk is None:
+            log_and_print(f"Failed to retrieve lot size or allowed risk for {market} {timeframe}", "ERROR")
             return False
         
         # Prepare output data
@@ -1312,14 +1327,14 @@ def calculatemarkettimeframescontractspricewiththeirlotsizes(market: str, timefr
             contract_status = "pending order" if executioner_candle.get("status") == "No executioner candle" else "executed"
             
             # Calculate new exit price
-            # Risk = lot_size * |entry_price - exit_price| = MAX_RISK
-            # For short: exit_price = entry_price + (MAX_RISK / lot_size)
-            # For long: exit_price = entry_price - (MAX_RISK / lot_size)
+            # Risk = lot_size * |entry_price - exit_price| = allowed_risk
+            # For short: exit_price = entry_price + (allowed_risk / lot_size)
+            # For long: exit_price = entry_price - (allowed_risk / lot_size)
             entry_price = float(order_holder_entry)
             if order_type == "short":
-                exit_price = entry_price + (MAX_RISK / lot_size)
+                exit_price = entry_price + (allowed_risk / lot_size)
             else:  # long
-                exit_price = entry_price - (MAX_RISK / lot_size)
+                exit_price = entry_price - (allowed_risk / lot_size)
             
             # Get order holder data from pricecandle.json for timestamp and position
             order_holder = pricecandle_trendline.get("order_holder", {})
@@ -1370,7 +1385,6 @@ def calculatemarkettimeframescontractspricewiththeirlotsizes(market: str, timefr
         log_and_print(f"Error processing contracts orders for {market} {timeframe}: {e}", "ERROR")
         return False
 
-
 def process_market_timeframe(market: str, timeframe: str) -> bool:
     """Process a single market and timeframe combination."""
     try:
@@ -1411,7 +1425,7 @@ def process_market_timeframe(market: str, timeframe: str) -> bool:
             log_and_print(f"Failed to process executioner candle for {market} {timeframe}", "ERROR")
             # Continue processing even if this fails, as it may not be critical
 
-        # Calculate contract prices with lot sizes
+        # Calculate contract prices with lot sizes using database
         if not calculatemarkettimeframescontractspricewiththeirlotsizes(market, timeframe, json_dir):
             log_and_print(f"Failed to calculate contract prices with lot sizes for {market} {timeframe}", "ERROR")
             # Continue processing even if this fails, as it may not be critical
@@ -1424,6 +1438,7 @@ def process_market_timeframe(market: str, timeframe: str) -> bool:
         return False
     finally:
         mt5.shutdown()
+
 
 def main():
     """Main function to process all markets and timeframes."""
