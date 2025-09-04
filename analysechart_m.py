@@ -7,7 +7,7 @@ import multiprocessing
 
 # Path configuration
 BASE_INPUT_FOLDER = r"C:\xampp\htdocs\CIPHER\cipher i\bouncestream\chart\fetched"
-BASE_OUTPUT_FOLDER = r"C:\xampp\htdocs\CIPHER\cipher i\bouncestream\chart\processing\main"
+BASE_OUTPUT_FOLDER = r"C:\xampp\htdocs\CIPHER\cipher i\bouncestream\chart\processing"
 
 # Market names and timeframes from fetchmarket.py
 MARKETS = [
@@ -220,46 +220,97 @@ def remove_horizontal_lines(img_enhanced, mask_red, mask_green, width):
     return img_enhanced, mask_red, mask_green, mask
 
 def load_candlesamountinbetween(market, timeframe):
-    """Load the 'new number position for matched candle data' value from candlesamountinbetween.json."""
+    """Load the 'new number position for matched candle data' value from candlesamountinbetween.json and save it to loadednumber.json with source (including raw value) and any errors."""
+    errors = []  # List to store any errors or issues
+    start_number = 1  # Default value if file is missing or invalid
+    raw_value = "not found"  # Default raw value if file or field is missing
+    source = f"{market.replace(' ', '_')}_{timeframe.lower()} candlesamountinbetween (new number position for matched candle data: {raw_value})"
+    
     try:
         market_folder_name = market.replace(" ", "_")
         json_path = os.path.join(
-            r"C:\xampp\htdocs\CIPHER\cipher i\bouncestream\chart\orders\main",
+            r"C:\xampp\htdocs\CIPHER\cipher i\bouncestream\chart\orders",
             market_folder_name,
             timeframe.lower(),
             "candlesamountinbetween.json"
         )
         if not os.path.exists(json_path):
+            errors.append(f"candlesamountinbetween.json not found for {market} timeframe {timeframe}: {json_path}")
             print(f"candlesamountinbetween.json not found for {market} timeframe {timeframe}: {json_path}")
-            return 1  # Default to 1 if file is missing
-        with open(json_path, 'r') as f:
-            data = json.load(f)
-        new_number_position = data.get("new number position for matched candle data", "1")
+        else:
+            try:
+                with open(json_path, 'r') as f:
+                    data = json.load(f)
+                raw_value = data.get("new number position for matched candle data", "not found")
+                source = f"{market.replace(' ', '_')}_{timeframe.lower()} candlesamountinbetween (new number position for matched candle data: {raw_value})"
+                try:
+                    start_number = int(raw_value)
+                    if start_number < 1:
+                        errors.append(f"Invalid 'new number position for matched candle data' value {raw_value} for {market} timeframe {timeframe}, defaulting to 1")
+                        print(f"Invalid 'new number position for matched candle data' value {raw_value} for {market} timeframe {timeframe}, defaulting to 1")
+                        start_number = 1
+                    else:
+                        print(f"Starting number for {market} timeframe {timeframe}: {start_number}")
+                except ValueError:
+                    errors.append(f"Invalid 'new number position for matched candle data' value {raw_value} for {market} timeframe {timeframe}, defaulting to 1")
+                    print(f"Invalid 'new number position for matched candle data' value {raw_value} for {market} timeframe {timeframe}, defaulting to 1")
+                    start_number = 1
+            except Exception as e:
+                errors.append(f"Error reading candlesamountinbetween.json for {market} timeframe {timeframe}: {str(e)}")
+                print(f"Error reading candlesamountinbetween.json for {market} timeframe {timeframe}: {str(e)}")
+                start_number = 1
+
+        # Save loadednumber.json with start number, source, and errors
+        loadednumber_data = {
+            "start_number": start_number,
+            "from": source,
+            "errors": errors if errors else ["No errors encountered"]
+        }
+        loadednumber_json_path = os.path.join(OUTPUT_FOLDER, "loadednumber.json")
         try:
-            start_number = int(new_number_position)
-            if start_number < 1:
-                print(f"Invalid 'new number position for matched candle data' value {new_number_position} for {market} timeframe {timeframe}, defaulting to 1")
-                return 1
-            print(f"Starting number for {market} timeframe {timeframe}: {start_number}")
-            return start_number
-        except ValueError:
-            print(f"Invalid 'new number position for matched candle data' value {new_number_position} for {market} timeframe {timeframe}, defaulting to 1")
-            return 1
+            with open(loadednumber_json_path, 'w') as f:
+                json.dump(loadednumber_data, f, indent=4)
+            print(f"Loaded number data saved to: {loadednumber_json_path}")
+        except Exception as e:
+            errors.append(f"Error saving loadednumber.json: {str(e)}")
+            print(f"Error saving loadednumber.json: {str(e)}")
+
+        return start_number
+
     except Exception as e:
-        print(f"Error reading candlesamountinbetween.json for {market} timeframe {timeframe}: {e}")
-        return 1  # Default to 1 on error
+        errors.append(f"Critical error in load_candlesamountinbetween: {str(e)}")
+        print(f"Critical error in load_candlesamountinbetween: {str(e)}")
+        # Save loadednumber.json even if a critical error occurs
+        loadednumber_data = {
+            "start_number": start_number,
+            "from": source,
+            "errors": errors if errors else ["Critical error occurred"]
+        }
+        loadednumber_json_path = os.path.join(OUTPUT_FOLDER, "loadednumber.json")
+        try:
+            with open(loadednumber_json_path, 'w') as f:
+                json.dump(loadednumber_data, f, indent=4)
+            print(f"Loaded number data saved to: {loadednumber_json_path}")
+        except Exception as save_e:
+            print(f"Error saving loadednumber.json after critical error: {str(save_e)}")
+        return start_number
 
 def detect_candlestick_contours(img_enhanced, mask_red, mask_green, start_number):
-    """Detect and draw contours for red and green candlesticks, draw one white arrow per unique candlestick position pointing downward to the top with a vertical line to the image top, and collect arrow data for JSON output."""
-    img_contours = img_enhanced.copy()
-    height, width = img_contours.shape[:2]
-    contours_red, _ = cv2.findContours(mask_red, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    red_count = 0
-    red_positions = []
-    all_candlestick_positions = []
+    """Detect and draw contours for red and green candlesticks, draw one white arrow per unique candlestick position pointing downward to the top with a vertical line to the image top, and collect arrow data for JSON output. Save labelstart.json with start number and any errors."""
+    errors = []  # List to store any errors or issues
+    try:
+        img_contours = img_enhanced.copy()
+        height, width = img_contours.shape[:2]
+        contours_red, _ = cv2.findContours(mask_red, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        red_count = 0
+        red_positions = []
+        all_candlestick_positions = []
 
-    for contour in contours_red:
-        if cv2.contourArea(contour) >= 0.01:
+        for contour in contours_red:
+            area = cv2.contourArea(contour)
+            if area < 0.01:
+                errors.append(f"Skipped red contour with area {area} (below threshold 0.01)")
+                continue
             red_count += 1
             x, y, w, h = cv2.boundingRect(contour)
             center_x = x + w // 2
@@ -268,12 +319,15 @@ def detect_candlestick_contours(img_enhanced, mask_red, mask_green, start_number
             red_positions.append((center_x, top_y, bottom_y))
             all_candlestick_positions.append((center_x, top_y, bottom_y, 'red', contour))
 
-    contours_green, _ = cv2.findContours(mask_green, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    green_count = 0
-    green_positions = []
+        contours_green, _ = cv2.findContours(mask_green, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        green_count = 0
+        green_positions = []
 
-    for contour in contours_green:
-        if cv2.contourArea(contour) >= 0.01:
+        for contour in contours_green:
+            area = cv2.contourArea(contour)
+            if area < 0.01:
+                errors.append(f"Skipped green contour with area {area} (below threshold 0.01)")
+                continue
             green_count += 1
             x, y, w, h = cv2.boundingRect(contour)
             center_x = x + w // 2
@@ -282,45 +336,83 @@ def detect_candlestick_contours(img_enhanced, mask_red, mask_green, start_number
             green_positions.append((center_x, top_y, bottom_y))
             all_candlestick_positions.append((center_x, top_y, bottom_y, 'green', contour))
 
-    unique_positions = []
-    seen_x = {}
-    for pos in sorted(all_candlestick_positions, key=lambda x: x[0]):
-        center_x, top_y, bottom_y, color, contour = pos
-        if center_x not in seen_x:
-            seen_x[center_x] = pos
-            unique_positions.append(pos)
-        else:
-            existing_pos = seen_x[center_x]
-            existing_contour = existing_pos[4]
-            if cv2.contourArea(contour) > cv2.contourArea(existing_contour):
-                unique_positions[unique_positions.index(existing_pos)] = pos
+        # Check if no contours were detected
+        if red_count == 0 and green_count == 0:
+            errors.append("No valid red or green candlestick contours detected")
+
+        unique_positions = []
+        seen_x = {}
+        for pos in sorted(all_candlestick_positions, key=lambda x: x[0]):
+            center_x, top_y, bottom_y, color, contour = pos
+            if center_x not in seen_x:
                 seen_x[center_x] = pos
+                unique_positions.append(pos)
+            else:
+                existing_pos = seen_x[center_x]
+                existing_contour = existing_pos[4]
+                if cv2.contourArea(contour) > cv2.contourArea(existing_contour):
+                    unique_positions[unique_positions.index(existing_pos)] = pos
+                    seen_x[center_x] = pos
 
-    for center_x, top_y, bottom_y, color, contour in unique_positions:
-        contour_color = (255, 0, 0) if color == 'red' else (255, 255, 255)
-        cv2.drawContours(img_contours, [contour], -1, contour_color, 1)
-        arrow_start = (center_x, max(0, top_y - 30))
-        arrow_end = (center_x, top_y)
-        cv2.arrowedLine(img_contours, arrow_start, arrow_end, (255, 255, 255), 1, tipLength=0.3)
-        cv2.line(img_contours, arrow_end, (center_x, 0), (255, 255, 255), 1)
+        for center_x, top_y, bottom_y, color, contour in unique_positions:
+            contour_color = (255, 0, 0) if color == 'red' else (255, 255, 255)
+            try:
+                cv2.drawContours(img_contours, [contour], -1, contour_color, 1)
+                arrow_start = (center_x, max(0, top_y - 30))
+                arrow_end = (center_x, top_y)
+                cv2.arrowedLine(img_contours, arrow_start, arrow_end, (255, 255, 255), 1, tipLength=0.3)
+                cv2.line(img_contours, arrow_end, (center_x, 0), (255, 255, 255), 1)
+            except Exception as e:
+                errors.append(f"Error drawing contour or arrow at x={center_x}, y={top_y}: {str(e)}")
 
-    arrow_data = []
-    arrow_count = 0
-    for i, (center_x, top_y, bottom_y, color, _) in enumerate(reversed(unique_positions[:-1]), start=start_number):
-        arrow_count += 1
-        arrow_data.append({
-            "arrow_number": i,
-            "pointing_on_candle_color": color,
-            "x": center_x
-        })
+        arrow_data = []
+        arrow_count = 0
+        for i, (center_x, top_y, bottom_y, color, _) in enumerate(reversed(unique_positions[:-1]), start=start_number):
+            arrow_count += 1
+            arrow_data.append({
+                "arrow_number": i,
+                "pointing_on_candle_color": color,
+                "x": center_x
+            })
 
-    print(f"Red candlesticks detected: {red_count}")
-    print(f"Green candlesticks detected: {green_count}")
-    print(f"Total candlesticks detected: {red_count + green_count}")
-    print(f"Unique candlestick positions: {len(unique_positions)}")
-    print(f"Total arrows: {arrow_count}, starting from number {start_number}")
+        print(f"Red candlesticks detected: {red_count}")
+        print(f"Green candlesticks detected: {green_count}")
+        print(f"Total candlesticks detected: {red_count + green_count}")
+        print(f"Unique candlestick positions: {len(unique_positions)}")
+        print(f"Total arrows: {arrow_count}, starting from number {start_number}")
 
-    return img_contours, red_positions, green_positions, arrow_data
+        # Save labelstart.json with start number and errors
+        labelstart_data = {
+            "start_number": start_number,
+            "errors": errors if errors else ["No errors encountered"]
+        }
+        labelstart_json_path = os.path.join(OUTPUT_FOLDER, "labelstart.json")
+        try:
+            with open(labelstart_json_path, 'w') as f:
+                json.dump(labelstart_data, f, indent=4)
+            print(f"Label start data saved to: {labelstart_json_path}")
+        except Exception as e:
+            errors.append(f"Error saving labelstart.json: {str(e)}")
+            print(f"Error saving labelstart.json: {str(e)}")
+
+        return img_contours, red_positions, green_positions, arrow_data
+
+    except Exception as e:
+        errors.append(f"Critical error in detect_candlestick_contours: {str(e)}")
+        print(f"Critical error in detect_candlestick_contours: {str(e)}")
+        # Save labelstart.json even if a critical error occurs
+        labelstart_data = {
+            "start_number": start_number,
+            "errors": errors if errors else ["Critical error occurred"]
+        }
+        labelstart_json_path = os.path.join(OUTPUT_FOLDER, "labelstart.json")
+        try:
+            with open(labelstart_json_path, 'w') as f:
+                json.dump(labelstart_data, f, indent=4)
+            print(f"Label start data saved to: {labelstart_json_path}")
+        except Exception as save_e:
+            print(f"Error saving labelstart.json after critical error: {str(save_e)}")
+        return img_contours, [], [], []  # Return empty data to allow processing to continue
 
 def save_arrow_data_to_json(arrow_data, output_folder):
     """Save the arrow data to a JSON file named after the market in the OUTPUT_FOLDER."""
@@ -563,8 +655,6 @@ def identify_parent_highs_and_lows(img_enhanced, all_positions, base_name, left_
     print(f"Parent highs and lows labeled image saved to: {parent_labeled_image_path}")
     
     return parent_labeled_image_path, pl_labels, ph_labels
-
-
 
 def controlleftandrighthighsandlows(left, right):
     """Control the number of highs/lows required to the left and right for PH/PL identification."""

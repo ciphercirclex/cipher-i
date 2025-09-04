@@ -152,9 +152,8 @@ def fetch_candle_data(market: str, timeframe: str) -> tuple[Optional[Dict], Opti
 
     df = pd.DataFrame(candles)
     candle_data = {}
-    for i in range(len(candles)):
+    for i in range(300):
         candle = df.iloc[i]
-        position = 300 - i  # Position 1 is most recent completed candle, 300 is oldest
         candle_details = {
             "Time": str(pd.to_datetime(candle['time'], unit='s')),
             "Open": float(candle['open']),
@@ -162,11 +161,7 @@ def fetch_candle_data(market: str, timeframe: str) -> tuple[Optional[Dict], Opti
             "Low": float(candle['low']),
             "Close": float(candle['close'])
         }
-        candle_data[f"Candle_{position}"] = candle_details
-        log_and_print(f"Stored candle for position {position}: Time={candle_details['Time']}, Open={candle_details['Open']}, High={candle_details['High']}, Low={candle_details['Low']}, Close={candle_details['Close']}", "DEBUG")
-
-    # Verify the first few candles for correct indexing
-    log_and_print(f"Verifying candle indexing for {market} {timeframe}: Candle_1 Time={candle_data.get('Candle_1', {}).get('Time', 'N/A')}, Candle_2 Time={candle_data.get('Candle_2', {}).get('Time', 'N/A')}", "DEBUG")
+        candle_data[f"Candle_{300-i}"] = candle_details
 
     # Save candle data to JSON
     formatted_market_name = market.replace(" ", "_")
@@ -181,7 +176,7 @@ def fetch_candle_data(market: str, timeframe: str) -> tuple[Optional[Dict], Opti
     try:
         with open(json_file_path, "w") as json_file:
             json.dump(candle_data, json_file, indent=4)
-        log_and_print(f"Candle details saved to {json_file_path} with {len(candle_data)} candles", "SUCCESS")
+        log_and_print(f"Candle details saved to {json_file_path}", "SUCCESS")
     except Exception as e:
         log_and_print(f"Error saving candle data for {market} {timeframe}: {e}", "ERROR")
         mt5.shutdown()
@@ -1235,50 +1230,6 @@ def getorderholderpriceswithlotsizeandrisk(market: str, timeframe: str, json_dir
         return False
     
     try:
-        # Initialize MT5 to fetch market-specific data
-        mt5.shutdown()
-        for attempt in range(MAX_RETRIES):
-            if mt5.initialize(path=TERMINAL_PATH, timeout=60000):
-                log_and_print(f"Successfully initialized MT5 for {market} {timeframe}", "SUCCESS")
-                break
-            error_code, error_message = mt5.last_error()
-            log_and_print(f"Attempt {attempt + 1}/{MAX_RETRIES}: Failed to initialize MT5 for {market} {timeframe}. Error: {error_code}, {error_message}", "ERROR")
-            time.sleep(RETRY_DELAY)
-        else:
-            log_and_print(f"Failed to initialize MT5 for {market} {timeframe} after {MAX_RETRIES} attempts", "ERROR")
-            return False
-
-        # Login to MT5
-        for attempt in range(MAX_RETRIES):
-            if mt5.login(login=int(LOGIN_ID), password=PASSWORD, server=SERVER, timeout=60000):
-                log_and_print(f"Successfully logged in to MT5 for {market} {timeframe}", "SUCCESS")
-                break
-            error_code, error_message = mt5.last_error()
-            log_and_print(f"Attempt {attempt + 1}/{MAX_RETRIES}: Failed to log in to MT5 for {market} {timeframe}. Error: {error_code}, {error_message}", "ERROR")
-            time.sleep(RETRY_DELAY)
-        else:
-            log_and_print(f"Failed to log in to MT5 for {market} {timeframe} after {MAX_RETRIES} attempts", "ERROR")
-            mt5.shutdown()
-            return False
-
-        # Select market symbol
-        if not mt5.symbol_select(market, True):
-            log_and_print(f"Failed to select market: {market}, error: {mt5.last_error()}", "ERROR")
-            mt5.shutdown()
-            return False
-
-        # Fetch symbol info for pip size and contract size
-        symbol_info = mt5.symbol_info(market)
-        if not symbol_info:
-            log_and_print(f"Failed to fetch symbol info for {market}", "ERROR")
-            mt5.shutdown()
-            return False
-
-        # Determine pip size and decimal places
-        pip_size = symbol_info.point  # MT5 point size (e.g., 0.0001 for EURUSD, 0.01 for USDJPY)
-        digits = symbol_info.digits   # Number of decimal places (e.g., 5 for EURUSD, 3 for USDJPY)
-        contract_size = symbol_info.trade_contract_size  # Contract size (e.g., 100,000 for forex)
-
         # Load pricecandle.json
         with open(pricecandle_json_path, 'r') as f:
             pricecandle_data = json.load(f)
@@ -1289,7 +1240,7 @@ def getorderholderpriceswithlotsizeandrisk(market: str, timeframe: str, json_dir
         
         # Initialize output data and deduplication set
         calculated_prices = []
-        seen_order_holder_positions = set()
+        seen_order_holder_positions = set()  # Track unique order_holder_position to prevent duplicates
         
         # Process each trendline in pricecandle.json
         for trendline in pricecandle_data:
@@ -1338,88 +1289,50 @@ def getorderholderpriceswithlotsizeandrisk(market: str, timeframe: str, json_dir
             # Extract lot size and allowed risk
             lot_size = float(matching_lot_size.get("lot_size", 0))
             allowed_risk = float(matching_lot_size.get("allowed_risk", 0))
-            if lot_size <= 0 or allowed_risk <= 0:
+            if lot_size == 0 or allowed_risk == 0:
                 log_and_print(f"Invalid lot_size {lot_size} or allowed_risk {allowed_risk} for trendline {trendline_type} in {market} {timeframe}", "WARNING")
                 continue
             
-            # Calculate pip value (in account currency, assuming USD)
-            # For forex pairs, pip_value = lot_size * contract_size * pip_size
-            pip_value = lot_size * contract_size * pip_size
-            # Adjust for JPY pairs or non-USD quote currencies
-            if market.endswith("JPY"):
-                current_price = mt5.symbol_info_tick(market).bid
-                if current_price > 0:
-                    pip_value = pip_value / current_price  # Convert to USD
-                else:
-                    log_and_print(f"Failed to fetch current price for {market} to adjust pip value", "WARNING")
-                    pip_value = lot_size * 10  # Fallback: Assume $10 per pip for 1 lot
+            # Calculate pip value (assumes forex-like instruments; adjust if needed for indices)
+            pip_value = 0.0001
+            if "Index" in market:
+                pip_value = 1.0  # Adjust for indices like Volatility 75 Index
             
-            # Calculate risk in pips: allowed_risk (USD) / pip_value (USD per pip)
-            risk_in_pips = allowed_risk / pip_value if pip_value != 0 else 0
-            if risk_in_pips <= 0:
-                log_and_print(f"Invalid risk_in_pips {risk_in_pips} for trendline {trendline_type} in {market} {timeframe}", "WARNING")
-                continue
+            # Calculate price movement for allowed risk
+            risk_in_pips = allowed_risk / (lot_size * pip_value)
             
-            # Calculate exit_price, 1:0.5_price, 1:1_price, 1:2_price, and profit_price (1:3)
-            reward_to_risk_ratios = {
-                "1:0.5": 0.5,
-                "1:1": 1,
-                "1:2": 2,
-                "1:3": 3
-            }
+            # Calculate exit_price and profit_price
             if order_type == "short":
-                exit_price = entry_price + (risk_in_pips * pip_size)  # Stop loss above entry
-                price_1_0_5 = entry_price - (risk_in_pips * reward_to_risk_ratios["1:0.5"] * pip_size)  # 1:0.5 take profit below
-                price_1_1 = entry_price - (risk_in_pips * reward_to_risk_ratios["1:1"] * pip_size)  # 1:1 take profit below
-                price_1_2 = entry_price - (risk_in_pips * reward_to_risk_ratios["1:2"] * pip_size)  # 1:2 take profit below
-                profit_price = entry_price - (risk_in_pips * reward_to_risk_ratios["1:3"] * pip_size)  # 1:3 take profit below
+                exit_price = entry_price + risk_in_pips * pip_value  # Stop loss above entry for short
+                profit_price = entry_price - (3 * risk_in_pips * pip_value)  # 3:1 reward-to-risk ratio
             else:  # order_type == "long"
-                exit_price = entry_price - (risk_in_pips * pip_size)  # Stop loss below entry
-                price_1_0_5 = entry_price + (risk_in_pips * reward_to_risk_ratios["1:0.5"] * pip_size)  # 1:0.5 take profit above
-                price_1_1 = entry_price + (risk_in_pips * reward_to_risk_ratios["1:1"] * pip_size)  # 1:1 take profit above
-                price_1_2 = entry_price + (risk_in_pips * reward_to_risk_ratios["1:2"] * pip_size)  # 1:2 take profit above
-                profit_price = entry_price + (risk_in_pips * reward_to_risk_ratios["1:3"] * pip_size)  # 1:3 take profit above
+                exit_price = entry_price - risk_in_pips * pip_value  # Stop loss below entry for long
+                profit_price = entry_price + (3 * risk_in_pips * pip_value)  # 3:1 reward-to-risk ratio
             
-            # Round prices to market-specific decimal places
-            entry_price = round(entry_price, digits)
-            exit_price = round(exit_price, digits)
-            price_1_0_5 = round(price_1_0_5, digits)
-            price_1_1 = round(price_1_1, digits)
-            price_1_2 = round(price_1_2, digits)
-            profit_price = round(profit_price, digits)
-            
-            # Validate calculated prices
-            if exit_price <= 0 or price_1_0_5 <= 0 or price_1_1 <= 0 or price_1_2 <= 0 or profit_price <= 0:
-                log_and_print(f"Invalid prices: exit={exit_price}, 1:0.5={price_1_0_5}, 1:1={price_1_1}, 1:2={price_1_2}, profit={profit_price} for trendline {trendline_type} in {market} {timeframe}", "ERROR")
-                continue
+            # Round prices to appropriate decimal places
+            decimal_places = 2 if "Index" in market else 5
+            entry_price = round(entry_price, decimal_places)
+            exit_price = round(exit_price, decimal_places)
+            profit_price = round(profit_price, decimal_places)
             
             # Prepare calculated price entry
             calculated_entry = {
                 "id": matching_lot_size.get("id"),
                 "market": market,
                 "pair": matching_lot_size.get("pair"),
-                "timeframe": timeframe,
+                "timeframe": timeframe,  # Use script timeframe, not DB format
                 "entry_price": entry_price,
                 "exit_price": exit_price,
-                "1:0.5_price": price_1_0_5,
-                "1:1_price": price_1_1,
-                "1:2_price": price_1_2,
                 "profit_price": profit_price,
-                "lot_size": lot_size,
                 "order_type": "sell_limit" if order_type == "short" else "buy_limit",
                 "trendline_type": trendline_type,
-                "order_holder_position": order_holder_position,
-                "pip_size": pip_size,
-                "risk_in_pips": round(risk_in_pips, 2),
-                "pip_value": round(pip_value, 4)
+                "order_holder_position": order_holder_position
             }
             
             calculated_prices.append(calculated_entry)
             log_and_print(
                 f"Calculated prices for trendline {trendline_type}: entry={entry_price}, exit={exit_price}, "
-                f"1:0.5={price_1_0_5}, 1:1={price_1_1}, 1:2={price_1_2}, profit={profit_price}, "
-                f"lot_size={lot_size}, order_type={calculated_entry['order_type']}, "
-                f"risk_in_pips={risk_in_pips}, pip_value={pip_value} in {market} {timeframe}",
+                f"profit={profit_price}, order_type={calculated_entry['order_type']} in {market} {timeframe}",
                 "DEBUG"
             )
         
@@ -1434,11 +1347,9 @@ def getorderholderpriceswithlotsizeandrisk(market: str, timeframe: str, json_dir
                 with open(output_json_path, 'w') as f:
                     json.dump([], f, indent=4)
                 log_and_print(f"Empty calculatedprices.json saved to {output_json_path} for {market} {timeframe}", "SUCCESS")
-                mt5.shutdown()
                 return True
             except Exception as e:
                 log_and_print(f"Error saving empty calculatedprices.json for {market} {timeframe}: {str(e)}", "ERROR")
-                mt5.shutdown()
                 return False
         
         try:
@@ -1448,317 +1359,14 @@ def getorderholderpriceswithlotsizeandrisk(market: str, timeframe: str, json_dir
                 f"Saved {len(calculated_prices)} calculated price entries to {output_json_path} for {market} {timeframe}",
                 "SUCCESS"
             )
-            mt5.shutdown()
             return True
         except Exception as e:
             log_and_print(f"Error saving calculatedprices.json for {market} {timeframe}: {str(e)}", "ERROR")
-            mt5.shutdown()
             return False
     
     except Exception as e:
         log_and_print(f"Error processing order holder prices for {market} {timeframe}: {str(e)}", "ERROR")
-        mt5.shutdown()
         return False
-
-def BreakevenStopandProfitTracker(market: str, timeframe: str, json_dir: str) -> bool:
-    """Track candles after executioner candle to determine if stoploss, breakeven (1:0.5, 1:1, 1:2), or profit price is hit first."""
-    log_and_print(f"Tracking breakeven, stoploss, and profit for market={market}, timeframe={timeframe}", "INFO")
-    
-    # Define file paths
-    pricecandle_json_path = os.path.join(json_dir, "pricecandle.json")
-    calculatedprices_json_path = os.path.join(json_dir, "calculatedprices.json")
-    candlesafterbreakoutparent_json_path = os.path.join(json_dir, "candlesafterbreakoutparent.json")
-    
-    # Check if required JSON files exist
-    if not os.path.exists(pricecandle_json_path):
-        log_and_print(f"pricecandle.json not found at {pricecandle_json_path} for {market} {timeframe}", "ERROR")
-        return False
-    if not os.path.exists(calculatedprices_json_path):
-        log_and_print(f"calculatedprices.json not found at {calculatedprices_json_path} for {market} {timeframe}", "ERROR")
-        return False
-    if not os.path.exists(candlesafterbreakoutparent_json_path):
-        log_and_print(f"candlesafterbreakoutparent.json not found at {candlesafterbreakoutparent_json_path} for {market} {timeframe}", "ERROR")
-        return False
-    
-    try:
-        # Load pricecandle.json
-        with open(pricecandle_json_path, 'r') as f:
-            pricecandle_data = json.load(f)
-        
-        # Load calculatedprices.json
-        with open(calculatedprices_json_path, 'r') as f:
-            calculatedprices_data = json.load(f)
-        
-        # Load candlesafterbreakoutparent.json
-        with open(candlesafterbreakoutparent_json_path, 'r') as f:
-            candlesafterbreakoutparent_data = json.load(f)
-        
-        # Prepare updated pricecandle data
-        updated_pricecandle_data = []
-        
-        # Process each trendline in pricecandle.json
-        for pricecandle_trendline in pricecandle_data:
-            trendline_type = pricecandle_trendline.get("type")
-            executioner_candle = pricecandle_trendline.get("executioner candle", {})
-            order_holder_position = pricecandle_trendline.get("order_holder", {}).get("position_number")
-            order_type = pricecandle_trendline.get("receiver", {}).get("order_type", "").lower()
-            
-            # Skip if no valid executioner candle
-            if executioner_candle.get("status") != "Candle found at order holder entry level":
-                log_and_print(f"No valid executioner candle for trendline {trendline_type} in {market} {timeframe}", "INFO")
-                pricecandle_trendline["stoploss candle"] = {"status": "No executioner candle"}
-                pricecandle_trendline["1:0.5 candle"] = {"status": "No executioner candle"}
-                pricecandle_trendline["1:1 candle"] = {"status": "No executioner candle"}
-                pricecandle_trendline["1:2 candle"] = {"status": "No executioner candle"}
-                pricecandle_trendline["profit candle"] = {"status": "No executioner candle"}
-                pricecandle_trendline["contract status summary"] = {"contract status": "No executioner candle"}
-                updated_pricecandle_data.append(pricecandle_trendline)
-                continue
-            
-            # Find matching calculatedprices entry
-            matching_calculated = None
-            for calc_entry in calculatedprices_data:
-                if calc_entry.get("trendline_type") == trendline_type and calc_entry.get("order_holder_position") == order_holder_position:
-                    matching_calculated = calc_entry
-                    break
-            
-            if not matching_calculated:
-                log_and_print(f"No matching calculated prices found for trendline {trendline_type} in {market} {timeframe}", "WARNING")
-                pricecandle_trendline["stoploss candle"] = {"status": "No calculated prices"}
-                pricecandle_trendline["1:0.5 candle"] = {"status": "No calculated prices"}
-                pricecandle_trendline["1:1 candle"] = {"status": "No calculated prices"}
-                pricecandle_trendline["1:2 candle"] = {"status": "No calculated prices"}
-                pricecandle_trendline["profit candle"] = {"status": "No calculated prices"}
-                pricecandle_trendline["contract status summary"] = {"contract status": "No calculated prices"}
-                updated_pricecandle_data.append(pricecandle_trendline)
-                continue
-            
-            # Get price levels
-            entry_price = matching_calculated.get("entry_price")
-            exit_price = matching_calculated.get("exit_price")
-            price_1_0_5 = matching_calculated.get("1:0.5_price")
-            price_1_1 = matching_calculated.get("1:1_price")
-            price_1_2 = matching_calculated.get("1:2_price")
-            profit_price = matching_calculated.get("profit_price")
-            
-            # Validate price levels
-            if any(price <= 0 for price in [entry_price, exit_price, price_1_0_5, price_1_1, price_1_2, profit_price]):
-                log_and_print(f"Invalid price levels for trendline {trendline_type} in {market} {timeframe}", "ERROR")
-                pricecandle_trendline["stoploss candle"] = {"status": "Invalid price levels"}
-                pricecandle_trendline["1:0.5 candle"] = {"status": "Invalid price levels"}
-                pricecandle_trendline["1:1 candle"] = {"status": "Invalid price levels"}
-                pricecandle_trendline["1:2 candle"] = {"status": "Invalid price levels"}
-                pricecandle_trendline["profit candle"] = {"status": "Invalid price levels"}
-                pricecandle_trendline["contract status summary"] = {"contract status": "Invalid price levels"}
-                updated_pricecandle_data.append(pricecandle_trendline)
-                continue
-            
-            # Find matching trendline in candlesafterbreakoutparent.json
-            matching_cabp_trendline = None
-            for cabp_trendline in candlesafterbreakoutparent_data:
-                cabp_trendline_info = cabp_trendline.get("trendline", {})
-                if (cabp_trendline_info.get("type") == trendline_type and 
-                    cabp_trendline_info.get("Order_holder_entry") == entry_price):
-                    matching_cabp_trendline = cabp_trendline
-                    break
-            
-            if not matching_cabp_trendline:
-                log_and_print(f"No matching trendline found in candlesafterbreakoutparent.json for {trendline_type} in {market} {timeframe}", "WARNING")
-                pricecandle_trendline["stoploss candle"] = {"status": "No matching trendline"}
-                pricecandle_trendline["1:0.5 candle"] = {"status": "No matching trendline"}
-                pricecandle_trendline["1:1 candle"] = {"status": "No matching trendline"}
-                pricecandle_trendline["1:2 candle"] = {"status": "No matching trendline"}
-                pricecandle_trendline["profit candle"] = {"status": "No matching trendline"}
-                pricecandle_trendline["contract status summary"] = {"contract status": "No matching trendline"}
-                updated_pricecandle_data.append(pricecandle_trendline)
-                continue
-            
-            # Get executioner candle position
-            executioner_pos = executioner_candle.get("position_number")
-            if executioner_pos is None:
-                log_and_print(f"No valid executioner candle position for trendline {trendline_type} in {market} {timeframe}", "WARNING")
-                pricecandle_trendline["stoploss candle"] = {"status": "No executioner candle position"}
-                pricecandle_trendline["1:0.5 candle"] = {"status": "No executioner candle position"}
-                pricecandle_trendline["1:1 candle"] = {"status": "No executioner candle position"}
-                pricecandle_trendline["1:2 candle"] = {"status": "No executioner candle position"}
-                pricecandle_trendline["profit candle"] = {"status": "No executioner candle position"}
-                pricecandle_trendline["contract status summary"] = {"contract status": "No executioner candle position"}
-                updated_pricecandle_data.append(pricecandle_trendline)
-                continue
-            
-            # Initialize tracking variables
-            stoploss_hit = False
-            price_1_0_5_hit = False
-            price_1_1_hit = False
-            price_1_2_hit = False
-            profit_hit = False
-            contract_status = "running"
-            
-            # Initialize candle data
-            stoploss_candle = {"status": "secured"}
-            candle_1_0_5 = {"status": "waiting"}
-            candle_1_1 = {"status": "waiting"}
-            candle_1_2 = {"status": "waiting"}
-            profit_candle = {"status": "waiting"}
-            
-            # Search candles after executioner candle
-            for candle in matching_cabp_trendline.get("candles", []):
-                candle_pos = candle.get("position_number")
-                if candle_pos is None or candle_pos >= executioner_pos:
-                    continue  # Skip candles before or at executioner candle
-                
-                high_price = candle.get("High")
-                low_price = candle.get("Low")
-                close_price = candle.get("Close")
-                
-                # Skip current incomplete candle (position 0) for close price checks
-                if candle_pos == 0 and close_price is None:
-                    continue
-                
-                # Define candle data template
-                candle_data = {
-                    "status": "",
-                    "position_number": candle_pos,
-                    "Time": candle.get("Time"),
-                    "Open": candle.get("Open"),
-                    "High": high_price,
-                    "Low": low_price,
-                    "Close": close_price
-                }
-                
-                if order_type == "short":
-                    # Check stoploss (price reaches or exceeds exit_price)
-                    if high_price is not None and high_price >= exit_price - 0.0001 and not (price_1_0_5_hit or price_1_1_hit or price_1_2_hit or profit_hit):
-                        stoploss_candle = {
-                            "status": "Candle hits stoploss first",
-                            "position_number": candle_pos,
-                            "Time": candle.get("Time"),
-                            "Open": candle.get("Open"),
-                            "High": high_price,
-                            "Low": low_price,
-                            "Close": close_price
-                        }
-                        stoploss_hit = True
-                        contract_status = "Exit contract at stoploss"
-                        candle_1_0_5 = {"status": "couldn't make it (candle reached stoploss first so ignore its record)"}
-                        candle_1_1 = {"status": "couldn't make it (candle reached stoploss first so ignore its record)"}
-                        candle_1_2 = {"status": "couldn't make it (candle reached stoploss first so ignore its record)"}
-                        profit_candle = {"status": "couldn't make it (candle reached stoploss first so ignore its record)"}
-                        break
-                    
-                    # Check breakeven and profit levels (candle must close below the price level)
-                    if close_price is not None:
-                        if not stoploss_hit and not price_1_0_5_hit and close_price <= price_1_0_5 + 0.0001:
-                            candle_1_0_5 = {
-                                "status": "candle found at 1:0.5 (such candle must close below or above the price level depending on the order type)",
-                                **candle_data
-                            }
-                            price_1_0_5_hit = True
-                        if not stoploss_hit and price_1_0_5_hit and not price_1_1_hit and close_price <= price_1_1 + 0.0001:
-                            candle_1_1 = {
-                                "status": "candle found at 1:1 (such candle must close below or above the price level depending on the order type)",
-                                **candle_data
-                            }
-                            price_1_1_hit = True
-                        if not stoploss_hit and price_1_1_hit and not price_1_2_hit and close_price <= price_1_2 + 0.0001:
-                            candle_1_2 = {
-                                "status": "candle found at 1:2 (such candle must close below or above the price level depending on the order type)",
-                                **candle_data
-                            }
-                            price_1_2_hit = True
-                        if not stoploss_hit and price_1_2_hit and not profit_hit and close_price <= profit_price + 0.0001:
-                            profit_candle = {
-                                "status": "candle found at 1:3 (such candle must close below or above the price level depending on the order type)",
-                                **candle_data
-                            }
-                            profit_hit = True
-                            contract_status = "profit reached exit contract"
-                            break
-                
-                elif order_type == "long":
-                    # Check stoploss (price reaches or falls below exit_price)
-                    if low_price is not None and low_price <= exit_price + 0.0001 and not (price_1_0_5_hit or price_1_1_hit or price_1_2_hit or profit_hit):
-                        stoploss_candle = {
-                            "status": "Candle hits stoploss first",
-                            "position_number": candle_pos,
-                            "Time": candle.get("Time"),
-                            "Open": candle.get("Open"),
-                            "High": high_price,
-                            "Low": low_price,
-                            "Close": close_price
-                        }
-                        stoploss_hit = True
-                        contract_status = "Exit contract at stoploss"
-                        candle_1_0_5 = {"status": "couldn't make it (candle reached stoploss first so ignore its record)"}
-                        candle_1_1 = {"status": "couldn't make it (candle reached stoploss first so ignore its record)"}
-                        candle_1_2 = {"status": "couldn't make it (candle reached stoploss first so ignore its record)"}
-                        profit_candle = {"status": "couldn't make it (candle reached stoploss first so ignore its record)"}
-                        break
-                    
-                    # Check breakeven and profit levels (candle must close above the price level)
-                    if close_price is not None:
-                        if not stoploss_hit and not price_1_0_5_hit and close_price >= price_1_0_5 - 0.0001:
-                            candle_1_0_5 = {
-                                "status": "candle found at 1:0.5 (such candle must close below or above the price level depending on the order type)",
-                                **candle_data
-                            }
-                            price_1_0_5_hit = True
-                        if not stoploss_hit and price_1_0_5_hit and not price_1_1_hit and close_price >= price_1_1 - 0.0001:
-                            candle_1_1 = {
-                                "status": "candle found at 1:1 (such candle must close below or above the price level depending on the order type)",
-                                **candle_data
-                            }
-                            price_1_1_hit = True
-                        if not stoploss_hit and price_1_1_hit and not price_1_2_hit and close_price >= price_1_2 - 0.0001:
-                            candle_1_2 = {
-                                "status": "candle found at 1:2 (such candle must close below or above the price level depending on the order type)",
-                                **candle_data
-                            }
-                            price_1_2_hit = True
-                        if not stoploss_hit and price_1_2_hit and not profit_hit and close_price >= profit_price - 0.0001:
-                            profit_candle = {
-                                "status": "candle found at 1:3 (such candle must close below or above the price level depending on the order type)",
-                                **candle_data
-                            }
-                            profit_hit = True
-                            contract_status = "profit reached exit contract"
-                            break
-            
-            # Update pricecandle trendline
-            pricecandle_trendline["stoploss candle"] = stoploss_candle
-            pricecandle_trendline["1:0.5 candle"] = candle_1_0_5
-            pricecandle_trendline["1:1 candle"] = candle_1_1
-            pricecandle_trendline["1:2 candle"] = candle_1_2
-            pricecandle_trendline["profit candle"] = profit_candle
-            pricecandle_trendline["contract status summary"] = {"contract status": contract_status}
-            
-            log_and_print(
-                f"Tracked for trendline {trendline_type}: contract_status={contract_status}, "
-                f"stoploss_hit={stoploss_hit}, 1:0.5_hit={price_1_0_5_hit}, "
-                f"1:1_hit={price_1_1_hit}, 1:2_hit={price_1_2_hit}, profit_hit={profit_hit} in {market} {timeframe}",
-                "DEBUG"
-            )
-            
-            updated_pricecandle_data.append(pricecandle_trendline)
-        
-        # Save updated pricecandle.json
-        if os.path.exists(pricecandle_json_path):
-            os.remove(pricecandle_json_path)
-            log_and_print(f"Existing {pricecandle_json_path} deleted", "INFO")
-        
-        try:
-            with open(pricecandle_json_path, 'w') as f:
-                json.dump(updated_pricecandle_data, f, indent=4)
-            log_and_print(f"Updated pricecandle.json with breakeven, stoploss, and profit tracking for {market} {timeframe}", "SUCCESS")
-            return True
-        except Exception as e:
-            log_and_print(f"Error saving updated pricecandle.json for {market} {timeframe}: {e}", "ERROR")
-            return False
-    
-    except Exception as e:
-        log_and_print(f"Error processing breakeven, stoploss, and profit tracking for {market} {timeframe}: {e}", "ERROR")
-        return False
-
 
 def process_market_timeframe(market: str, timeframe: str) -> Tuple[bool, Optional[str], str, Dict]:
     """Process a single market and timeframe combination, returning success status, error message, status, and process messages."""
@@ -1884,19 +1492,6 @@ def process_market_timeframe(market: str, timeframe: str) -> Tuple[bool, Optiona
             process_messages["candleatorderentry_from_candlesafterbreakoutparent"] = (
                 f"Processed {executioner_found} trendlines with executioner candle found, "
                 f"{executioner_not_found} with no executioner candle for {market} {timeframe}"
-            )
-
-        # Track breakeven, stoploss, and profit
-        if not BreakevenStopandProfitTracker(market, timeframe, json_dir):
-            error_message = f"Failed to track breakeven, stoploss, and profit for {market} {timeframe}"
-            log_and_print(error_message, "ERROR")
-            process_messages["BreakevenStopandProfitTracker"] = error_message
-        else:
-            with open(os.path.join(json_dir, 'pricecandle.json'), 'r') as f:
-                pricecandle_data = json.load(f)
-            contract_statuses = [t.get('contract status summary', {}).get('contract status', 'unknown') for t in pricecandle_data]
-            process_messages["BreakevenStopandProfitTracker"] = (
-                f"Tracked breakeven, stoploss, and profit for {len(pricecandle_data)} trendlines: {', '.join(set(contract_statuses))} for {market} {timeframe}"
             )
 
         # Calculate order holder prices with lot size and risk

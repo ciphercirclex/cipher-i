@@ -20,8 +20,14 @@ import json
 colorama.init()
 
 # Configuration
-query_page_url = 'https://adminpanelc.infy.uk/phpmyadmintemplate.php'
-fetch_url = 'https://adminpanelc.infy.uk/phpmyadmin_tablesfetch.php'
+primary_servers = {
+    'query_page': 'https://adminpanelc.infy.uk/phpmyadmintemplate.php',
+    'fetch': 'https://adminpanelc.infy.uk/phpmyadmin_tablesfetch.php'
+}
+backup_servers = {
+    'query_page': 'https://xevhtoaljedpik.infy.uk/phpmyadmintemplate.php',
+    'fetch': 'https://xevhtoaljedpik.infy.uk/phpmyadmin_tablesfetch.php'
+}
 admin_email = 'ciphercirclex12@gmail.com'
 admin_password = '@ciphercircleadminauthenticator#'
 temp_download_dir = r'C:\xampp\htdocs\CIPHER\temp_downloads'
@@ -29,6 +35,7 @@ temp_download_dir = r'C:\xampp\htdocs\CIPHER\temp_downloads'
 # Global driver and session
 driver = None
 session = None
+current_servers = primary_servers  # Start with primary servers
 
 def log_and_print(message, level="INFO"):
     """Helper function to print formatted messages with color coding and spacing."""
@@ -40,7 +47,7 @@ def log_and_print(message, level="INFO"):
     elif level == "WARNING":
         color = Fore.YELLOW
     elif level == "ERROR":
-        color = Fore.RED
+        color = Fore.YELLOW
     elif level == "TITLE":
         color = Fore.MAGENTA
     else:
@@ -63,8 +70,9 @@ def cleanup():
     if driver:
         log_and_print("Clearing browser localStorage", "INFO")
         try:
-            driver.execute_script("localStorage.clear();")
-            log_and_print("LocalStorage cleared successfully", "SUCCESS")
+            if "data:" not in driver.current_url:  # Avoid localStorage access on data: URLs
+                driver.execute_script("localStorage.clear();")
+                log_and_print("LocalStorage cleared successfully", "SUCCESS")
         except Exception as e:
             log_and_print(f"Failed to clear localStorage: {str(e)}", "ERROR")
         log_and_print("Closing browser", "INFO")
@@ -97,18 +105,33 @@ def cleanup():
                 time.sleep(2)
                 attempt += 1
 
+def check_server_availability(url):
+    """Check if a server is available by sending a HEAD request with browser-like headers."""
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Connection': 'keep-alive'
+        }
+        response = requests.head(url, headers=headers, timeout=10, verify=True)
+        log_and_print(f"Server check response for {url}: Status {response.status_code}", "INFO")
+        return response.status_code == 200
+    except requests.RequestException as e:
+        log_and_print(f"Server availability check failed for {url}: {str(e)}", "WARNING")
+        return False
+
 def initialize_browser():
     """Initialize Chrome browser and authenticate."""
-    global driver, session
+    global driver, session, current_servers
     if driver is not None:
         log_and_print("Browser already initialized, reusing session", "INFO")
         try:
-            driver.get(query_page_url)
+            driver.get(current_servers['query_page'])
             WebDriverWait(driver, 10).until(
-                EC.invisibility_of_element_located((By.ID, "authOverlay"))
+                EC.presence_of_element_located((By.ID, "sql-query"))
             )
             log_and_print("Page refreshed, session still valid", "SUCCESS")
-            # Update session cookies
             cookies = driver.get_cookies()
             session = requests.Session()
             for cookie in cookies:
@@ -151,31 +174,56 @@ def initialize_browser():
         return False
 
     log_and_print("--- Step 3: Authenticating and Accessing Query Page ---", "TITLE")
-    try:
-        driver.get(query_page_url)
-        driver.execute_script(f"localStorage.setItem('admin_email', '{admin_email}');")
-        driver.execute_script(f"localStorage.setItem('admin_password', '{admin_password}');")
-        log_and_print("Set localStorage credentials", "SUCCESS")
-        driver.get(query_page_url)
-        log_and_print(f"Loaded page: {driver.current_url}", "SUCCESS")
-        log_and_print(f"Page title: {driver.title}", "INFO")
-
-        WebDriverWait(driver, 10).until(
-            EC.invisibility_of_element_located((By.ID, "authOverlay"))
-        )
-        log_and_print("Authentication successful - access granted", "SUCCESS")
+    server_attempts = [(primary_servers, "Primary"), (backup_servers, "Backup")]
+    for servers, server_type in server_attempts:
+        current_servers = servers
+        log_and_print(f"Attempting to connect to {server_type} server: {servers['query_page']}", "INFO")
         
-        # Initialize HTTP session with cookies
-        session = requests.Session()
-        cookies = driver.get_cookies()
-        for cookie in cookies:
-            session.cookies.set(cookie['name'], cookie['value'])
-        log_and_print("Initialized HTTP session with cookies", "SUCCESS")
-        return True
-    except Exception as e:
-        error_msg = f"Failed to load query page or bypass authentication: {str(e)}"
-        log_and_print(error_msg, "ERROR")
-        return False
+        # Skip availability check for backup server if primary fails, since manual access is confirmed
+        if server_type == "Primary" and not check_server_availability(servers['query_page']):
+            log_and_print(f"{server_type} server is not available", "ERROR")
+            continue
+        elif server_type == "Backup":
+            log_and_print("Skipping availability check for backup server due to confirmed manual access", "INFO")
+
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
+            try:
+                driver.get(servers['query_page'])
+                page_title = driver.title
+                if "suspended" in page_title.lower() or "error" in page_title.lower():
+                    log_and_print(f"{server_type} server redirected to an invalid page: {page_title}", "ERROR")
+                    if server_type == "Backup":
+                        log_and_print("Both servers are invalid, aborting initialization", "ERROR")
+                        return False
+                    break
+
+                driver.execute_script(f"localStorage.setItem('admin_email', '{admin_email}');")
+                driver.execute_script(f"localStorage.setItem('admin_password', '{admin_password}');")
+                log_and_print("Set localStorage credentials", "SUCCESS")
+                driver.get(servers['query_page'])
+                log_and_print(f"Loaded page: {driver.current_url}", "SUCCESS")
+                log_and_print(f"Page title: {driver.title}", "INFO")
+
+                WebDriverWait(driver, 15).until(
+                    EC.presence_of_element_located((By.ID, "sql-query"))
+                )
+                log_and_print(f"Authentication successful on {server_type} server", "SUCCESS")
+                
+                session = requests.Session()
+                cookies = driver.get_cookies()
+                for cookie in cookies:
+                    session.cookies.set(cookie['name'], cookie['value'])
+                log_and_print("Initialized HTTP session with cookies", "SUCCESS")
+                return True
+            except Exception as e:
+                log_and_print(f"Attempt {attempt}/{max_retries} failed for {server_type} server: {str(e)}", "WARNING")
+                if attempt == max_retries:
+                    log_and_print(f"Failed to load {server_type} server after {max_retries} attempts", "ERROR")
+                    if server_type == "Backup":
+                        log_and_print("Backup server also failed, aborting initialization", "ERROR")
+                        return False
+                time.sleep(2)
 
 def execute_query(sql_query):
     """
@@ -185,58 +233,75 @@ def execute_query(sql_query):
     Returns:
         dict: Contains 'status', 'message', and 'results' (list of dictionaries or affected rows).
     """
-    global driver, session
+    global driver, session, current_servers
     try:
         signal.signal(signal.SIGINT, signal_handler)
         log_and_print("===== Database Query Execution =====", "TITLE")
 
-        # Initialize browser if not already done
         if not initialize_browser():
             return {'status': 'error', 'message': 'Failed to initialize browser', 'results': []}
 
-        # Try direct POST request first
         log_and_print("--- Step 4: Attempting Direct POST Request ---", "TITLE")
-        log_and_print(f"Executing query via POST: {sql_query}", "INFO")
-        try:
-            headers = {
-                'Content-Type': 'application/x-www-form-urlencoded',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-            }
-            data = {'sql_query': sql_query}
-            response = session.post(fetch_url, headers=headers, data=data)
-            response.raise_for_status()
-            response_data = response.json()
-
-            log_and_print(f"Server response: {json.dumps(response_data, indent=2)}", "DEBUG")
-            
-            if response_data.get('status') == 'success':
-                results = []
-                if 'rows' in response_data['data']:
-                    for row in response_data['data']['rows']:
-                        results.append({key: str(value) for key, value in row.items()})
-                    log_and_print(f"Fetched {len(results)} rows from direct POST", "SUCCESS")
-                elif 'affectedRows' in response_data['data']:
-                    results = {'affected_rows': response_data['data']['affectedRows']}
-                    log_and_print(f"Non-SELECT query affected {results['affected_rows']} rows", "SUCCESS")
-                else:
-                    log_and_print("Query executed successfully, but no results returned", "INFO")
-                return {
-                    'status': 'success',
-                    'message': response_data.get('message', 'Query executed successfully'),
-                    'results': results
+        server_attempts = [(current_servers, "Current"), (backup_servers if current_servers == primary_servers else primary_servers, "Alternate")]
+        for servers, server_type in server_attempts:
+            log_and_print(f"Executing query via POST on {server_type} server: {sql_query}", "INFO")
+            try:
+                headers = {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                    'Accept': 'application/json, text/plain, */*',
+                    'Accept-Language': 'en-US,en;q=0.5',
+                    'Connection': 'keep-alive'
                 }
-            else:
-                log_and_print(f"Direct POST failed: {response_data.get('message', 'Unknown error')}", "ERROR")
-                debug_path = r"C:\xampp\htdocs\CIPHER\cipher server 2\__pycache__\debugs"
-                os.makedirs(debug_path, exist_ok=True)
-                with open(os.path.join(debug_path, "direct_post_error.json"), "w", encoding="utf-8") as f:
-                    f.write(json.dumps(response_data, indent=2))
-                log_and_print(f"Saved direct POST error response to {debug_path}\\direct_post_error.json", "INFO")
-                # Fall back to Selenium
-        except Exception as e:
-            log_and_print(f"Direct POST request failed: {str(e)}, falling back to Selenium", "WARNING")
+                data = {'sql_query': sql_query}
+                response = session.post(servers['fetch'], headers=headers, data=data, timeout=10, verify=True)
+                response.raise_for_status()
+                try:
+                    response_data = response.json()
+                except ValueError as e:
+                    log_and_print(f"Invalid JSON response from {server_type} server: {str(e)}", "ERROR")
+                    debug_path = r"C:\xampp\htdocs\CIPHER\cipher server 2\__pycache__\debugs"
+                    os.makedirs(debug_path, exist_ok=True)
+                    with open(os.path.join(debug_path, f"direct_post_error_{server_type.lower()}.html"), "w", encoding="utf-8") as f:
+                        f.write(response.text)
+                    log_and_print(f"Saved direct POST error response to {debug_path}\\direct_post_error_{server_type.lower()}.html", "INFO")
+                    if server_type == "Alternate":
+                        log_and_print("Alternate server POST also failed, falling back to Selenium", "WARNING")
+                    continue
 
-        # Fallback to Selenium
+                log_and_print(f"Server response: {json.dumps(response_data, indent=2)}", "DEBUG")
+                
+                if response_data.get('status') == 'success':
+                    results = []
+                    if 'rows' in response_data['data']:
+                        for row in response_data['data']['rows']:
+                            results.append({key: str(value) for key, value in row.items()})
+                        log_and_print(f"Fetched {len(results)} rows from direct POST on {server_type} server", "SUCCESS")
+                    elif 'affectedRows' in response_data['data']:
+                        results = {'affected_rows': response_data['data']['affectedRows']}
+                        log_and_print(f"Non-SELECT query affected {results['affected_rows']} rows on {server_type} server", "SUCCESS")
+                    else:
+                        log_and_print("Query executed successfully, but no results returned", "INFO")
+                    return {
+                        'status': 'success',
+                        'message': response_data.get('message', 'Query executed successfully'),
+                        'results': results
+                    }
+                else:
+                    log_and_print(f"Direct POST failed on {server_type} server: {response_data.get('message', 'Unknown error')}", "ERROR")
+                    debug_path = r"C:\xampp\htdocs\CIPHER\cipher server 2\__pycache__\debugs"
+                    os.makedirs(debug_path, exist_ok=True)
+                    with open(os.path.join(debug_path, f"direct_post_error_{server_type.lower()}.json"), "w", encoding="utf-8") as f:
+                        f.write(json.dumps(response_data, indent=2))
+                    log_and_print(f"Saved direct POST error response to {debug_path}\\direct_post_error_{server_type.lower()}.json", "INFO")
+                    if server_type == "Alternate":
+                        log_and_print("Alternate server POST also failed, falling back to Selenium", "WARNING")
+            except Exception as e:
+                log_and_print(f"Direct POST request failed on {server_type} server: {str(e)}", "WARNING")
+                if server_type == "Alternate":
+                    log_and_print("Alternate server POST also failed, falling back to Selenium", "WARNING")
+                continue
+
         log_and_print("--- Step 4: Executing SQL Query via Selenium ---", "TITLE")
         log_and_print(f"Executing query: {sql_query}", "INFO")
         try:
@@ -244,7 +309,7 @@ def execute_query(sql_query):
                 EC.presence_of_element_located((By.ID, "sql-query"))
             )
             query_textarea.clear()
-            time.sleep(1)  # Increased delay to ensure textarea is cleared
+            time.sleep(1)
             query_textarea.send_keys(sql_query)
             entered_query = query_textarea.get_attribute("value")
             if not entered_query.strip():
@@ -255,7 +320,7 @@ def execute_query(sql_query):
             execute_button = WebDriverWait(driver, 10).until(
                 EC.element_to_be_clickable((By.XPATH, "//button[text()='Execute Query']"))
             )
-            time.sleep(1)  # Increased delay before clicking
+            time.sleep(1)
             execute_button.click()
             log_and_print("Clicked execute query button", "SUCCESS")
         except Exception as e:
@@ -263,7 +328,6 @@ def execute_query(sql_query):
             log_and_print(error_msg, "ERROR")
             return {'status': 'error', 'message': error_msg, 'results': []}
 
-        # Step 5: Fetch results from #query-result and #column-data
         log_and_print("--- Step 5: Fetching Query Results ---", "TITLE")
         try:
             max_attempts = 5
@@ -284,7 +348,6 @@ def execute_query(sql_query):
                         )
                     )
 
-                    # Check message div for errors
                     message_div = driver.find_element(By.ID, "message")
                     message_text = message_div.text
                     message_class = message_div.get_attribute("class")
@@ -297,14 +360,13 @@ def execute_query(sql_query):
                         log_and_print(f"Saved error page source to {debug_path}\\error_page_attempt_{attempt}.html", "INFO")
                         return {'status': 'error', 'message': message_text, 'results': []}
 
-                    # Try to fetch from query-result div
                     query_result_div = driver.find_element(By.ID, "query-result")
                     if query_result_div.text.strip() and "Query Results" in query_result_div.text:
                         soup = BeautifulSoup(query_result_div.get_attribute('outerHTML'), 'html.parser')
                         table = soup.find('table')
                         if table:
                             headers = [th.text.strip() for th in table.find_all('th')]
-                            for row in table.find_all('tr')[1:]:  # Skip header row
+                            for row in table.find_all('tr')[1:]:
                                 row_data = {headers[i]: td.text.strip() for i, td in enumerate(row.find_all('td'))}
                                 results.append(row_data)
                             log_and_print(f"Fetched {len(results)} rows from query-result", "SUCCESS")
@@ -314,14 +376,13 @@ def execute_query(sql_query):
                     else:
                         log_and_print("No query results found in query-result div", "INFO")
 
-                    # Try to fetch from column-data div
                     column_data_div = driver.find_element(By.ID, "column-data")
                     if column_data_div.text.strip() and "Data for Column" in column_data_div.text:
                         soup = BeautifulSoup(column_data_div.get_attribute('outerHTML'), 'html.parser')
                         table = soup.find('table')
                         if table:
                             header = table.find('th').text.strip()
-                            for row in table.find_all('tr')[1:]:  # Skip header row
+                            for row in table.find_all('tr')[1:]:
                                 value = row.find('td').text.strip()
                                 results.append({header: value})
                             log_and_print(f"Fetched {len(results)} rows from column-data", "SUCCESS")
@@ -331,7 +392,6 @@ def execute_query(sql_query):
                     else:
                         log_and_print("No column data found in column-data div", "INFO")
 
-                    # Handle non-SELECT queries
                     if not results and query_result_div.text.strip():
                         match = re.search(r"Affected rows: (\d+)", query_result_div.text)
                         if match:
@@ -342,7 +402,6 @@ def execute_query(sql_query):
                         else:
                             log_and_print("No affected rows information found in query-result div", "WARNING")
 
-                    # If no results yet, wait and retry
                     if not results:
                         log_and_print("No results found yet, retrying...", "INFO")
                         time.sleep(3)
