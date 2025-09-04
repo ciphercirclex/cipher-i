@@ -1461,13 +1461,14 @@ def getorderholderpriceswithlotsizeandrisk(market: str, timeframe: str, json_dir
         return False
 
 def BreakevenStopandProfitTracker(market: str, timeframe: str, json_dir: str) -> bool:
-    """Track candles after executioner candle to determine if stoploss, breakeven (1:0.5, 1:1, 1:2), or profit price is hit first."""
+    """Track candles after executioner candle using candle_data.json to determine if stoploss, breakeven (1:0.5, 1:1, 1:2), or profit price is hit first,
+    including an independent check for candles revisiting ratio prices before profit or stoploss."""
     log_and_print(f"Tracking breakeven, stoploss, and profit for market={market}, timeframe={timeframe}", "INFO")
     
     # Define file paths
     pricecandle_json_path = os.path.join(json_dir, "pricecandle.json")
     calculatedprices_json_path = os.path.join(json_dir, "calculatedprices.json")
-    candlesafterbreakoutparent_json_path = os.path.join(json_dir, "candlesafterbreakoutparent.json")
+    candle_data_json_path = os.path.join(json_dir, "candle_data.json")
     
     # Check if required JSON files exist
     if not os.path.exists(pricecandle_json_path):
@@ -1476,8 +1477,8 @@ def BreakevenStopandProfitTracker(market: str, timeframe: str, json_dir: str) ->
     if not os.path.exists(calculatedprices_json_path):
         log_and_print(f"calculatedprices.json not found at {calculatedprices_json_path} for {market} {timeframe}", "ERROR")
         return False
-    if not os.path.exists(candlesafterbreakoutparent_json_path):
-        log_and_print(f"candlesafterbreakoutparent.json not found at {candlesafterbreakoutparent_json_path} for {market} {timeframe}", "ERROR")
+    if not os.path.exists(candle_data_json_path):
+        log_and_print(f"candle_data.json not found at {candle_data_json_path} for {market} {timeframe}", "ERROR")
         return False
     
     try:
@@ -1489,9 +1490,9 @@ def BreakevenStopandProfitTracker(market: str, timeframe: str, json_dir: str) ->
         with open(calculatedprices_json_path, 'r') as f:
             calculatedprices_data = json.load(f)
         
-        # Load candlesafterbreakoutparent.json
-        with open(candlesafterbreakoutparent_json_path, 'r') as f:
-            candlesafterbreakoutparent_data = json.load(f)
+        # Load candle_data.json
+        with open(candle_data_json_path, 'r') as f:
+            candle_data = json.load(f)
         
         # Prepare updated pricecandle data
         updated_pricecandle_data = []
@@ -1503,24 +1504,38 @@ def BreakevenStopandProfitTracker(market: str, timeframe: str, json_dir: str) ->
             order_holder_position = pricecandle_trendline.get("order_holder", {}).get("position_number")
             order_type = pricecandle_trendline.get("receiver", {}).get("order_type", "").lower()
             
-            # Skip if no valid executioner candle
-            if executioner_candle.get("status") != "Candle found at order holder entry level":
-                log_and_print(f"No valid executioner candle for trendline {trendline_type} in {market} {timeframe}", "INFO")
-                pricecandle_trendline["stoploss candle"] = {"status": "No executioner candle"}
-                pricecandle_trendline["1:0.5 candle"] = {"status": "No executioner candle"}
-                pricecandle_trendline["1:1 candle"] = {"status": "No executioner candle"}
-                pricecandle_trendline["1:2 candle"] = {"status": "No executioner candle"}
-                pricecandle_trendline["profit candle"] = {"status": "No executioner candle"}
-                pricecandle_trendline["contract status summary"] = {"contract status": "No executioner candle"}
-                updated_pricecandle_data.append(pricecandle_trendline)
-                continue
-            
             # Find matching calculatedprices entry
             matching_calculated = None
             for calc_entry in calculatedprices_data:
                 if calc_entry.get("trendline_type") == trendline_type and calc_entry.get("order_holder_position") == order_holder_position:
                     matching_calculated = calc_entry
                     break
+            
+            # Handle case with no valid executioner candle
+            if executioner_candle.get("status") != "Candle found at order holder entry level":
+                log_and_print(f"No valid executioner candle for trendline {trendline_type} in {market} {timeframe}", "INFO")
+                # Update pending order with order_type and entry_price from calculatedprices.json
+                if matching_calculated:
+                    pricecandle_trendline["pending order"] = {
+                        "status": f"{matching_calculated.get('order_type', 'unknown')} {matching_calculated.get('entry_price', 'N/A')}"
+                    }
+                else:
+                    pricecandle_trendline["pending order"] = {
+                        "status": order_type if order_type in ["long", "short"] else "unknown"
+                    }
+                # Remove other fields if they exist
+                for key in ["executioner candle", "stoploss candle", "1:0.5 candle", "1:1 candle", "1:2 candle", "profit candle", "contract status summary"]:
+                    pricecandle_trendline.pop(key, None)
+                updated_pricecandle_data.append(pricecandle_trendline)
+                continue
+            
+            # Rename executioner candle to pending order and update with order_type and entry_price
+            pricecandle_trendline["pending order"] = executioner_candle
+            if matching_calculated:
+                pricecandle_trendline["pending order"]["status"] = f"{matching_calculated.get('order_type', order_type)} {matching_calculated.get('entry_price', 'N/A')}"
+            else:
+                pricecandle_trendline["pending order"]["status"] = f"{order_type} N/A"
+            pricecandle_trendline.pop("executioner candle", None)
             
             if not matching_calculated:
                 log_and_print(f"No matching calculated prices found for trendline {trendline_type} in {market} {timeframe}", "WARNING")
@@ -1553,26 +1568,6 @@ def BreakevenStopandProfitTracker(market: str, timeframe: str, json_dir: str) ->
                 updated_pricecandle_data.append(pricecandle_trendline)
                 continue
             
-            # Find matching trendline in candlesafterbreakoutparent.json
-            matching_cabp_trendline = None
-            for cabp_trendline in candlesafterbreakoutparent_data:
-                cabp_trendline_info = cabp_trendline.get("trendline", {})
-                if (cabp_trendline_info.get("type") == trendline_type and 
-                    cabp_trendline_info.get("Order_holder_entry") == entry_price):
-                    matching_cabp_trendline = cabp_trendline
-                    break
-            
-            if not matching_cabp_trendline:
-                log_and_print(f"No matching trendline found in candlesafterbreakoutparent.json for {trendline_type} in {market} {timeframe}", "WARNING")
-                pricecandle_trendline["stoploss candle"] = {"status": "No matching trendline"}
-                pricecandle_trendline["1:0.5 candle"] = {"status": "No matching trendline"}
-                pricecandle_trendline["1:1 candle"] = {"status": "No matching trendline"}
-                pricecandle_trendline["1:2 candle"] = {"status": "No matching trendline"}
-                pricecandle_trendline["profit candle"] = {"status": "No matching trendline"}
-                pricecandle_trendline["contract status summary"] = {"contract status": "No matching trendline"}
-                updated_pricecandle_data.append(pricecandle_trendline)
-                continue
-            
             # Get executioner candle position
             executioner_pos = executioner_candle.get("position_number")
             if executioner_pos is None:
@@ -1601,24 +1596,32 @@ def BreakevenStopandProfitTracker(market: str, timeframe: str, json_dir: str) ->
             candle_1_2 = {"status": "waiting"}
             profit_candle = {"status": "waiting"}
             
-            # Search candles after executioner candle
-            for candle in matching_cabp_trendline.get("candles", []):
-                candle_pos = candle.get("position_number")
-                if candle_pos is None or candle_pos >= executioner_pos:
-                    continue  # Skip candles before or at executioner candle
+            # Initialize independent check data
+            independent_check_1_0_5 = {"status": "waiting"}
+            independent_check_1_1 = {"status": "waiting"}
+            independent_check_1_2 = {"status": "waiting"}
+            
+            # Track first hit positions for independent checks
+            first_hit_pos_1_0_5 = None
+            first_hit_pos_1_1 = None
+            first_hit_pos_1_2 = None
+            
+            # Search candles after executioner candle in candle_data.json
+            for pos in range(executioner_pos - 1, 0, -1):  # Iterate from executioner_pos - 1 to 1
+                candle_key = f"Candle_{pos}"
+                if candle_key not in candle_data:
+                    log_and_print(f"No candle data for position {pos} in {market} {timeframe}", "WARNING")
+                    continue
                 
+                candle = candle_data[candle_key]
                 high_price = candle.get("High")
                 low_price = candle.get("Low")
                 close_price = candle.get("Close")
                 
-                # Skip current incomplete candle (position 0) for close price checks
-                if candle_pos == 0 and close_price is None:
-                    continue
-                
                 # Define candle data template
-                candle_data = {
+                candle_data_entry = {
                     "status": "",
-                    "position_number": candle_pos,
+                    "position_number": pos,
                     "Time": candle.get("Time"),
                     "Open": candle.get("Open"),
                     "High": high_price,
@@ -1631,7 +1634,7 @@ def BreakevenStopandProfitTracker(market: str, timeframe: str, json_dir: str) ->
                     if high_price is not None and high_price >= exit_price - 0.0001 and not (price_1_0_5_hit or price_1_1_hit or price_1_2_hit or profit_hit):
                         stoploss_candle = {
                             "status": "Candle hits stoploss first",
-                            "position_number": candle_pos,
+                            "position_number": pos,
                             "Time": candle.get("Time"),
                             "Open": candle.get("Open"),
                             "High": high_price,
@@ -1644,43 +1647,120 @@ def BreakevenStopandProfitTracker(market: str, timeframe: str, json_dir: str) ->
                         candle_1_1 = {"status": "couldn't make it (candle reached stoploss first so ignore its record)"}
                         candle_1_2 = {"status": "couldn't make it (candle reached stoploss first so ignore its record)"}
                         profit_candle = {"status": "couldn't make it (candle reached stoploss first so ignore its record)"}
+                        independent_check_1_0_5 = {"status": "couldn't make it (candle reached stoploss first)"}
+                        independent_check_1_1 = {"status": "couldn't make it (candle reached stoploss first)"}
+                        independent_check_1_2 = {"status": "couldn't make it (candle reached stoploss first)"}
                         break
                     
                     # Check breakeven and profit levels (candle must close below the price level)
                     if close_price is not None:
+                        # 1:0.5
                         if not stoploss_hit and not price_1_0_5_hit and close_price <= price_1_0_5 + 0.0001:
                             candle_1_0_5 = {
-                                "status": "candle found at 1:0.5 (such candle must close below or above the price level depending on the order type)",
-                                **candle_data
+                                "status": "candle found at 1:0.5",
+                                "position_number": pos,
+                                "Time": candle.get("Time"),
+                                "Open": candle.get("Open"),
+                                "High": high_price,
+                                "Low": low_price,
+                                "Close": close_price
                             }
                             price_1_0_5_hit = True
+                            first_hit_pos_1_0_5 = pos
+                        
+                        # 1:1
                         if not stoploss_hit and price_1_0_5_hit and not price_1_1_hit and close_price <= price_1_1 + 0.0001:
                             candle_1_1 = {
-                                "status": "candle found at 1:1 (such candle must close below or above the price level depending on the order type)",
-                                **candle_data
+                                "status": "candle found at 1:1",
+                                "position_number": pos,
+                                "Time": candle.get("Time"),
+                                "Open": candle.get("Open"),
+                                "High": high_price,
+                                "Low": low_price,
+                                "Close": close_price
                             }
                             price_1_1_hit = True
+                            first_hit_pos_1_1 = pos
+                        
+                        # 1:2
                         if not stoploss_hit and price_1_1_hit and not price_1_2_hit and close_price <= price_1_2 + 0.0001:
                             candle_1_2 = {
-                                "status": "candle found at 1:2 (such candle must close below or above the price level depending on the order type)",
-                                **candle_data
+                                "status": "candle found at 1:2",
+                                "position_number": pos,
+                                "Time": candle.get("Time"),
+                                "Open": candle.get("Open"),
+                                "High": high_price,
+                                "Low": low_price,
+                                "Close": close_price
                             }
                             price_1_2_hit = True
+                            first_hit_pos_1_2 = pos
+                        
+                        # Profit (1:3)
                         if not stoploss_hit and price_1_2_hit and not profit_hit and close_price <= profit_price + 0.0001:
                             profit_candle = {
-                                "status": "candle found at 1:3 (such candle must close below or above the price level depending on the order type)",
-                                **candle_data
+                                "status": "candle found at 1:3",
+                                "position_number": pos,
+                                "Time": candle.get("Time"),
+                                "Open": candle.get("Open"),
+                                "High": high_price,
+                                "Low": low_price,
+                                "Close": close_price
                             }
                             profit_hit = True
                             contract_status = "profit reached exit contract"
+                            # Set independent check status if not revisited
+                            if independent_check_1_0_5["status"] == "waiting":
+                                independent_check_1_0_5 = {"status": "no revisit before profit"}
+                            if independent_check_1_1["status"] == "waiting":
+                                independent_check_1_1 = {"status": "no revisit before profit"}
+                            if independent_check_1_2["status"] == "waiting":
+                                independent_check_1_2 = {"status": "no revisit before profit"}
                             break
+                        
+                        # Independent checks for revisits (price moves back above the ratio level after hitting it)
+                        if price_1_0_5_hit and first_hit_pos_1_0_5 is not None and pos < first_hit_pos_1_0_5 and not profit_hit and not stoploss_hit:
+                            if low_price is not None and low_price > price_1_0_5 + 0.0001:
+                                independent_check_1_0_5 = {
+                                    "status": "1:0.5 breakseven",
+                                    "position_number": pos,
+                                    "Time": candle.get("Time"),
+                                    "Open": candle.get("Open"),
+                                    "High": high_price,
+                                    "Low": low_price,
+                                    "Close": close_price
+                                }
+                        
+                        if price_1_1_hit and first_hit_pos_1_1 is not None and pos < first_hit_pos_1_1 and not profit_hit and not stoploss_hit:
+                            if low_price is not None and low_price > price_1_1 + 0.0001:
+                                independent_check_1_1 = {
+                                    "status": "1:1 breakseven",
+                                    "position_number": pos,
+                                    "Time": candle.get("Time"),
+                                    "Open": candle.get("Open"),
+                                    "High": high_price,
+                                    "Low": low_price,
+                                    "Close": close_price
+                                }
+                        
+                        if price_1_2_hit and first_hit_pos_1_2 is not None and pos < first_hit_pos_1_2 and not profit_hit and not stoploss_hit:
+                            if low_price is not None and low_price > price_1_2 + 0.0001:
+                                independent_check_1_2 = {
+                                    "status": "1:2 breakseven",
+                                    "position_number": pos,
+                                    "Time": candle.get("Time"),
+                                    "Open": candle.get("Open"),
+                                    "High": high_price,
+                                    "Low": low_price,
+                                    "Close": close_price
+                                }
                 
                 elif order_type == "long":
                     # Check stoploss (price reaches or falls below exit_price)
                     if low_price is not None and low_price <= exit_price + 0.0001 and not (price_1_0_5_hit or price_1_1_hit or price_1_2_hit or profit_hit):
                         stoploss_candle = {
                             "status": "Candle hits stoploss first",
-                            "position_number": candle_pos,
+                            "position_number": pos,
                             "Time": candle.get("Time"),
                             "Open": candle.get("Open"),
                             "High": high_price,
@@ -1693,36 +1773,190 @@ def BreakevenStopandProfitTracker(market: str, timeframe: str, json_dir: str) ->
                         candle_1_1 = {"status": "couldn't make it (candle reached stoploss first so ignore its record)"}
                         candle_1_2 = {"status": "couldn't make it (candle reached stoploss first so ignore its record)"}
                         profit_candle = {"status": "couldn't make it (candle reached stoploss first so ignore its record)"}
+                        independent_check_1_0_5 = {"status": "couldn't make it (candle reached stoploss first)"}
+                        independent_check_1_1 = {"status": "couldn't make it (candle reached stoploss first)"}
+                        independent_check_1_2 = {"status": "couldn't make it (candle reached stoploss first)"}
                         break
                     
                     # Check breakeven and profit levels (candle must close above the price level)
                     if close_price is not None:
+                        # 1:0.5
                         if not stoploss_hit and not price_1_0_5_hit and close_price >= price_1_0_5 - 0.0001:
                             candle_1_0_5 = {
-                                "status": "candle found at 1:0.5 (such candle must close below or above the price level depending on the order type)",
-                                **candle_data
+                                "status": "candle found at 1:0.5",
+                                "position_number": pos,
+                                "Time": candle.get("Time"),
+                                "Open": candle.get("Open"),
+                                "High": high_price,
+                                "Low": low_price,
+                                "Close": close_price
                             }
                             price_1_0_5_hit = True
+                            first_hit_pos_1_0_5 = pos
+                        
+                        # 1:1
                         if not stoploss_hit and price_1_0_5_hit and not price_1_1_hit and close_price >= price_1_1 - 0.0001:
                             candle_1_1 = {
-                                "status": "candle found at 1:1 (such candle must close below or above the price level depending on the order type)",
-                                **candle_data
+                                "status": "candle found at 1:1",
+                                "position_number": pos,
+                                "Time": candle.get("Time"),
+                                "Open": candle.get("Open"),
+                                "High": high_price,
+                                "Low": low_price,
+                                "Close": close_price
                             }
                             price_1_1_hit = True
+                            first_hit_pos_1_1 = pos
+                        
+                        # 1:2
                         if not stoploss_hit and price_1_1_hit and not price_1_2_hit and close_price >= price_1_2 - 0.0001:
                             candle_1_2 = {
-                                "status": "candle found at 1:2 (such candle must close below or above the price level depending on the order type)",
-                                **candle_data
+                                "status": "candle found at 1:2",
+                                "position_number": pos,
+                                "Time": candle.get("Time"),
+                                "Open": candle.get("Open"),
+                                "High": high_price,
+                                "Low": low_price,
+                                "Close": close_price
                             }
                             price_1_2_hit = True
+                            first_hit_pos_1_2 = pos
+                        
+                        # Profit (1:3)
                         if not stoploss_hit and price_1_2_hit and not profit_hit and close_price >= profit_price - 0.0001:
                             profit_candle = {
-                                "status": "candle found at 1:3 (such candle must close below or above the price level depending on the order type)",
-                                **candle_data
+                                "status": "candle found at 1:3",
+                                "position_number": pos,
+                                "Time": candle.get("Time"),
+                                "Open": candle.get("Open"),
+                                "High": high_price,
+                                "Low": low_price,
+                                "Close": close_price
                             }
                             profit_hit = True
                             contract_status = "profit reached exit contract"
+                            # Set independent check status if not revisited
+                            if independent_check_1_0_5["status"] == "waiting":
+                                independent_check_1_0_5 = {"status": "no revisit before profit"}
+                            if independent_check_1_1["status"] == "waiting":
+                                independent_check_1_1 = {"status": "no revisit before profit"}
+                            if independent_check_1_2["status"] == "waiting":
+                                independent_check_1_2 = {"status": "no revisit before profit"}
                             break
+                        
+                        # Independent checks for revisits (price moves back below the ratio level after hitting it)
+                        if price_1_0_5_hit and first_hit_pos_1_0_5 is not None and pos < first_hit_pos_1_0_5 and not profit_hit and not stoploss_hit:
+                            if high_price is not None and high_price < price_1_0_5 - 0.0001:
+                                independent_check_1_0_5 = {
+                                    "status": "1:0.5 breakseven",
+                                    "position_number": pos,
+                                    "Time": candle.get("Time"),
+                                    "Open": candle.get("Open"),
+                                    "High": high_price,
+                                    "Low": low_price,
+                                    "Close": close_price
+                                }
+                        
+                        if price_1_1_hit and first_hit_pos_1_1 is not None and pos < first_hit_pos_1_1 and not profit_hit and not stoploss_hit:
+                            if high_price is not None and high_price < price_1_1 - 0.0001:
+                                independent_check_1_1 = {
+                                    "status": "1:1 breakseven",
+                                    "position_number": pos,
+                                    "Time": candle.get("Time"),
+                                    "Open": candle.get("Open"),
+                                    "High": high_price,
+                                    "Low": low_price,
+                                    "Close": close_price
+                                }
+                        
+                        if price_1_2_hit and first_hit_pos_1_2 is not None and pos < first_hit_pos_1_2 and not profit_hit and not stoploss_hit:
+                            if high_price is not None and high_price < price_1_2 - 0.0001:
+                                independent_check_1_2 = {
+                                    "status": "1:2 breakseven",
+                                    "position_number": pos,
+                                    "Time": candle.get("Time"),
+                                    "Open": candle.get("Open"),
+                                    "High": high_price,
+                                    "Low": low_price,
+                                    "Close": close_price
+                                }
+            
+            # Optionally fetch current candle (position 0) if needed
+            current_candle_data = None
+            try:
+                mt5.shutdown()
+                if mt5.initialize(path=TERMINAL_PATH, timeout=60000):
+                    if mt5.login(login=int(LOGIN_ID), password=PASSWORD, server=SERVER, timeout=60000):
+                        if mt5.symbol_select(market, True):
+                            mt5_timeframe = TIMEFRAME_MAPPING.get(timeframe)
+                            if mt5_timeframe:
+                                current_candle = mt5.copy_rates_from_pos(market, mt5_timeframe, 0, 1)
+                                if current_candle is not None and len(current_candle) > 0:
+                                    candle = current_candle[0]
+                                    current_candle_data = {
+                                        "position_number": 0,
+                                        "Time": str(pd.to_datetime(candle['time'], unit='s')),
+                                        "Open": float(candle['open']),
+                                        "High": float(candle['high']),
+                                        "Low": float(candle['low']),
+                                        "Close": None  # Current candle is incomplete
+                                    }
+            except Exception as e:
+                log_and_print(f"Error fetching current candle for {market} {timeframe}: {e}", "WARNING")
+            finally:
+                mt5.shutdown()
+            
+            # Check current candle if available and no other levels hit
+            if current_candle_data and not (stoploss_hit or price_1_0_5_hit or price_1_1_hit or price_1_2_hit or profit_hit):
+                high_price = current_candle_data.get("High")
+                low_price = current_candle_data.get("Low")
+                
+                if order_type == "short":
+                    if high_price is not None and high_price >= exit_price - 0.0001:
+                        stoploss_candle = {
+                            "status": "Candle hits stoploss first",
+                            "position_number": 0,
+                            "Time": current_candle_data.get("Time"),
+                            "Open": current_candle_data.get("Open"),
+                            "High": high_price,
+                            "Low": low_price,
+                            "Close": None
+                        }
+                        stoploss_hit = True
+                        contract_status = "Exit contract at stoploss"
+                        candle_1_0_5 = {"status": "couldn't make it (candle reached stoploss first so ignore its record)"}
+                        candle_1_1 = {"status": "couldn't make it (candle reached stoploss first so ignore its record)"}
+                        candle_1_2 = {"status": "couldn't make it (candle reached stoploss first so ignore its record)"}
+                        profit_candle = {"status": "couldn't make it (candle reached stoploss first so ignore its record)"}
+                        independent_check_1_0_5 = {"status": "couldn't make it (candle reached stoploss first)"}
+                        independent_check_1_1 = {"status": "couldn't make it (candle reached stoploss first)"}
+                        independent_check_1_2 = {"status": "couldn't make it (candle reached stoploss first)"}
+                
+                elif order_type == "long":
+                    if low_price is not None and low_price <= exit_price + 0.0001:
+                        stoploss_candle = {
+                            "status": "Candle hits stoploss first",
+                            "position_number": 0,
+                            "Time": current_candle_data.get("Time"),
+                            "Open": current_candle_data.get("Open"),
+                            "High": high_price,
+                            "Low": low_price,
+                            "Close": None
+                        }
+                        stoploss_hit = True
+                        contract_status = "Exit contract at stoploss"
+                        candle_1_0_5 = {"status": "couldn't make it (candle reached stoploss first so ignore its record)"}
+                        candle_1_1 = {"status": "couldn't make it (candle reached stoploss first so ignore its record)"}
+                        candle_1_2 = {"status": "couldn't make it (candle reached stoploss first so ignore its record)"}
+                        profit_candle = {"status": "couldn't make it (candle reached stoploss first so ignore its record)"}
+                        independent_check_1_0_5 = {"status": "couldn't make it (candle reached stoploss first)"}
+                        independent_check_1_1 = {"status": "couldn't make it (candle reached stoploss first)"}
+                        independent_check_1_2 = {"status": "couldn't make it (candle reached stoploss first)"}
+            
+            # Add independent check to ratio candles
+            candle_1_0_5["independent_check"] = independent_check_1_0_5
+            candle_1_1["independent_check"] = independent_check_1_1
+            candle_1_2["independent_check"] = independent_check_1_2
             
             # Update pricecandle trendline
             pricecandle_trendline["stoploss candle"] = stoploss_candle
@@ -1735,7 +1969,10 @@ def BreakevenStopandProfitTracker(market: str, timeframe: str, json_dir: str) ->
             log_and_print(
                 f"Tracked for trendline {trendline_type}: contract_status={contract_status}, "
                 f"stoploss_hit={stoploss_hit}, 1:0.5_hit={price_1_0_5_hit}, "
-                f"1:1_hit={price_1_1_hit}, 1:2_hit={price_1_2_hit}, profit_hit={profit_hit} in {market} {timeframe}",
+                f"1:1_hit={price_1_1_hit}, 1:2_hit={price_1_2_hit}, profit_hit={profit_hit}, "
+                f"1:0.5_revisit={independent_check_1_0_5['status']}, "
+                f"1:1_revisit={independent_check_1_1['status']}, "
+                f"1:2_revisit={independent_check_1_2['status']} in {market} {timeframe}",
                 "DEBUG"
             )
             
@@ -1749,7 +1986,7 @@ def BreakevenStopandProfitTracker(market: str, timeframe: str, json_dir: str) ->
         try:
             with open(pricecandle_json_path, 'w') as f:
                 json.dump(updated_pricecandle_data, f, indent=4)
-            log_and_print(f"Updated pricecandle.json with breakeven, stoploss, and profit tracking for {market} {timeframe}", "SUCCESS")
+            log_and_print(f"Updated pricecandle.json with breakeven, stoploss, profit tracking, and independent checks for {market} {timeframe}", "SUCCESS")
             return True
         except Exception as e:
             log_and_print(f"Error saving updated pricecandle.json for {market} {timeframe}: {e}", "ERROR")
@@ -1759,6 +1996,541 @@ def BreakevenStopandProfitTracker(market: str, timeframe: str, json_dir: str) ->
         log_and_print(f"Error processing breakeven, stoploss, and profit tracking for {market} {timeframe}: {e}", "ERROR")
         return False
 
+def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
+    """Extract pending orders and historical orders from pricecandle.json, combine with calculatedprices.json data, 
+    and save to contractpendingorders.json and contracthistory.json without duplicates, including order holder timestamp.
+    Additionally, collect all contractpendingorders and contracthistory across all markets and timeframes into 
+    collectivependingorders.json and collectivehistoryorders.json with summary counts."""
+    log_and_print(f"Categorizing pending and historical orders for market={market}, timeframe={timeframe}", "INFO")
+    
+    # Define file paths
+    pricecandle_json_path = os.path.join(json_dir, "pricecandle.json")
+    calculatedprices_json_path = os.path.join(json_dir, "calculatedprices.json")
+    pending_orders_json_path = os.path.join(json_dir, "contractpendingorders.json")
+    history_orders_json_path = os.path.join(json_dir, "contracthistory.json")
+    collective_pending_path = os.path.join(BASE_OUTPUT_FOLDER, "collectivependingorders.json")
+    collective_history_path = os.path.join(BASE_OUTPUT_FOLDER, "collectivehistoryorders.json")
+    
+    # Check if required JSON files exist
+    if not os.path.exists(pricecandle_json_path):
+        log_and_print(f"pricecandle.json not found at {pricecandle_json_path} for {market} {timeframe}", "ERROR")
+        return False
+    if not os.path.exists(calculatedprices_json_path):
+        log_and_print(f"calculatedprices.json not found at {calculatedprices_json_path} for {market} {timeframe}", "ERROR")
+        return False
+    
+    try:
+        # Load pricecandle.json
+        with open(pricecandle_json_path, 'r') as f:
+            pricecandle_data = json.load(f)
+        
+        # Load calculatedprices.json
+        with open(calculatedprices_json_path, 'r') as f:
+            calculatedprices_data = json.load(f)
+        
+        def contractpendingorders() -> list:
+            """Extract pending orders from pricecandle.json and save to contractpendingorders.json."""
+            contract_pending_orders = []
+            seen_order_keys = set()  # Track unique (trendline_type, order_holder_position) pairs
+            
+            # Process each trendline in pricecandle.json for pending orders
+            for trendline in pricecandle_data:
+                pending_order = trendline.get("pending order", {})
+                trendline_type = trendline.get("type")
+                order_holder = trendline.get("order_holder", {})
+                order_holder_position = order_holder.get("position_number")
+                order_holder_timestamp = order_holder.get("Time", "N/A")  # Extract order holder timestamp
+                contract_status = trendline.get("contract status summary", {}).get("contract status", "")
+                
+                # Skip if the order is already executed (has profit or stoploss status)
+                if contract_status in ["profit reached exit contract", "Exit contract at stoploss"]:
+                    continue
+                
+                # Check if there is a valid pending order
+                if not pending_order or "status" not in pending_order:
+                    log_and_print(f"No valid pending order for trendline {trendline_type} in {market} {timeframe}", "INFO")
+                    continue
+                
+                # Extract order_type and entry_price from pending order status
+                pending_status = pending_order.get("status", "")
+                status_parts = pending_status.split()
+                if len(status_parts) < 2:
+                    log_and_print(f"Invalid pending order status format '{pending_status}' for trendline {trendline_type} in {market} {timeframe}", "WARNING")
+                    continue
+                
+                order_type = status_parts[0]
+                try:
+                    entry_price = float(status_parts[1])
+                except ValueError:
+                    log_and_print(f"Invalid entry price in pending order status '{pending_status}' for trendline {trendline_type} in {market} {timeframe}", "WARNING")
+                    continue
+                
+                # Create a unique key for deduplication
+                order_key = (trendline_type, order_holder_position)
+                if order_key in seen_order_keys:
+                    log_and_print(
+                        f"Duplicate pending order detected for trendline {trendline_type} with order_holder_position {order_holder_position} in {market} {timeframe}. Skipping.",
+                        "WARNING"
+                    )
+                    continue
+                seen_order_keys.add(order_key)
+                
+                # Find matching entry in calculatedprices.json
+                matching_calculated = None
+                for calc_entry in calculatedprices_data:
+                    if (calc_entry.get("trendline_type") == trendline_type and 
+                        calc_entry.get("order_holder_position") == order_holder_position):
+                        matching_calculated = calc_entry
+                        break
+                
+                if not matching_calculated:
+                    log_and_print(f"No matching calculated prices found for trendline {trendline_type} with order_holder_position {order_holder_position} in {market} {timeframe}", "WARNING")
+                    continue
+                
+                # Validate order_type and entry_price consistency
+                calc_order_type = matching_calculated.get("order_type")
+                calc_entry_price = matching_calculated.get("entry_price")
+                if calc_order_type != order_type:
+                    log_and_print(f"Order type mismatch for trendline {trendline_type} in {market} {timeframe}: pricecandle={order_type}, calculatedprices={calc_order_type}", "WARNING")
+                    continue
+                if abs(calc_entry_price - entry_price) > 0.0001:  # Small tolerance for floating-point comparison
+                    log_and_print(f"Entry price mismatch for trendline {trendline_type} in {market} {timeframe}: pricecandle={entry_price}, calculatedprices={calc_entry_price}", "WARNING")
+                    continue
+                
+                # Create contract pending order entry
+                contract_entry = {
+                    "market": market,
+                    "pair": matching_calculated.get("pair", market),
+                    "timeframe": timeframe,
+                    "order_type": order_type,
+                    "entry_price": calc_entry_price,
+                    "exit_price": matching_calculated.get("exit_price", 0.0),
+                    "1:0.5_price": matching_calculated.get("1:0.5_price", 0.0),
+                    "1:1_price": matching_calculated.get("1:1_price", 0.0),
+                    "1:2_price": matching_calculated.get("1:2_price", 0.0),
+                    "profit_price": matching_calculated.get("profit_price", 0.0),
+                    "lot_size": matching_calculated.get("lot_size", 0.0),
+                    "trendline_type": trendline_type,
+                    "order_holder_position": order_holder_position,
+                    "order_holder_timestamp": order_holder_timestamp  # Add order holder timestamp
+                }
+                
+                # Validate prices
+                if any(price <= 0 for price in [
+                    contract_entry["entry_price"],
+                    contract_entry["exit_price"],
+                    contract_entry["1:0.5_price"],
+                    contract_entry["1:1_price"],
+                    contract_entry["1:2_price"],
+                    contract_entry["profit_price"]
+                ]):
+                    log_and_print(f"Invalid price values for trendline {trendline_type} in {market} {timeframe}: {contract_entry}", "WARNING")
+                    continue
+                
+                if contract_entry["lot_size"] <= 0:
+                    log_and_print(f"Invalid lot_size {contract_entry['lot_size']} for trendline {trendline_type} in {market} {timeframe}", "WARNING")
+                    continue
+                
+                contract_pending_orders.append(contract_entry)
+                log_and_print(
+                    f"Added pending order for trendline {trendline_type}: order_type={order_type}, "
+                    f"entry_price={entry_price}, exit_price={contract_entry['exit_price']}, "
+                    f"1:0.5_price={contract_entry['1:0.5_price']}, 1:1_price={contract_entry['1:1_price']}, "
+                    f"1:2_price={contract_entry['1:2_price']}, profit_price={contract_entry['profit_price']}, "
+                    f"lot_size={contract_entry['lot_size']}, order_holder_position={order_holder_position}, "
+                    f"order_holder_timestamp={order_holder_timestamp} in {market} {timeframe}",
+                    "DEBUG"
+                )
+            
+            return contract_pending_orders
+
+        def historyorders() -> list:
+            """Extract executed orders (profit or stoploss) from pricecandle.json and save to contracthistory.json."""
+            contract_history_orders = []
+            seen_order_keys = set()  # Track unique (trendline_type, order_holder_position) pairs
+            
+            # Process each trendline in pricecandle.json for historical orders
+            for trendline in pricecandle_data:
+                pending_order = trendline.get("pending order", {})
+                trendline_type = trendline.get("type")
+                order_holder = trendline.get("order_holder", {})
+                order_holder_position = order_holder.get("position_number")
+                order_holder_timestamp = order_holder.get("Time", "N/A")  # Extract order holder timestamp
+                contract_status = trendline.get("contract status summary", {}).get("contract status", "")
+                
+                # Only process orders with profit or stoploss status
+                if contract_status not in ["profit reached exit contract", "Exit contract at stoploss"]:
+                    continue
+                
+                # Check if there is a valid pending order
+                if not pending_order or "status" not in pending_order:
+                    log_and_print(f"No valid pending order for executed trendline {trendline_type} in {market} {timeframe}", "INFO")
+                    continue
+                
+                # Extract order_type and entry_price from pending order status
+                pending_status = pending_order.get("status", "")
+                status_parts = pending_status.split()
+                if len(status_parts) < 2:
+                    log_and_print(f"Invalid pending order status format '{pending_status}' for executed trendline {trendline_type} in {market} {timeframe}", "WARNING")
+                    continue
+                
+                order_type = status_parts[0]
+                try:
+                    entry_price = float(status_parts[1])
+                except ValueError:
+                    log_and_print(f"Invalid entry price in pending order status '{pending_status}' for executed trendline {trendline_type} in {market} {timeframe}", "WARNING")
+                    continue
+                
+                # Create a unique key for deduplication
+                order_key = (trendline_type, order_holder_position)
+                if order_key in seen_order_keys:
+                    log_and_print(
+                        f"Duplicate historical order detected for trendline {trendline_type} with order_holder_position {order_holder_position} in {market} {timeframe}. Skipping.",
+                        "WARNING"
+                    )
+                    continue
+                seen_order_keys.add(order_key)
+                
+                # Find matching entry in calculatedprices.json
+                matching_calculated = None
+                for calc_entry in calculatedprices_data:
+                    if (calc_entry.get("trendline_type") == trendline_type and 
+                        calc_entry.get("order_holder_position") == order_holder_position):
+                        matching_calculated = calc_entry
+                        break
+                
+                if not matching_calculated:
+                    log_and_print(f"No matching calculated prices found for executed trendline {trendline_type} with order_holder_position {order_holder_position} in {market} {timeframe}", "WARNING")
+                    continue
+                
+                # Validate order_type and entry_price consistency
+                calc_order_type = matching_calculated.get("order_type")
+                calc_entry_price = matching_calculated.get("entry_price")
+                if calc_order_type != order_type:
+                    log_and_print(f"Order type mismatch for executed trendline {trendline_type} in {market} {timeframe}: pricecandle={order_type}, calculatedprices={calc_order_type}", "WARNING")
+                    continue
+                if abs(calc_entry_price - entry_price) > 0.0001:  # Small tolerance for floating-point comparison
+                    log_and_print(f"Entry price mismatch for executed trendline {trendline_type} in {market} {timeframe}: pricecandle={entry_price}, calculatedprices={calc_entry_price}", "WARNING")
+                    continue
+                
+                # Create contract history order entry
+                contract_entry = {
+                    "market": market,
+                    "pair": matching_calculated.get("pair", market),
+                    "timeframe": timeframe,
+                    "order_type": order_type,
+                    "entry_price": calc_entry_price,
+                    "exit_price": matching_calculated.get("exit_price", 0.0),
+                    "1:0.5_price": matching_calculated.get("1:0.5_price", 0.0),
+                    "1:1_price": matching_calculated.get("1:1_price", 0.0),
+                    "1:2_price": matching_calculated.get("1:2_price", 0.0),
+                    "profit_price": matching_calculated.get("profit_price", 0.0),
+                    "lot_size": matching_calculated.get("lot_size", 0.0),
+                    "trendline_type": trendline_type,
+                    "order_holder_position": order_holder_position,
+                    "order_holder_timestamp": order_holder_timestamp,  # Add order holder timestamp
+                    "contract_status": contract_status
+                }
+                
+                # Validate prices
+                if any(price <= 0 for price in [
+                    contract_entry["entry_price"],
+                    contract_entry["exit_price"],
+                    contract_entry["1:0.5_price"],
+                    contract_entry["1:1_price"],
+                    contract_entry["1:2_price"],
+                    contract_entry["profit_price"]
+                ]):
+                    log_and_print(f"Invalid price values for executed trendline {trendline_type} in {market} {timeframe}: {contract_entry}", "WARNING")
+                    continue
+                
+                if contract_entry["lot_size"] <= 0:
+                    log_and_print(f"Invalid lot_size {contract_entry['lot_size']} for executed trendline {trendline_type} in {market} {timeframe}", "WARNING")
+                    continue
+                
+                contract_history_orders.append(contract_entry)
+                log_and_print(
+                    f"Added historical order for trendline {trendline_type}: order_type={order_type}, "
+                    f"entry_price={entry_price}, exit_price={contract_entry['exit_price']}, "
+                    f"1:0.5_price={contract_entry['1:0.5_price']}, 1:1_price={contract_entry['1:1_price']}, "
+                    f"1:2_price={contract_entry['1:2_price']}, profit_price={contract_entry['profit_price']}, "
+                    f"lot_size={contract_entry['lot_size']}, order_holder_position={order_holder_position}, "
+                    f"order_holder_timestamp={order_holder_timestamp}, contract_status={contract_status} in {market} {timeframe}",
+                    "DEBUG"
+                )
+            
+            return contract_history_orders
+
+        # Execute both functions
+        contract_pending_orders = contractpendingorders()
+        contract_history_orders = historyorders()
+        
+        # Save pending orders to contractpendingorders.json
+        if os.path.exists(pending_orders_json_path):
+            os.remove(pending_orders_json_path)
+            log_and_print(f"Existing {pending_orders_json_path} deleted", "INFO")
+        
+        try:
+            with open(pending_orders_json_path, 'w') as f:
+                json.dump(contract_pending_orders, f, indent=4)
+            log_and_print(
+                f"Saved {len(contract_pending_orders)} unique pending orders to {pending_orders_json_path} for {market} {timeframe}",
+                "SUCCESS"
+            )
+        except Exception as e:
+            log_and_print(f"Error saving contractpendingorders.json for {market} {timeframe}: {str(e)}", "ERROR")
+            return False
+        
+        # Save historical orders to contracthistory.json
+        if os.path.exists(history_orders_json_path):
+            os.remove(history_orders_json_path)
+            log_and_print(f"Existing {history_orders_json_path} deleted", "INFO")
+        
+        try:
+            with open(history_orders_json_path, 'w') as f:
+                json.dump(contract_history_orders, f, indent=4)
+            log_and_print(
+                f"Saved {len(contract_history_orders)} unique historical orders to {history_orders_json_path} for {market} {timeframe}",
+                "SUCCESS"
+            )
+        except Exception as e:
+            log_and_print(f"Error saving contracthistory.json for {market} {timeframe}: {str(e)}", "ERROR")
+            return False
+        
+        # New functionality: Collect all contractpendingorders and contracthistory across markets and timeframes
+        def collect_all_orders():
+            """Collect all contractpendingorders.json and contracthistory.json across all markets and timeframes."""
+            all_pending_orders = []
+            all_history_orders = []
+            timeframe_counts_pending = {
+                "5minutes": 0,
+                "15minutes": 0,
+                "30minutes": 0,
+                "1hour": 0,
+                "4hour": 0
+            }
+            timeframe_counts_history = {
+                "5minutes": 0,
+                "15minutes": 0,
+                "30minutes": 0,
+                "1hour": 0,
+                "4hour": 0
+            }
+            
+            # Iterate through all markets and timeframes
+            for mkt in MARKETS:
+                formatted_market = mkt.replace(" ", "_")
+                for tf in TIMEFRAMES:
+                    tf_dir = os.path.join(BASE_OUTPUT_FOLDER, formatted_market, tf.lower())
+                    pending_path = os.path.join(tf_dir, "contractpendingorders.json")
+                    history_path = os.path.join(tf_dir, "contracthistory.json")
+                    db_tf = DB_TIMEFRAME_MAPPING.get(tf, tf)  # Map to database timeframe format
+                    
+                    # Collect pending orders
+                    if os.path.exists(pending_path):
+                        try:
+                            with open(pending_path, 'r') as f:
+                                pending_data = json.load(f)
+                            if isinstance(pending_data, list):
+                                all_pending_orders.extend(pending_data)
+                                timeframe_counts_pending[db_tf] += len(pending_data)
+                                log_and_print(
+                                    f"Collected {len(pending_data)} pending orders from {pending_path}",
+                                    "DEBUG"
+                                )
+                            else:
+                                log_and_print(f"Invalid data format in {pending_path}: Expected list, got {type(pending_data)}", "WARNING")
+                        except Exception as e:
+                            log_and_print(f"Error reading {pending_path}: {str(e)}", "WARNING")
+                    
+                    # Collect historical orders
+                    if os.path.exists(history_path):
+                        try:
+                            with open(history_path, 'r') as f:
+                                history_data = json.load(f)
+                            if isinstance(history_data, list):
+                                all_history_orders.extend(history_data)
+                                timeframe_counts_history[db_tf] += len(history_data)
+                                log_and_print(
+                                    f"Collected {len(history_data)} historical orders from {history_path}",
+                                    "DEBUG"
+                                )
+                            else:
+                                log_and_print(f"Invalid data format in {history_path}: Expected list, got {type(history_data)}", "WARNING")
+                        except Exception as e:
+                            log_and_print(f"Error reading {history_path}: {str(e)}", "WARNING")
+            
+            # Prepare collective pending orders JSON
+            pending_output = {
+                "allpendingorders": len(all_pending_orders),
+                "5minutes pending orders": timeframe_counts_pending["5minutes"],
+                "15minutes pending orders": timeframe_counts_pending["15minutes"],
+                "30minutes pending orders": timeframe_counts_pending["30minutes"],
+                "1hour pending orders": timeframe_counts_pending["1hour"],
+                "4hours pending orders": timeframe_counts_pending["4hour"],
+                "orders": all_pending_orders
+            }
+            
+            # Save collectivependingorders.json
+            try:
+                if os.path.exists(collective_pending_path):
+                    os.remove(collective_pending_path)
+                    log_and_print(f"Existing {collective_pending_path} deleted", "INFO")
+                with open(collective_pending_path, 'w') as f:
+                    json.dump(pending_output, f, indent=4)
+                log_and_print(
+                    f"Saved {len(all_pending_orders)} pending orders to {collective_pending_path} "
+                    f"(5m: {timeframe_counts_pending['5minutes']}, 15m: {timeframe_counts_pending['15minutes']}, "
+                    f"30m: {timeframe_counts_pending['30minutes']}, 1h: {timeframe_counts_pending['1hour']}, "
+                    f"4h: {timeframe_counts_pending['4hour']})",
+                    "SUCCESS"
+                )
+            except Exception as e:
+                log_and_print(f"Error saving collectivependingorders.json: {str(e)}", "ERROR")
+            
+            # Prepare collective history orders JSON
+            history_output = {
+                "allhistoryorders": len(all_history_orders),
+                "5minutes history orders": timeframe_counts_history["5minutes"],
+                "15minutes history orders": timeframe_counts_history["15minutes"],
+                "30minutes history orders": timeframe_counts_history["30minutes"],
+                "1hour history orders": timeframe_counts_history["1hour"],
+                "4hours history orders": timeframe_counts_history["4hour"],
+                "orders": all_history_orders
+            }
+            
+            # Save collectivehistoryorders.json
+            try:
+                if os.path.exists(collective_history_path):
+                    os.remove(collective_history_path)
+                    log_and_print(f"Existing {collective_history_path} deleted", "INFO")
+                with open(collective_history_path, 'w') as f:
+                    json.dump(history_output, f, indent=4)
+                log_and_print(
+                    f"Saved {len(all_history_orders)} historical orders to {collective_history_path} "
+                    f"(5m: {timeframe_counts_history['5minutes']}, 15m: {timeframe_counts_history['15minutes']}, "
+                    f"30m: {timeframe_counts_history['30minutes']}, 1h: {timeframe_counts_history['1hour']}, "
+                    f"4h: {timeframe_counts_history['4hour']})",
+                    "SUCCESS"
+                )
+            except Exception as e:
+                log_and_print(f"Error saving collectivehistoryorders.json: {str(e)}", "ERROR")
+        
+        # Call the new function to collect and save collective orders
+        collect_all_orders()
+        
+        return True
+    
+    except Exception as e:
+        log_and_print(f"Error processing categorizecontract for {market} {timeframe}: {str(e)}", "ERROR")
+        return False
+
+def save_status_json(success_data: List[Dict], no_pending_data: List[Dict], failed_data: List[Dict]) -> None:
+    """Save all status data (success, no pending, failed) to marketsstatus.json with detailed process status messages."""
+    successmarkets_path = os.path.join(BASE_OUTPUT_FOLDER, "marketsstatus.json")
+
+    # Ensure the output directory exists
+    os.makedirs(BASE_OUTPUT_FOLDER, exist_ok=True)
+
+    # Calculate counts for summary
+    total_processed = len(success_data) + len(no_pending_data) + len(failed_data)
+    pending_order_missing = len(no_pending_data)
+
+    # Prepare the summary section
+    summary = {
+        "processed_markets": total_processed,
+        "pending_order_missing": pending_order_missing
+    }
+
+    # Combine all data into a single list for marketsstatus.json
+    combined_data = []
+
+    # Process successful entries
+    for item in success_data:
+        process_messages = item.get("process_messages", {})
+        status_dict = {
+            "fetch_candle_data": process_messages.get("fetch_candle_data", "No message"),
+            "save_new_mostrecent_completed_candle": process_messages.get("save_new_mostrecent_completed_candle", "No message"),
+            "match_mostrecent_candle": process_messages.get("match_mostrecent_candle", "No message"),
+            "calculate_candles_inbetween": process_messages.get("calculate_candles_inbetween", "No message"),
+            "fetchlotsizeandriskallowed": process_messages.get("fetchlotsizeandriskallowed", "No message"),
+            "match_trendline_with_candle_data": process_messages.get("match_trendline_with_candle_data", "No message"),
+            "candleafterbreakoutparent_to_currentprice": process_messages.get("candleafterbreakoutparent_to_currentprice", "No message"),
+            "candleatorderentry_from_candlesafterbreakoutparent": process_messages.get("candleatorderentry_from_candlesafterbreakoutparent", "No message"),
+            "getorderholderpriceswithlotsizeandrisk": process_messages.get("getorderholderpriceswithlotsizeandrisk", "No message"),
+            "categorizecontract": process_messages.get("categorizecontract", "No message")
+        }
+        combined_data.append({
+            "market": item["market"],
+            "timeframe": item["timeframe"],
+            "processed_at": item["processed_at"],
+            "status": status_dict,
+            "overall_status": "success"
+        })
+
+    # Process no_pending_orders entries
+    for item in no_pending_data:
+        process_messages = item.get("process_messages", {})
+        status_dict = {
+            "fetch_candle_data": process_messages.get("fetch_candle_data", "No message"),
+            "save_new_mostrecent_completed_candle": process_messages.get("save_new_mostrecent_completed_candle", "No message"),
+            "match_mostrecent_candle": process_messages.get("match_mostrecent_candle", "No message"),
+            "calculate_candles_inbetween": process_messages.get("calculate_candles_inbetween", "No message"),
+            "fetchlotsizeandriskallowed": process_messages.get("fetchlotsizeandriskallowed", "No message"),
+            "match_trendline_with_candle_data": item.get("message", "No pending orders found"),
+            "candleafterbreakoutparent_to_currentprice": "Skipped due to no pending orders",
+            "candleatorderentry_from_candlesafterbreakoutparent": "Skipped due to no pending orders",
+            "getorderholderpriceswithlotsizeandrisk": "Skipped due to no pending orders",
+            "categorizecontract": "Skipped due to no pending orders"
+        }
+        combined_data.append({
+            "market": item["market"],
+            "timeframe": item["timeframe"],
+            "processed_at": item["processed_at"],
+            "status": status_dict,
+            "overall_status": "no_pending_orders"
+        })
+
+    # Process failed entries
+    for item in failed_data:
+        process_messages = item.get("process_messages", {})
+        status_dict = {
+            "fetch_candle_data": process_messages.get("fetch_candle_data", "No message"),
+            "save_new_mostrecent_completed_candle": process_messages.get("save_new_mostrecent_completed_candle", "No message"),
+            "match_mostrecent_candle": process_messages.get("match_mostrecent_candle", "No message"),
+            "calculate_candles_inbetween": process_messages.get("calculate_candles_inbetween", "No message"),
+            "fetchlotsizeandriskallowed": process_messages.get("fetchlotsizeandriskallowed", "No message"),
+            "match_trendline_with_candle_data": process_messages.get("match_trendline_with_candle_data", "No message"),
+            "candleafterbreakoutparent_to_currentprice": process_messages.get("candleafterbreakoutparent_to_currentprice", "No message"),
+            "candleatorderentry_from_candlesafterbreakoutparent": process_messages.get("candleatorderentry_from_candlesafterbreakoutparent", "No message"),
+            "getorderholderpriceswithlotsizeandrisk": process_messages.get("getorderholderpriceswithlotsizeandrisk", "No message"),
+            "categorizecontract": process_messages.get("categorizecontract", "No message"),
+            "error": item.get("error_message", "Unknown error")
+        }
+        combined_data.append({
+            "market": item["market"],
+            "timeframe": item["timeframe"],
+            "processed_at": item["processed_at"],
+            "status": status_dict,
+            "overall_status": "failed"
+        })
+
+    # Combine summary and market data
+    output_data = {
+        "summary": summary,
+        "markets": combined_data
+    }
+
+    # Save combined data to marketsstatus.json
+    try:
+        if os.path.exists(successmarkets_path):
+            os.remove(successmarkets_path)
+            log_and_print(f"Existing {successmarkets_path} deleted", "INFO")
+        with open(successmarkets_path, 'w') as f:
+            json.dump(output_data, f, indent=4)
+        log_and_print(f"All markets saved to {successmarkets_path} ({len(combined_data)} entries)", "SUCCESS")
+    except Exception as e:
+        log_and_print(f"Error saving marketsstatus.json: {str(e)}", "ERROR")
 
 def process_market_timeframe(market: str, timeframe: str) -> Tuple[bool, Optional[str], str, Dict]:
     """Process a single market and timeframe combination, returning success status, error message, status, and process messages."""
@@ -1917,6 +2689,24 @@ def process_market_timeframe(market: str, timeframe: str) -> Tuple[bool, Optiona
                     f"No calculated prices saved for {market} {timeframe}"
                 )
 
+        # Categorize pending orders into contractpendingorders.json
+        if not categorizecontract(market, timeframe, json_dir):
+            error_message = f"Failed to categorize pending orders for {market} {timeframe}"
+            log_and_print(error_message, "ERROR")
+            process_messages["categorizecontract"] = error_message
+        else:
+            output_json_path = os.path.join(json_dir, 'contractpendingorders.json')
+            if os.path.exists(output_json_path):
+                with open(output_json_path, 'r') as f:
+                    contract_data = json.load(f)
+                process_messages["categorizecontract"] = (
+                    f"Categorized {len(contract_data)} pending orders for {market} {timeframe}"
+                )
+            else:
+                process_messages["categorizecontract"] = (
+                    f"No pending orders categorized for {market} {timeframe}"
+                )
+
         log_and_print(f"Completed processing market: {market}, timeframe: {timeframe}", "SUCCESS")
         return True, None, "success", process_messages
 
@@ -1927,110 +2717,6 @@ def process_market_timeframe(market: str, timeframe: str) -> Tuple[bool, Optiona
         return False, error_message, "failed", process_messages
     finally:
         mt5.shutdown()
-
-def save_status_json(success_data: List[Dict], no_pending_data: List[Dict], failed_data: List[Dict]) -> None:
-    """Save all status data (success, no pending, failed) to marketsstatus.json with detailed process status messages."""
-    successmarkets_path = os.path.join(BASE_OUTPUT_FOLDER, "marketsstatus.json")
-
-    # Ensure the output directory exists
-    os.makedirs(BASE_OUTPUT_FOLDER, exist_ok=True)
-
-    # Calculate counts for summary
-    total_processed = len(success_data) + len(no_pending_data) + len(failed_data)
-    pending_order_missing = len(no_pending_data)
-
-    # Prepare the summary section
-    summary = {
-        "processed_markets": total_processed,
-        "pending_order_missing": pending_order_missing
-    }
-
-    # Combine all data into a single list for marketsstatus.json
-    combined_data = []
-
-    # Process successful entries
-    for item in success_data:
-        process_messages = item.get("process_messages", {})
-        status_dict = {
-            "fetch_candle_data": process_messages.get("fetch_candle_data", "No message"),
-            "save_new_mostrecent_completed_candle": process_messages.get("save_new_mostrecent_completed_candle", "No message"),
-            "match_mostrecent_candle": process_messages.get("match_mostrecent_candle", "No message"),
-            "calculate_candles_inbetween": process_messages.get("calculate_candles_inbetween", "No message"),
-            "fetchlotsizeandriskallowed": process_messages.get("fetchlotsizeandriskallowed", "No message"),
-            "match_trendline_with_candle_data": process_messages.get("match_trendline_with_candle_data", "No message"),
-            "candleafterbreakoutparent_to_currentprice": process_messages.get("candleafterbreakoutparent_to_currentprice", "No message"),
-            "candleatorderentry_from_candlesafterbreakoutparent": process_messages.get("candleatorderentry_from_candlesafterbreakoutparent", "No message"),
-            "getorderholderpriceswithlotsizeandrisk": process_messages.get("getorderholderpriceswithlotsizeandrisk", "No message")
-        }
-        combined_data.append({
-            "market": item["market"],
-            "timeframe": item["timeframe"],
-            "processed_at": item["processed_at"],
-            "status": status_dict,
-            "overall_status": "success"
-        })
-
-    # Process no_pending_orders entries
-    for item in no_pending_data:
-        process_messages = item.get("process_messages", {})
-        status_dict = {
-            "fetch_candle_data": process_messages.get("fetch_candle_data", "No message"),
-            "save_new_mostrecent_completed_candle": process_messages.get("save_new_mostrecent_completed_candle", "No message"),
-            "match_mostrecent_candle": process_messages.get("match_mostrecent_candle", "No message"),
-            "calculate_candles_inbetween": process_messages.get("calculate_candles_inbetween", "No message"),
-            "fetchlotsizeandriskallowed": process_messages.get("fetchlotsizeandriskallowed", "No message"),
-            "match_trendline_with_candle_data": item.get("message", "No pending orders found"),
-            "candleafterbreakoutparent_to_currentprice": "Skipped due to no pending orders",
-            "candleatorderentry_from_candlesafterbreakoutparent": "Skipped due to no pending orders",
-            "getorderholderpriceswithlotsizeandrisk": "Skipped due to no pending orders"
-        }
-        combined_data.append({
-            "market": item["market"],
-            "timeframe": item["timeframe"],
-            "processed_at": item["processed_at"],
-            "status": status_dict,
-            "overall_status": "no_pending_orders"
-        })
-
-    # Process failed entries
-    for item in failed_data:
-        process_messages = item.get("process_messages", {})
-        status_dict = {
-            "fetch_candle_data": process_messages.get("fetch_candle_data", "No message"),
-            "save_new_mostrecent_completed_candle": process_messages.get("save_new_mostrecent_completed_candle", "No message"),
-            "match_mostrecent_candle": process_messages.get("match_mostrecent_candle", "No message"),
-            "calculate_candles_inbetween": process_messages.get("calculate_candles_inbetween", "No message"),
-            "fetchlotsizeandriskallowed": process_messages.get("fetchlotsizeandriskallowed", "No message"),
-            "match_trendline_with_candle_data": process_messages.get("match_trendline_with_candle_data", "No message"),
-            "candleafterbreakoutparent_to_currentprice": process_messages.get("candleafterbreakoutparent_to_currentprice", "No message"),
-            "candleatorderentry_from_candlesafterbreakoutparent": process_messages.get("candleatorderentry_from_candlesafterbreakoutparent", "No message"),
-            "getorderholderpriceswithlotsizeandrisk": process_messages.get("getorderholderpriceswithlotsizeandrisk", "No message"),
-            "error": item.get("error_message", "Unknown error")
-        }
-        combined_data.append({
-            "market": item["market"],
-            "timeframe": item["timeframe"],
-            "processed_at": item["processed_at"],
-            "status": status_dict,
-            "overall_status": "failed"
-        })
-
-    # Combine summary and market data
-    output_data = {
-        "summary": summary,
-        "markets": combined_data
-    }
-
-    # Save combined data to marketsstatus.json
-    try:
-        if os.path.exists(successmarkets_path):
-            os.remove(successmarkets_path)
-            log_and_print(f"Existing {successmarkets_path} deleted", "INFO")
-        with open(successmarkets_path, 'w') as f:
-            json.dump(output_data, f, indent=4)
-        log_and_print(f"All markets saved to {successmarkets_path} ({len(combined_data)} entries)", "SUCCESS")
-    except Exception as e:
-        log_and_print(f"Error saving marketsstatus.json: {str(e)}", "ERROR")
 
 def main():
     """Main function to process all markets and timeframes, saving all status to marketsstatus.json."""
