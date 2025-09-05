@@ -2126,7 +2126,7 @@ def BreakevenStopandProfitTracker(market: str, timeframe: str, json_dir: str) ->
         return False
     
 def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
-    log_and_print(f"Categorizing pending and historical orders for market={market}, timeframe={timeframe}", "INFO")
+    log_and_print(f"Categorizing pending, historical, and reward ratio orders for market={market}, timeframe={timeframe}", "INFO")
     
     # Define file paths
     pricecandle_json_path = os.path.join(json_dir, "pricecandle.json")
@@ -2135,10 +2135,22 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
     history_orders_json_path = os.path.join(json_dir, "contracthistory.json")
     profit_history_json_path = os.path.join(json_dir, "contractprofithistory.json")
     stoploss_history_json_path = os.path.join(json_dir, "contractstoplosshistory.json")
+    ratio_0_5_revisit_json_path = os.path.join(json_dir, "ratio0.5revisit.json")
+    ratio_1_revisit_json_path = os.path.join(json_dir, "ratio1revisit.json")
+    ratio_2_revisit_json_path = os.path.join(json_dir, "ratio2revisit.json")
+    ratio_0_5_norevisit_json_path = os.path.join(json_dir, "ratio0.5norevisit.json")
+    ratio_1_norevisit_json_path = os.path.join(json_dir, "ratio1norevisit.json")
+    ratio_2_norevisit_json_path = os.path.join(json_dir, "ratio2norevisit.json")
     collective_pending_path = os.path.join(BASE_OUTPUT_FOLDER, "collectivependingorders.json")
     collective_history_path = os.path.join(BASE_OUTPUT_FOLDER, "collectivehistoryorders.json")
     collective_profit_history_path = os.path.join(BASE_OUTPUT_FOLDER, "collectivecontractprofithistory.json")
     collective_stoploss_history_path = os.path.join(BASE_OUTPUT_FOLDER, "collectivecontractstoplosshistory.json")
+    collective_ratio_0_5_revisit_path = os.path.join(BASE_OUTPUT_FOLDER, "collectiveratio0.5revisit.json")
+    collective_ratio_1_revisit_path = os.path.join(BASE_OUTPUT_FOLDER, "collectiveratio1revisit.json")
+    collective_ratio_2_revisit_path = os.path.join(BASE_OUTPUT_FOLDER, "collectiveratio2revisit.json")
+    collective_ratio_0_5_norevisit_path = os.path.join(BASE_OUTPUT_FOLDER, "collectiveratio0.5norevisit.json")
+    collective_ratio_1_norevisit_path = os.path.join(BASE_OUTPUT_FOLDER, "collectiveratio1norevisit.json")
+    collective_ratio_2_norevisit_path = os.path.join(BASE_OUTPUT_FOLDER, "collectiveratio2norevisit.json")
     
     # Check if required JSON files exist
     if not os.path.exists(pricecandle_json_path):
@@ -2375,9 +2387,165 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
 
             return contract_history_orders, profit_history_orders, stoploss_history_orders
 
-        # Execute both functions
+        def rewardratios() -> tuple[list, list, list, list, list, list]:
+            """Extract orders with specific reward ratio statuses from pricecandle.json based on independent_check,
+            and separate into ratio0.5revisit.json, ratio1revisit.json, ratio2revisit.json,
+            ratio0.5norevisit.json, ratio1norevisit.json, and ratio2norevisit.json."""
+            ratio_0_5_revisit_orders = []
+            ratio_1_revisit_orders = []
+            ratio_2_revisit_orders = []
+            ratio_0_5_norevisit_orders = []
+            ratio_1_norevisit_orders = []
+            ratio_2_norevisit_orders = []
+            seen_order_keys = set()  # Track unique (order_holder_timestamp, entry_price, order_type) pairs
+
+            # Process each trendline in pricecandle.json for reward ratio statuses
+            for trendline in pricecandle_data:
+                trendline_type = trendline.get("type")
+                order_holder = trendline.get("order_holder", {})
+                order_holder_position = order_holder.get("position_number")
+                order_holder_timestamp = order_holder.get("Time", "N/A")  # Extract order holder timestamp
+                contract_status = trendline.get("contract status summary", {}).get("contract status", "")
+                receiver = trendline.get("receiver", {})
+                executioner_candle = trendline.get("executioner candle", {})
+                sender_position = trendline.get("sender", {}).get("position_number")
+
+                # Only process orders with profit or stoploss status and an executioner candle
+                if contract_status not in ["profit reached exit contract", "Exit contract at stoploss"] or not executioner_candle:
+                    continue
+
+                # Extract order_type from receiver
+                order_type = receiver.get("order_type", "unknown")
+                if not order_type or order_type.lower() not in ["long", "short", "buy_limit", "sell_limit", "buy", "sell"]:
+                    continue
+
+                # Find matching entry in calculatedprices.json
+                matching_calculated = None
+                for calc_entry in calculatedprices_data:
+                    if (calc_entry.get("trendline_type") == trendline_type and 
+                        calc_entry.get("order_holder_position") == order_holder_position):
+                        matching_calculated = calc_entry
+                        break
+
+                if not matching_calculated:
+                    continue
+
+                # Get entry_price from calculatedprices.json
+                entry_price = matching_calculated.get("entry_price", 0.0)
+
+                # Create a unique key for deduplication
+                order_key = (order_holder_timestamp, entry_price, order_type.lower())
+                if order_key in seen_order_keys:
+                    continue
+                seen_order_keys.add(order_key)
+
+                # Create contract entry
+                contract_entry = {
+                    "market": market,
+                    "pair": matching_calculated.get("pair", market),
+                    "timeframe": timeframe,
+                    "order_type": order_type,
+                    "entry_price": entry_price,
+                    "exit_price": matching_calculated.get("exit_price", 0.0),
+                    "1:0.5_price": matching_calculated.get("1:0.5_price", 0.0),
+                    "1:1_price": matching_calculated.get("1:1_price", 0.0),
+                    "1:2_price": matching_calculated.get("1:2_price", 0.0),
+                    "profit_price": matching_calculated.get("profit_price", 0.0),
+                    "lot_size": matching_calculated.get("lot_size", 0.0),
+                    "trendline_type": trendline_type,
+                    "order_holder_position": order_holder_position,
+                    "order_holder_timestamp": order_holder_timestamp,
+                    "contract_status": contract_status,
+                    "sender_position": sender_position
+                }
+
+                # Validate prices
+                if any(price <= 0 for price in [
+                    contract_entry["entry_price"],
+                    contract_entry["exit_price"],
+                    contract_entry["1:0.5_price"],
+                    contract_entry["1:1_price"],
+                    contract_entry["1:2_price"],
+                    contract_entry["profit_price"]
+                ]):
+                    continue
+
+                if contract_entry["lot_size"] <= 0:
+                    continue
+
+                # Check independent_check statuses for each reward ratio
+                ratio_0_5_status = trendline.get("1:0.5 candle", {}).get("independent_check", {}).get("status", "")
+                ratio_1_status = trendline.get("1:1 candle", {}).get("independent_check", {}).get("status", "")
+                ratio_2_status = trendline.get("1:2 candle", {}).get("independent_check", {}).get("status", "")
+
+                # Categorize based on 1:0.5 independent_check status
+                if ratio_0_5_status == "1:0.5 breakseven":
+                    ratio_0_5_revisit_orders.append(contract_entry)
+                    log_and_print(
+                        f"Added 1:0.5 revisit order for trendline {trendline_type}: order_type={order_type}, "
+                        f"entry_price={entry_price}, status={ratio_0_5_status} in {market} {timeframe}",
+                        "DEBUG"
+                    )
+                elif ratio_0_5_status == "no revisit before profit":
+                    ratio_0_5_norevisit_orders.append(contract_entry)
+                    log_and_print(
+                        f"Added 1:0.5 no revisit order for trendline {trendline_type}: order_type={order_type}, "
+                        f"entry_price={entry_price}, status={ratio_0_5_status} in {market} {timeframe}",
+                        "DEBUG"
+                    )
+
+                # Categorize based on 1:1 independent_check status
+                if ratio_1_status == "1:1 breakseven":
+                    ratio_1_revisit_orders.append(contract_entry)
+                    log_and_print(
+                        f"Added 1:1 revisit order for trendline {trendline_type}: order_type={order_type}, "
+                        f"entry_price={entry_price}, status={ratio_1_status} in {market} {timeframe}",
+                        "DEBUG"
+                    )
+                elif ratio_1_status == "no revisit before profit":
+                    ratio_1_norevisit_orders.append(contract_entry)
+                    log_and_print(
+                        f"Added 1:1 no revisit order for trendline {trendline_type}: order_type={order_type}, "
+                        f"entry_price={entry_price}, status={ratio_1_status} in {market} {timeframe}",
+                        "DEBUG"
+                    )
+
+                # Categorize based on 1:2 independent_check status
+                if ratio_2_status == "1:2 breakseven":
+                    ratio_2_revisit_orders.append(contract_entry)
+                    log_and_print(
+                        f"Added 1:2 revisit order for trendline {trendline_type}: order_type={order_type}, "
+                        f"entry_price={entry_price}, status={ratio_2_status} in {market} {timeframe}",
+                        "DEBUG"
+                    )
+                elif ratio_2_status == "no revisit before profit":
+                    ratio_2_norevisit_orders.append(contract_entry)
+                    log_and_print(
+                        f"Added 1:2 no revisit order for trendline {trendline_type}: order_type={order_type}, "
+                        f"entry_price={entry_price}, status={ratio_2_status} in {market} {timeframe}",
+                        "DEBUG"
+                    )
+
+            return (
+                ratio_0_5_revisit_orders,
+                ratio_1_revisit_orders,
+                ratio_2_revisit_orders,
+                ratio_0_5_norevisit_orders,
+                ratio_1_norevisit_orders,
+                ratio_2_norevisit_orders
+            )
+
+        # Execute all functions
         contract_pending_orders = contractpendingorders()
         contract_history_orders, profit_history_orders, stoploss_history_orders = historyorders()
+        (
+            ratio_0_5_revisit_orders,
+            ratio_1_revisit_orders,
+            ratio_2_revisit_orders,
+            ratio_0_5_norevisit_orders,
+            ratio_1_norevisit_orders,
+            ratio_2_norevisit_orders
+        ) = rewardratios()
         
         # Save pending orders to contractpendingorders.json
         if os.path.exists(pending_orders_json_path):
@@ -2443,14 +2611,116 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
             log_and_print(f"Error saving contractstoplosshistory.json for {market} {timeframe}: {str(e)}", "ERROR")
             return False
         
-        # Collect all contractpendingorders, contracthistory, profithistory, and stoplosshistory across markets and timeframes
+        # Save ratio 0.5 revisit orders
+        if os.path.exists(ratio_0_5_revisit_json_path):
+            os.remove(ratio_0_5_revisit_json_path)
+            log_and_print(f"Existing {ratio_0_5_revisit_json_path} deleted", "INFO")
+        
+        try:
+            with open(ratio_0_5_revisit_json_path, 'w') as f:
+                json.dump(ratio_0_5_revisit_orders, f, indent=4)
+            log_and_print(
+                f"Saved {len(ratio_0_5_revisit_orders)} 1:0.5 revisit orders to {ratio_0_5_revisit_json_path} for {market} {timeframe}",
+                "SUCCESS"
+            )
+        except Exception as e:
+            log_and_print(f"Error saving ratio0.5revisit.json for {market} {timeframe}: {str(e)}", "ERROR")
+            return False
+        
+        # Save ratio 1 revisit orders
+        if os.path.exists(ratio_1_revisit_json_path):
+            os.remove(ratio_1_revisit_json_path)
+            log_and_print(f"Existing {ratio_1_revisit_json_path} deleted", "INFO")
+        
+        try:
+            with open(ratio_1_revisit_json_path, 'w') as f:
+                json.dump(ratio_1_revisit_orders, f, indent=4)
+            log_and_print(
+                f"Saved {len(ratio_1_revisit_orders)} 1:1 revisit orders to {ratio_1_revisit_json_path} for {market} {timeframe}",
+                "SUCCESS"
+            )
+        except Exception as e:
+            log_and_print(f"Error saving ratio1revisit.json for {market} {timeframe}: {str(e)}", "ERROR")
+            return False
+        
+        # Save ratio 2 revisit orders
+        if os.path.exists(ratio_2_revisit_json_path):
+            os.remove(ratio_2_revisit_json_path)
+            log_and_print(f"Existing {ratio_2_revisit_json_path} deleted", "INFO")
+        
+        try:
+            with open(ratio_2_revisit_json_path, 'w') as f:
+                json.dump(ratio_2_revisit_orders, f, indent=4)
+            log_and_print(
+                f"Saved {len(ratio_2_revisit_orders)} 1:2 revisit orders to {ratio_2_revisit_json_path} for {market} {timeframe}",
+                "SUCCESS"
+            )
+        except Exception as e:
+            log_and_print(f"Error saving ratio2revisit.json for {market} {timeframe}: {str(e)}", "ERROR")
+            return False
+        
+        # Save ratio 0.5 no revisit orders
+        if os.path.exists(ratio_0_5_norevisit_json_path):
+            os.remove(ratio_0_5_norevisit_json_path)
+            log_and_print(f"Existing {ratio_0_5_norevisit_json_path} deleted", "INFO")
+        
+        try:
+            with open(ratio_0_5_norevisit_json_path, 'w') as f:
+                json.dump(ratio_0_5_norevisit_orders, f, indent=4)
+            log_and_print(
+                f"Saved {len(ratio_0_5_norevisit_orders)} 1:0.5 no revisit orders to {ratio_0_5_norevisit_json_path} for {market} {timeframe}",
+                "SUCCESS"
+            )
+        except Exception as e:
+            log_and_print(f"Error saving ratio0.5norevisit.json for {market} {timeframe}: {str(e)}", "ERROR")
+            return False
+        
+        # Save ratio 1 no revisit orders
+        if os.path.exists(ratio_1_norevisit_json_path):
+            os.remove(ratio_1_norevisit_json_path)
+            log_and_print(f"Existing {ratio_1_norevisit_json_path} deleted", "INFO")
+        
+        try:
+            with open(ratio_1_norevisit_json_path, 'w') as f:
+                json.dump(ratio_1_norevisit_orders, f, indent=4)
+            log_and_print(
+                f"Saved {len(ratio_1_norevisit_orders)} 1:1 no revisit orders to {ratio_1_norevisit_json_path} for {market} {timeframe}",
+                "SUCCESS"
+            )
+        except Exception as e:
+            log_and_print(f"Error saving ratio1norevisit.json for {market} {timeframe}: {str(e)}", "ERROR")
+            return False
+        
+        # Save ratio 2 no revisit orders
+        if os.path.exists(ratio_2_norevisit_json_path):
+            os.remove(ratio_2_norevisit_json_path)
+            log_and_print(f"Existing {ratio_2_norevisit_json_path} deleted", "INFO")
+        
+        try:
+            with open(ratio_2_norevisit_json_path, 'w') as f:
+                json.dump(ratio_2_norevisit_orders, f, indent=4)
+            log_and_print(
+                f"Saved {len(ratio_2_norevisit_orders)} 1:2 no revisit orders to {ratio_2_norevisit_json_path} for {market} {timeframe}",
+                "SUCCESS"
+            )
+        except Exception as e:
+            log_and_print(f"Error saving ratio2norevisit.json for {market} {timeframe}: {str(e)}", "ERROR")
+            return False
+        
+        # Collect all contractpendingorders, contracthistory, profithistory, stoplosshistory, and reward ratio orders across markets and timeframes
         def collect_all_orders():
-            """Collect all contractpendingorders.json, contracthistory.json, contractprofithistory.json, and contractstoplosshistory.json 
-            across all markets and timeframes."""
+            """Collect all contractpendingorders.json, contracthistory.json, contractprofithistory.json, 
+            contractstoplosshistory.json, and reward ratio JSONs across all markets and timeframes."""
             all_pending_orders = []
             all_history_orders = []
             all_profit_history_orders = []
             all_stoploss_history_orders = []
+            all_ratio_0_5_revisit_orders = []
+            all_ratio_1_revisit_orders = []
+            all_ratio_2_revisit_orders = []
+            all_ratio_0_5_norevisit_orders = []
+            all_ratio_1_norevisit_orders = []
+            all_ratio_2_norevisit_orders = []
             timeframe_counts_pending = {
                 "5minutes": 0,
                 "15minutes": 0,
@@ -2479,6 +2749,48 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
                 "1hour": 0,
                 "4hour": 0
             }
+            timeframe_counts_ratio_0_5_revisit = {
+                "5minutes": 0,
+                "15minutes": 0,
+                "30minutes": 0,
+                "1hour": 0,
+                "4hour": 0
+            }
+            timeframe_counts_ratio_1_revisit = {
+                "5minutes": 0,
+                "15minutes": 0,
+                "30minutes": 0,
+                "1hour": 0,
+                "4hour": 0
+            }
+            timeframe_counts_ratio_2_revisit = {
+                "5minutes": 0,
+                "15minutes": 0,
+                "30minutes": 0,
+                "1hour": 0,
+                "4hour": 0
+            }
+            timeframe_counts_ratio_0_5_norevisit = {
+                "5minutes": 0,
+                "15minutes": 0,
+                "30minutes": 0,
+                "1hour": 0,
+                "4hour": 0
+            }
+            timeframe_counts_ratio_1_norevisit = {
+                "5minutes": 0,
+                "15minutes": 0,
+                "30minutes": 0,
+                "1hour": 0,
+                "4hour": 0
+            }
+            timeframe_counts_ratio_2_norevisit = {
+                "5minutes": 0,
+                "15minutes": 0,
+                "30minutes": 0,
+                "1hour": 0,
+                "4hour": 0
+            }
             
             # Iterate through all markets and timeframes
             for mkt in MARKETS:
@@ -2489,6 +2801,12 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
                     history_path = os.path.join(tf_dir, "contracthistory.json")
                     profit_path = os.path.join(tf_dir, "contractprofithistory.json")
                     stoploss_path = os.path.join(tf_dir, "contractstoplosshistory.json")
+                    ratio_0_5_revisit_path = os.path.join(tf_dir, "ratio0.5revisit.json")
+                    ratio_1_revisit_path = os.path.join(tf_dir, "ratio1revisit.json")
+                    ratio_2_revisit_path = os.path.join(tf_dir, "ratio2revisit.json")
+                    ratio_0_5_norevisit_path = os.path.join(tf_dir, "ratio0.5norevisit.json")
+                    ratio_1_norevisit_path = os.path.join(tf_dir, "ratio1norevisit.json")
+                    ratio_2_norevisit_path = os.path.join(tf_dir, "ratio2norevisit.json")
                     db_tf = DB_TIMEFRAME_MAPPING.get(tf, tf)  # Map to database timeframe format
                     
                     # Collect pending orders
@@ -2558,8 +2876,110 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
                                 log_and_print(f"Invalid data format in {stoploss_path}: Expected list, got {type(stoploss_data)}", "WARNING")
                         except Exception as e:
                             log_and_print(f"Error reading {stoploss_path}: {str(e)}", "WARNING")
+                    
+                    # Collect ratio 0.5 revisit orders
+                    if os.path.exists(ratio_0_5_revisit_path):
+                        try:
+                            with open(ratio_0_5_revisit_path, 'r') as f:
+                                ratio_data = json.load(f)
+                            if isinstance(ratio_data, list):
+                                all_ratio_0_5_revisit_orders.extend(ratio_data)
+                                timeframe_counts_ratio_0_5_revisit[db_tf] += len(ratio_data)
+                                log_and_print(
+                                    f"Collected {len(ratio_data)} 1:0.5 revisit orders from {ratio_0_5_revisit_path}",
+                                    "DEBUG"
+                                )
+                            else:
+                                log_and_print(f"Invalid data format in {ratio_0_5_revisit_path}: Expected list, got {type(ratio_data)}", "WARNING")
+                        except Exception as e:
+                            log_and_print(f"Error reading {ratio_0_5_revisit_path}: {str(e)}", "WARNING")
+                    
+                    # Collect ratio 1 revisit orders
+                    if os.path.exists(ratio_1_revisit_path):
+                        try:
+                            with open(ratio_1_revisit_path, 'r') as f:
+                                ratio_data = json.load(f)
+                            if isinstance(ratio_data, list):
+                                all_ratio_1_revisit_orders.extend(ratio_data)
+                                timeframe_counts_ratio_1_revisit[db_tf] += len(ratio_data)
+                                log_and_print(
+                                    f"Collected {len(ratio_data)} 1:1 revisit orders from {ratio_1_revisit_path}",
+                                    "DEBUG"
+                                )
+                            else:
+                                log_and_print(f"Invalid data format in {ratio_1_revisit_path}: Expected list, got {type(ratio_data)}", "WARNING")
+                        except Exception as e:
+                            log_and_print(f"Error reading {ratio_1_revisit_path}: {str(e)}", "WARNING")
+                    
+                    # Collect ratio 2 revisit orders
+                    if os.path.exists(ratio_2_revisit_path):
+                        try:
+                            with open(ratio_2_revisit_path, 'r') as f:
+                                ratio_data = json.load(f)
+                            if isinstance(ratio_data, list):
+                                all_ratio_2_revisit_orders.extend(ratio_data)
+                                timeframe_counts_ratio_2_revisit[db_tf] += len(ratio_data)
+                                log_and_print(
+                                    f"Collected {len(ratio_data)} 1:2 revisit orders from {ratio_2_revisit_path}",
+                                    "DEBUG"
+                                )
+                            else:
+                                log_and_print(f"Invalid data format in {ratio_2_revisit_path}: Expected list, got {type(ratio_data)}", "WARNING")
+                        except Exception as e:
+                            log_and_print(f"Error reading {ratio_2_revisit_path}: {str(e)}", "WARNING")
+                    
+                    # Collect ratio 0.5 no revisit orders
+                    if os.path.exists(ratio_0_5_norevisit_path):
+                        try:
+                            with open(ratio_0_5_norevisit_path, 'r') as f:
+                                ratio_data = json.load(f)
+                            if isinstance(ratio_data, list):
+                                all_ratio_0_5_norevisit_orders.extend(ratio_data)
+                                timeframe_counts_ratio_0_5_norevisit[db_tf] += len(ratio_data)
+                                log_and_print(
+                                    f"Collected {len(ratio_data)} 1:0.5 no revisit orders from {ratio_0_5_norevisit_path}",
+                                    "DEBUG"
+                                )
+                            else:
+                                log_and_print(f"Invalid data format in {ratio_0_5_norevisit_path}: Expected list, got {type(ratio_data)}", "WARNING")
+                        except Exception as e:
+                            log_and_print(f"Error reading {ratio_0_5_norevisit_path}: {str(e)}", "WARNING")
+                    
+                    # Collect ratio 1 no revisit orders
+                    if os.path.exists(ratio_1_norevisit_path):
+                        try:
+                            with open(ratio_1_norevisit_path, 'r') as f:
+                                ratio_data = json.load(f)
+                            if isinstance(ratio_data, list):
+                                all_ratio_1_norevisit_orders.extend(ratio_data)
+                                timeframe_counts_ratio_1_norevisit[db_tf] += len(ratio_data)
+                                log_and_print(
+                                    f"Collected {len(ratio_data)} 1:1 no revisit orders from {ratio_1_norevisit_path}",
+                                    "DEBUG"
+                                )
+                            else:
+                                log_and_print(f"Invalid data format in {ratio_1_norevisit_path}: Expected list, got {type(ratio_data)}", "WARNING")
+                        except Exception as e:
+                            log_and_print(f"Error reading {ratio_1_norevisit_path}: {str(e)}", "WARNING")
+                    
+                    # Collect ratio 2 no revisit orders
+                    if os.path.exists(ratio_2_norevisit_path):
+                        try:
+                            with open(ratio_2_norevisit_path, 'r') as f:
+                                ratio_data = json.load(f)
+                            if isinstance(ratio_data, list):
+                                all_ratio_2_norevisit_orders.extend(ratio_data)
+                                timeframe_counts_ratio_2_norevisit[db_tf] += len(ratio_data)
+                                log_and_print(
+                                    f"Collected {len(ratio_data)} 1:2 no revisit orders from {ratio_2_norevisit_path}",
+                                    "DEBUG"
+                                )
+                            else:
+                                log_and_print(f"Invalid data format in {ratio_2_norevisit_path}: Expected list, got {type(ratio_data)}", "WARNING")
+                        except Exception as e:
+                            log_and_print(f"Error reading {ratio_2_norevisit_path}: {str(e)}", "WARNING")
             
-            # Prepare collective pending orders JSON
+            # Prepare and save collective pending orders JSON
             pending_output = {
                 "allpendingorders": len(all_pending_orders),
                 "5minutes pending orders": timeframe_counts_pending["5minutes"],
@@ -2570,7 +2990,6 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
                 "orders": all_pending_orders
             }
             
-            # Save collectivependingorders.json
             try:
                 if os.path.exists(collective_pending_path):
                     os.remove(collective_pending_path)
@@ -2587,7 +3006,7 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
             except Exception as e:
                 log_and_print(f"Error saving collectivependingorders.json: {str(e)}", "ERROR")
             
-            # Prepare collective history orders JSON
+            # Prepare and save collective history orders JSON
             history_output = {
                 "allhistoryorders": len(all_history_orders),
                 "5minutes history orders": timeframe_counts_history["5minutes"],
@@ -2598,7 +3017,6 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
                 "orders": all_history_orders
             }
             
-            # Save collectivehistoryorders.json
             try:
                 if os.path.exists(collective_history_path):
                     os.remove(collective_history_path)
@@ -2615,8 +3033,8 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
             except Exception as e:
                 log_and_print(f"Error saving collectivehistoryorders.json: {str(e)}", "ERROR")
             
-            # Prepare collective profit history orders JSON
-            history_output = {
+            # Prepare and save collective profit history orders JSON
+            profit_history_output = {
                 "allprofithistoryorders": len(all_profit_history_orders),
                 "5minutes profit history orders": timeframe_counts_profit["5minutes"],
                 "15minutes profit history orders": timeframe_counts_profit["15minutes"],
@@ -2626,13 +3044,12 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
                 "orders": all_profit_history_orders
             }
             
-            # Save collectivecontractprofithistory.json
             try:
                 if os.path.exists(collective_profit_history_path):
                     os.remove(collective_profit_history_path)
                     log_and_print(f"Existing {collective_profit_history_path} deleted", "INFO")
                 with open(collective_profit_history_path, 'w') as f:
-                    json.dump(history_output, f, indent=4)
+                    json.dump(profit_history_output, f, indent=4)
                 log_and_print(
                     f"Saved {len(all_profit_history_orders)} profit history orders to {collective_profit_history_path} "
                     f"(5m: {timeframe_counts_profit['5minutes']}, 15m: {timeframe_counts_profit['15minutes']}, "
@@ -2643,7 +3060,7 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
             except Exception as e:
                 log_and_print(f"Error saving collectivecontractprofithistory.json: {str(e)}", "ERROR")
             
-            # Prepare collective stoploss history orders JSON
+            # Prepare and save collective stoploss history orders JSON
             stoploss_history_output = {
                 "allstoplosshistoryorders": len(all_stoploss_history_orders),
                 "5minutes stoploss history orders": timeframe_counts_stoploss["5minutes"],
@@ -2654,7 +3071,6 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
                 "orders": all_stoploss_history_orders
             }
             
-            # Save collectivecontractstoplosshistory.json
             try:
                 if os.path.exists(collective_stoploss_history_path):
                     os.remove(collective_stoploss_history_path)
@@ -2670,6 +3086,168 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
                 )
             except Exception as e:
                 log_and_print(f"Error saving collectivecontractstoplosshistory.json: {str(e)}", "ERROR")
+            
+            # Prepare and save collective ratio 0.5 revisit orders JSON
+            ratio_0_5_revisit_output = {
+                "allratio0.5revisitorders": len(all_ratio_0_5_revisit_orders),
+                "5minutes ratio0.5 revisit orders": timeframe_counts_ratio_0_5_revisit["5minutes"],
+                "15minutes ratio0.5 revisit orders": timeframe_counts_ratio_0_5_revisit["15minutes"],
+                "30minutes ratio0.5 revisit orders": timeframe_counts_ratio_0_5_revisit["30minutes"],
+                "1hour ratio0.5 revisit orders": timeframe_counts_ratio_0_5_revisit["1hour"],
+                "4hours ratio0.5 revisit orders": timeframe_counts_ratio_0_5_revisit["4hour"],
+                "orders": all_ratio_0_5_revisit_orders
+            }
+            
+            try:
+                if os.path.exists(collective_ratio_0_5_revisit_path):
+                    os.remove(collective_ratio_0_5_revisit_path)
+                    log_and_print(f"Existing {collective_ratio_0_5_revisit_path} deleted", "INFO")
+                with open(collective_ratio_0_5_revisit_path, 'w') as f:
+                    json.dump(ratio_0_5_revisit_output, f, indent=4)
+                log_and_print(
+                    f"Saved {len(all_ratio_0_5_revisit_orders)} 1:0.5 revisit orders to {collective_ratio_0_5_revisit_path} "
+                    f"(5m: {timeframe_counts_ratio_0_5_revisit['5minutes']}, 15m: {timeframe_counts_ratio_0_5_revisit['15minutes']}, "
+                    f"30m: {timeframe_counts_ratio_0_5_revisit['30minutes']}, 1h: {timeframe_counts_ratio_0_5_revisit['1hour']}, "
+                    f"4h: {timeframe_counts_ratio_0_5_revisit['4hour']})",
+                    "SUCCESS"
+                )
+            except Exception as e:
+                log_and_print(f"Error saving collectiveratio0.5revisit.json: {str(e)}", "ERROR")
+            
+            # Prepare and save collective ratio 1 revisit orders JSON
+            ratio_1_revisit_output = {
+                "allratio1revisitorders": len(all_ratio_1_revisit_orders),
+                "5minutes ratio1 revisit orders": timeframe_counts_ratio_1_revisit["5minutes"],
+                "15minutes ratio1 revisit orders": timeframe_counts_ratio_1_revisit["15minutes"],
+                "30minutes ratio1 revisit orders": timeframe_counts_ratio_1_revisit["30minutes"],
+                "1hour ratio1 revisit orders": timeframe_counts_ratio_1_revisit["1hour"],
+                "4hours ratio1 revisit orders": timeframe_counts_ratio_1_revisit["4hour"],
+                "orders": all_ratio_1_revisit_orders
+            }
+            
+            try:
+                if os.path.exists(collective_ratio_1_revisit_path):
+                    os.remove(collective_ratio_1_revisit_path)
+                    log_and_print(f"Existing {collective_ratio_1_revisit_path} deleted", "INFO")
+                with open(collective_ratio_1_revisit_path, 'w') as f:
+                    json.dump(ratio_1_revisit_output, f, indent=4)
+                log_and_print(
+                    f"Saved {len(all_ratio_1_revisit_orders)} 1:1 revisit orders to {collective_ratio_1_revisit_path} "
+                    f"(5m: {timeframe_counts_ratio_1_revisit['5minutes']}, 15m: {timeframe_counts_ratio_1_revisit['15minutes']}, "
+                    f"30m: {timeframe_counts_ratio_1_revisit['30minutes']}, 1h: {timeframe_counts_ratio_1_revisit['1hour']}, "
+                    f"4h: {timeframe_counts_ratio_1_revisit['4hour']})",
+                    "SUCCESS"
+                )
+            except Exception as e:
+                log_and_print(f"Error saving collectiveratio1revisit.json: {str(e)}", "ERROR")
+            
+            # Prepare and save collective ratio 2 revisit orders JSON
+            ratio_2_revisit_output = {
+                "allratio2revisitorders": len(all_ratio_2_revisit_orders),
+                "5minutes ratio2 revisit orders": timeframe_counts_ratio_2_revisit["5minutes"],
+                "15minutes ratio2 revisit orders": timeframe_counts_ratio_2_revisit["15minutes"],
+                "30minutes ratio2 revisit orders": timeframe_counts_ratio_2_revisit["30minutes"],
+                "1hour ratio2 revisit orders": timeframe_counts_ratio_2_revisit["1hour"],
+                "4hours ratio2 revisit orders": timeframe_counts_ratio_2_revisit["4hour"],
+                "orders": all_ratio_2_revisit_orders
+            }
+            
+            try:
+                if os.path.exists(collective_ratio_2_revisit_path):
+                    os.remove(collective_ratio_2_revisit_path)
+                    log_and_print(f"Existing {collective_ratio_2_revisit_path} deleted", "INFO")
+                with open(collective_ratio_2_revisit_path, 'w') as f:
+                    json.dump(ratio_2_revisit_output, f, indent=4)
+                log_and_print(
+                    f"Saved {len(all_ratio_2_revisit_orders)} 1:2 revisit orders to {collective_ratio_2_revisit_path} "
+                    f"(5m: {timeframe_counts_ratio_2_revisit['5minutes']}, 15m: {timeframe_counts_ratio_2_revisit['15minutes']}, "
+                    f"30m: {timeframe_counts_ratio_2_revisit['30minutes']}, 1h: {timeframe_counts_ratio_2_revisit['1hour']}, "
+                    f"4h: {timeframe_counts_ratio_2_revisit['4hour']})",
+                    "SUCCESS"
+                )
+            except Exception as e:
+                log_and_print(f"Error saving collectiveratio2revisit.json: {str(e)}", "ERROR")
+            
+            # Prepare and save collective ratio 0.5 no revisit orders JSON
+            ratio_0_5_norevisit_output = {
+                "allratio0.5norevisitorders": len(all_ratio_0_5_norevisit_orders),
+                "5minutes ratio0.5 no revisit orders": timeframe_counts_ratio_0_5_norevisit["5minutes"],
+                "15minutes ratio0.5 no revisit orders": timeframe_counts_ratio_0_5_norevisit["15minutes"],
+                "30minutes ratio0.5 no revisit orders": timeframe_counts_ratio_0_5_norevisit["30minutes"],
+                "1hour ratio0.5 no revisit orders": timeframe_counts_ratio_0_5_norevisit["1hour"],
+                "4hours ratio0.5 no revisit orders": timeframe_counts_ratio_0_5_norevisit["4hour"],
+                "orders": all_ratio_0_5_norevisit_orders
+            }
+            
+            try:
+                if os.path.exists(collective_ratio_0_5_norevisit_path):
+                    os.remove(collective_ratio_0_5_norevisit_path)
+                    log_and_print(f"Existing {collective_ratio_0_5_norevisit_path} deleted", "INFO")
+                with open(collective_ratio_0_5_norevisit_path, 'w') as f:
+                    json.dump(ratio_0_5_norevisit_output, f, indent=4)
+                log_and_print(
+                    f"Saved {len(all_ratio_0_5_norevisit_orders)} 1:0.5 no revisit orders to {collective_ratio_0_5_norevisit_path} "
+                    f"(5m: {timeframe_counts_ratio_0_5_norevisit['5minutes']}, 15m: {timeframe_counts_ratio_0_5_norevisit['15minutes']}, "
+                    f"30m: {timeframe_counts_ratio_0_5_norevisit['30minutes']}, 1h: {timeframe_counts_ratio_0_5_norevisit['1hour']}, "
+                    f"4h: {timeframe_counts_ratio_0_5_norevisit['4hour']})",
+                    "SUCCESS"
+                )
+            except Exception as e:
+                log_and_print(f"Error saving collectiveratio0.5norevisit.json: {str(e)}", "ERROR")
+            
+            # Prepare and save collective ratio 1 no revisit orders JSON
+            ratio_1_norevisit_output = {
+                "allratio1norevisitorders": len(all_ratio_1_norevisit_orders),
+                "5minutes ratio1 no revisit orders": timeframe_counts_ratio_1_norevisit["5minutes"],
+                "15minutes ratio1 no revisit orders": timeframe_counts_ratio_1_norevisit["15minutes"],
+                "30minutes ratio1 no revisit orders": timeframe_counts_ratio_1_norevisit["30minutes"],
+                "1hour ratio1 no revisit orders": timeframe_counts_ratio_1_norevisit["1hour"],
+                "4hours ratio1 no revisit orders": timeframe_counts_ratio_1_norevisit["4hour"],
+                "orders": all_ratio_1_norevisit_orders
+            }
+            
+            try:
+                if os.path.exists(collective_ratio_1_norevisit_path):
+                    os.remove(collective_ratio_1_norevisit_path)
+                    log_and_print(f"Existing {collective_ratio_1_norevisit_path} deleted", "INFO")
+                with open(collective_ratio_1_norevisit_path, 'w') as f:
+                    json.dump(ratio_1_norevisit_output, f, indent=4)
+                log_and_print(
+                    f"Saved {len(all_ratio_1_norevisit_orders)} 1:1 no revisit orders to {collective_ratio_1_norevisit_path} "
+                    f"(5m: {timeframe_counts_ratio_1_norevisit['5minutes']}, 15m: {timeframe_counts_ratio_1_norevisit['15minutes']}, "
+                    f"30m: {timeframe_counts_ratio_1_norevisit['30minutes']}, 1h: {timeframe_counts_ratio_1_norevisit['1hour']}, "
+                    f"4h: {timeframe_counts_ratio_1_norevisit['4hour']})",
+                    "SUCCESS"
+                )
+            except Exception as e:
+                log_and_print(f"Error saving collectiveratio1norevisit.json: {str(e)}", "ERROR")
+            
+            # Prepare and save collective ratio 2 no revisit orders JSON
+            ratio_2_norevisit_output = {
+                "allratio2norevisitorders": len(all_ratio_2_norevisit_orders),
+                "5minutes ratio2 no revisit orders": timeframe_counts_ratio_2_norevisit["5minutes"],
+                "15minutes ratio2 no revisit orders": timeframe_counts_ratio_2_norevisit["15minutes"],
+                "30minutes ratio2 no revisit orders": timeframe_counts_ratio_2_norevisit["30minutes"],
+                "1hour ratio2 no revisit orders": timeframe_counts_ratio_2_norevisit["1hour"],
+                "4hours ratio2 no revisit orders": timeframe_counts_ratio_2_norevisit["4hour"],
+                "orders": all_ratio_2_norevisit_orders
+            }
+            
+            try:
+                if os.path.exists(collective_ratio_2_norevisit_path):
+                    os.remove(collective_ratio_2_norevisit_path)
+                    log_and_print(f"Existing {collective_ratio_2_norevisit_path} deleted", "INFO")
+                with open(collective_ratio_2_norevisit_path, 'w') as f:
+                    json.dump(ratio_2_norevisit_output, f, indent=4)
+                log_and_print(
+                    f"Saved {len(all_ratio_2_norevisit_orders)} 1:2 no revisit orders to {collective_ratio_2_norevisit_path} "
+                    f"(5m: {timeframe_counts_ratio_2_norevisit['5minutes']}, 15m: {timeframe_counts_ratio_2_norevisit['15minutes']}, "
+                    f"30m: {timeframe_counts_ratio_2_norevisit['30minutes']}, 1h: {timeframe_counts_ratio_2_norevisit['1hour']}, "
+                    f"4h: {timeframe_counts_ratio_2_norevisit['4hour']})",
+                    "SUCCESS"
+                )
+            except Exception as e:
+                log_and_print(f"Error saving collectiveratio2norevisit.json: {str(e)}", "ERROR")
         
         # Call the function to collect and save collective orders
         collect_all_orders()
