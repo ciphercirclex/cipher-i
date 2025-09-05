@@ -1529,13 +1529,7 @@ def BreakevenStopandProfitTracker(market: str, timeframe: str, json_dir: str) ->
                 updated_pricecandle_data.append(pricecandle_trendline)
                 continue
             
-            # Rename executioner candle to pending order and update with order_type and entry_price
-            pricecandle_trendline["pending order"] = executioner_candle
-            if matching_calculated:
-                pricecandle_trendline["pending order"]["status"] = f"{matching_calculated.get('order_type', order_type)} {matching_calculated.get('entry_price', 'N/A')}"
-            else:
-                pricecandle_trendline["pending order"]["status"] = f"{order_type} N/A"
-            pricecandle_trendline.pop("executioner candle", None)
+            # Removed renaming logic; keep "executioner candle" as is
             
             if not matching_calculated:
                 log_and_print(f"No matching calculated prices found for trendline {trendline_type} in {market} {timeframe}", "WARNING")
@@ -1996,11 +1990,14 @@ def BreakevenStopandProfitTracker(market: str, timeframe: str, json_dir: str) ->
         log_and_print(f"Error processing breakeven, stoploss, and profit tracking for {market} {timeframe}: {e}", "ERROR")
         return False
 
+
 def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
     """Extract pending orders and historical orders from pricecandle.json, combine with calculatedprices.json data, 
     and save to contractpendingorders.json and contracthistory.json without duplicates, including order holder timestamp.
     Additionally, collect all contractpendingorders and contracthistory across all markets and timeframes into 
-    collectivependingorders.json and collectivehistoryorders.json with summary counts."""
+    collectivependingorders.json and collectivehistoryorders.json with summary counts.
+    Further, separate historical orders into contractprofithistory.json and contractstoplosshistory.json based on contract_status, 
+    and collect them into collectivecontractprofithistory.json and collectivecontractstoplosshistory.json."""
     log_and_print(f"Categorizing pending and historical orders for market={market}, timeframe={timeframe}", "INFO")
     
     # Define file paths
@@ -2008,8 +2005,12 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
     calculatedprices_json_path = os.path.join(json_dir, "calculatedprices.json")
     pending_orders_json_path = os.path.join(json_dir, "contractpendingorders.json")
     history_orders_json_path = os.path.join(json_dir, "contracthistory.json")
+    profit_history_json_path = os.path.join(json_dir, "contractprofithistory.json")
+    stoploss_history_json_path = os.path.join(json_dir, "contractstoplosshistory.json")
     collective_pending_path = os.path.join(BASE_OUTPUT_FOLDER, "collectivependingorders.json")
     collective_history_path = os.path.join(BASE_OUTPUT_FOLDER, "collectivehistoryorders.json")
+    collective_profit_history_path = os.path.join(BASE_OUTPUT_FOLDER, "collectivecontractprofithistory.json")
+    collective_stoploss_history_path = os.path.join(BASE_OUTPUT_FOLDER, "collectivecontractstoplosshistory.json")
     
     # Check if required JSON files exist
     if not os.path.exists(pricecandle_json_path):
@@ -2144,9 +2145,12 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
             
             return contract_pending_orders
 
-        def historyorders() -> list:
-            """Extract executed orders (profit or stoploss) from pricecandle.json and save to contracthistory.json."""
+        def historyorders() -> tuple[list, list, list]:
+            """Extract executed orders (profit or stoploss) from pricecandle.json, save to contracthistory.json,
+            and separate into contractprofithistory.json and contractstoplosshistory.json based on contract_status."""
             contract_history_orders = []
+            profit_history_orders = []
+            stoploss_history_orders = []
             seen_order_keys = set()  # Track unique (trendline_type, order_holder_position) pairs
             
             # Process each trendline in pricecandle.json for historical orders
@@ -2228,7 +2232,7 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
                     "lot_size": matching_calculated.get("lot_size", 0.0),
                     "trendline_type": trendline_type,
                     "order_holder_position": order_holder_position,
-                    "order_holder_timestamp": order_holder_timestamp,  # Add order holder timestamp
+                    "order_holder_timestamp": order_holder_timestamp,
                     "contract_status": contract_status
                 }
                 
@@ -2248,7 +2252,13 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
                     log_and_print(f"Invalid lot_size {contract_entry['lot_size']} for executed trendline {trendline_type} in {market} {timeframe}", "WARNING")
                     continue
                 
+                # Add to appropriate lists based on contract_status
                 contract_history_orders.append(contract_entry)
+                if contract_status == "profit reached exit contract":
+                    profit_history_orders.append(contract_entry)
+                elif contract_status == "Exit contract at stoploss":
+                    stoploss_history_orders.append(contract_entry)
+                
                 log_and_print(
                     f"Added historical order for trendline {trendline_type}: order_type={order_type}, "
                     f"entry_price={entry_price}, exit_price={contract_entry['exit_price']}, "
@@ -2259,11 +2269,11 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
                     "DEBUG"
                 )
             
-            return contract_history_orders
+            return contract_history_orders, profit_history_orders, stoploss_history_orders
 
         # Execute both functions
         contract_pending_orders = contractpendingorders()
-        contract_history_orders = historyorders()
+        contract_history_orders, profit_history_orders, stoploss_history_orders = historyorders()
         
         # Save pending orders to contractpendingorders.json
         if os.path.exists(pending_orders_json_path):
@@ -2297,11 +2307,46 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
             log_and_print(f"Error saving contracthistory.json for {market} {timeframe}: {str(e)}", "ERROR")
             return False
         
-        # New functionality: Collect all contractpendingorders and contracthistory across markets and timeframes
+        # Save profit history orders to contractprofithistory.json
+        if os.path.exists(profit_history_json_path):
+            os.remove(profit_history_json_path)
+            log_and_print(f"Existing {profit_history_json_path} deleted", "INFO")
+        
+        try:
+            with open(profit_history_json_path, 'w') as f:
+                json.dump(profit_history_orders, f, indent=4)
+            log_and_print(
+                f"Saved {len(profit_history_orders)} profit orders to {profit_history_json_path} for {market} {timeframe}",
+                "SUCCESS"
+            )
+        except Exception as e:
+            log_and_print(f"Error saving contractprofithistory.json for {market} {timeframe}: {str(e)}", "ERROR")
+            return False
+        
+        # Save stoploss history orders to contractstoplosshistory.json
+        if os.path.exists(stoploss_history_json_path):
+            os.remove(stoploss_history_json_path)
+            log_and_print(f"Existing {stoploss_history_json_path} deleted", "INFO")
+        
+        try:
+            with open(stoploss_history_json_path, 'w') as f:
+                json.dump(stoploss_history_orders, f, indent=4)
+            log_and_print(
+                f"Saved {len(stoploss_history_orders)} stoploss orders to {stoploss_history_json_path} for {market} {timeframe}",
+                "SUCCESS"
+            )
+        except Exception as e:
+            log_and_print(f"Error saving contractstoplosshistory.json for {market} {timeframe}: {str(e)}", "ERROR")
+            return False
+        
+        # New functionality: Collect all contractpendingorders, contracthistory, profithistory, and stoplosshistory across markets and timeframes
         def collect_all_orders():
-            """Collect all contractpendingorders.json and contracthistory.json across all markets and timeframes."""
+            """Collect all contractpendingorders.json, contracthistory.json, contractprofithistory.json, and contractstoplosshistory.json 
+            across all markets and timeframes."""
             all_pending_orders = []
             all_history_orders = []
+            all_profit_history_orders = []
+            all_stoploss_history_orders = []
             timeframe_counts_pending = {
                 "5minutes": 0,
                 "15minutes": 0,
@@ -2316,6 +2361,20 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
                 "1hour": 0,
                 "4hour": 0
             }
+            timeframe_counts_profit = {
+                "5minutes": 0,
+                "15minutes": 0,
+                "30minutes": 0,
+                "1hour": 0,
+                "4hour": 0
+            }
+            timeframe_counts_stoploss = {
+                "5minutes": 0,
+                "15minutes": 0,
+                "30minutes": 0,
+                "1hour": 0,
+                "4hour": 0
+            }
             
             # Iterate through all markets and timeframes
             for mkt in MARKETS:
@@ -2324,6 +2383,8 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
                     tf_dir = os.path.join(BASE_OUTPUT_FOLDER, formatted_market, tf.lower())
                     pending_path = os.path.join(tf_dir, "contractpendingorders.json")
                     history_path = os.path.join(tf_dir, "contracthistory.json")
+                    profit_path = os.path.join(tf_dir, "contractprofithistory.json")
+                    stoploss_path = os.path.join(tf_dir, "contractstoplosshistory.json")
                     db_tf = DB_TIMEFRAME_MAPPING.get(tf, tf)  # Map to database timeframe format
                     
                     # Collect pending orders
@@ -2359,6 +2420,40 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
                                 log_and_print(f"Invalid data format in {history_path}: Expected list, got {type(history_data)}", "WARNING")
                         except Exception as e:
                             log_and_print(f"Error reading {history_path}: {str(e)}", "WARNING")
+                    
+                    # Collect profit history orders
+                    if os.path.exists(profit_path):
+                        try:
+                            with open(profit_path, 'r') as f:
+                                profit_data = json.load(f)
+                            if isinstance(profit_data, list):
+                                all_profit_history_orders.extend(profit_data)
+                                timeframe_counts_profit[db_tf] += len(profit_data)
+                                log_and_print(
+                                    f"Collected {len(profit_data)} profit history orders from {profit_path}",
+                                    "DEBUG"
+                                )
+                            else:
+                                log_and_print(f"Invalid data format in {profit_path}: Expected list, got {type(profit_data)}", "WARNING")
+                        except Exception as e:
+                            log_and_print(f"Error reading {profit_path}: {str(e)}", "WARNING")
+                    
+                    # Collect stoploss history orders
+                    if os.path.exists(stoploss_path):
+                        try:
+                            with open(stoploss_path, 'r') as f:
+                                stoploss_data = json.load(f)
+                            if isinstance(stoploss_data, list):
+                                all_stoploss_history_orders.extend(stoploss_data)
+                                timeframe_counts_stoploss[db_tf] += len(stoploss_data)
+                                log_and_print(
+                                    f"Collected {len(stoploss_data)} stoploss history orders from {stoploss_path}",
+                                    "DEBUG"
+                                )
+                            else:
+                                log_and_print(f"Invalid data format in {stoploss_path}: Expected list, got {type(stoploss_data)}", "WARNING")
+                        except Exception as e:
+                            log_and_print(f"Error reading {stoploss_path}: {str(e)}", "WARNING")
             
             # Prepare collective pending orders JSON
             pending_output = {
@@ -2415,6 +2510,62 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
                 )
             except Exception as e:
                 log_and_print(f"Error saving collectivehistoryorders.json: {str(e)}", "ERROR")
+            
+            # Prepare collective profit history orders JSON
+            profit_history_output = {
+                "allprofithistoryorders": len(all_profit_history_orders),
+                "5minutes profit history orders": timeframe_counts_profit["5minutes"],
+                "15minutes profit history orders": timeframe_counts_profit["15minutes"],
+                "30minutes profit history orders": timeframe_counts_profit["30minutes"],
+                "1hour profit history orders": timeframe_counts_profit["1hour"],
+                "4hours profit history orders": timeframe_counts_profit["4hour"],
+                "orders": all_profit_history_orders
+            }
+            
+            # Save collectivecontractprofithistory.json
+            try:
+                if os.path.exists(collective_profit_history_path):
+                    os.remove(collective_profit_history_path)
+                    log_and_print(f"Existing {collective_profit_history_path} deleted", "INFO")
+                with open(collective_profit_history_path, 'w') as f:
+                    json.dump(profit_history_output, f, indent=4)
+                log_and_print(
+                    f"Saved {len(all_profit_history_orders)} profit history orders to {collective_profit_history_path} "
+                    f"(5m: {timeframe_counts_profit['5minutes']}, 15m: {timeframe_counts_profit['15minutes']}, "
+                    f"30m: {timeframe_counts_profit['30minutes']}, 1h: {timeframe_counts_profit['1hour']}, "
+                    f"4h: {timeframe_counts_profit['4hour']})",
+                    "SUCCESS"
+                )
+            except Exception as e:
+                log_and_print(f"Error saving collectivecontractprofithistory.json: {str(e)}", "ERROR")
+            
+            # Prepare collective stoploss history orders JSON
+            stoploss_history_output = {
+                "allstoplosshistoryorders": len(all_stoploss_history_orders),
+                "5minutes stoploss history orders": timeframe_counts_stoploss["5minutes"],
+                "15minutes stoploss history orders": timeframe_counts_stoploss["15minutes"],
+                "30minutes stoploss history orders": timeframe_counts_stoploss["30minutes"],
+                "1hour stoploss history orders": timeframe_counts_stoploss["1hour"],
+                "4hours stoploss history orders": timeframe_counts_stoploss["4hour"],
+                "orders": all_stoploss_history_orders
+            }
+            
+            # Save collectivecontractstoplosshistory.json
+            try:
+                if os.path.exists(collective_stoploss_history_path):
+                    os.remove(collective_stoploss_history_path)
+                    log_and_print(f"Existing {collective_stoploss_history_path} deleted", "INFO")
+                with open(collective_stoploss_history_path, 'w') as f:
+                    json.dump(stoploss_history_output, f, indent=4)
+                log_and_print(
+                    f"Saved {len(all_stoploss_history_orders)} stoploss history orders to {collective_stoploss_history_path} "
+                    f"(5m: {timeframe_counts_stoploss['5minutes']}, 15m: {timeframe_counts_stoploss['15minutes']}, "
+                    f"30m: {timeframe_counts_stoploss['30minutes']}, 1h: {timeframe_counts_stoploss['1hour']}, "
+                    f"4h: {timeframe_counts_stoploss['4hour']})",
+                    "SUCCESS"
+                )
+            except Exception as e:
+                log_and_print(f"Error saving collectivecontractstoplosshistory.json: {str(e)}", "ERROR")
         
         # Call the new function to collect and save collective orders
         collect_all_orders()
