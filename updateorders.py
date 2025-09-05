@@ -961,7 +961,7 @@ def candleafterbreakoutparent_to_currentprice(market: str, timeframe: str, json_
         mt5.shutdown()
         return False
 
-def candleatorderentry_from_candlesafterbreakoutparent(market: str, timeframe: str, json_dir: str) -> bool:
+def executioncandle_after_breakoutparent(market: str, timeframe: str, json_dir: str) -> bool:
     """Search candlesafterbreakoutparent.json for a candle matching the order_holder_entry price and update pricecandle.json."""
     log_and_print(f"Searching for executioner candle for market={market}, timeframe={timeframe}", "INFO")
     
@@ -1462,8 +1462,8 @@ def getorderholderpriceswithlotsizeandrisk(market: str, timeframe: str, json_dir
 
 def BreakevenStopandProfitTracker(market: str, timeframe: str, json_dir: str) -> bool:
     """Track candles after executioner candle using candle_data.json to determine if stoploss, breakeven (1:0.5, 1:1, 1:2), or profit price is hit first,
-    including an independent check for candles revisiting ratio prices before profit or stoploss."""
-    log_and_print(f"Tracking breakeven, stoploss, and profit for market={market}, timeframe={timeframe}", "INFO")
+    including an independent check for candles revisiting ratio prices before profit or stoploss, and track the closest candle to stoploss (stoploss_threat)."""
+    log_and_print(f"Tracking breakeven, stoploss, profit, and stoploss_threat for market={market}, timeframe={timeframe}", "INFO")
     
     # Define file paths
     pricecandle_json_path = os.path.join(json_dir, "pricecandle.json")
@@ -1524,16 +1524,19 @@ def BreakevenStopandProfitTracker(market: str, timeframe: str, json_dir: str) ->
                         "status": order_type if order_type in ["long", "short"] else "unknown"
                     }
                 # Remove other fields if they exist
-                for key in ["executioner candle", "stoploss candle", "1:0.5 candle", "1:1 candle", "1:2 candle", "profit candle", "contract status summary"]:
+                for key in ["executioner candle", "stoploss", "1:0.5 candle", "1:1 candle", "1:2 candle", "profit candle", "contract status summary"]:
                     pricecandle_trendline.pop(key, None)
                 updated_pricecandle_data.append(pricecandle_trendline)
                 continue
             
-            # Removed renaming logic; keep "executioner candle" as is
-            
             if not matching_calculated:
                 log_and_print(f"No matching calculated prices found for trendline {trendline_type} in {market} {timeframe}", "WARNING")
-                pricecandle_trendline["stoploss candle"] = {"status": "No calculated prices"}
+                pricecandle_trendline["stoploss"] = {
+                    "exit_price": None,
+                    "status": "No calculated prices",
+                    "stoploss_threat": {"status": "No calculated prices"},
+                    "stoploss candle": {"status": "No calculated prices"}
+                }
                 pricecandle_trendline["1:0.5 candle"] = {"status": "No calculated prices"}
                 pricecandle_trendline["1:1 candle"] = {"status": "No calculated prices"}
                 pricecandle_trendline["1:2 candle"] = {"status": "No calculated prices"}
@@ -1553,7 +1556,12 @@ def BreakevenStopandProfitTracker(market: str, timeframe: str, json_dir: str) ->
             # Validate price levels
             if any(price <= 0 for price in [entry_price, exit_price, price_1_0_5, price_1_1, price_1_2, profit_price]):
                 log_and_print(f"Invalid price levels for trendline {trendline_type} in {market} {timeframe}", "ERROR")
-                pricecandle_trendline["stoploss candle"] = {"status": "Invalid price levels"}
+                pricecandle_trendline["stoploss"] = {
+                    "exit_price": exit_price,
+                    "status": "Invalid price levels",
+                    "stoploss_threat": {"status": "Invalid price levels"},
+                    "stoploss candle": {"status": "Invalid price levels"}
+                }
                 pricecandle_trendline["1:0.5 candle"] = {"status": "Invalid price levels"}
                 pricecandle_trendline["1:1 candle"] = {"status": "Invalid price levels"}
                 pricecandle_trendline["1:2 candle"] = {"status": "Invalid price levels"}
@@ -1566,7 +1574,12 @@ def BreakevenStopandProfitTracker(market: str, timeframe: str, json_dir: str) ->
             executioner_pos = executioner_candle.get("position_number")
             if executioner_pos is None:
                 log_and_print(f"No valid executioner candle position for trendline {trendline_type} in {market} {timeframe}", "WARNING")
-                pricecandle_trendline["stoploss candle"] = {"status": "No executioner candle position"}
+                pricecandle_trendline["stoploss"] = {
+                    "exit_price": exit_price,
+                    "status": "No executioner candle position",
+                    "stoploss_threat": {"status": "No executioner candle position"},
+                    "stoploss candle": {"status": "No executioner candle position"}
+                }
                 pricecandle_trendline["1:0.5 candle"] = {"status": "No executioner candle position"}
                 pricecandle_trendline["1:1 candle"] = {"status": "No executioner candle position"}
                 pricecandle_trendline["1:2 candle"] = {"status": "No executioner candle position"}
@@ -1584,7 +1597,12 @@ def BreakevenStopandProfitTracker(market: str, timeframe: str, json_dir: str) ->
             contract_status = "running"
             
             # Initialize candle data
-            stoploss_candle = {"status": "secured"}
+            stoploss = {
+                "exit_price": exit_price,
+                "status": "safe",
+                "stoploss candle": {"status": "secured"},
+                "stoploss_threat": {"status": "No threat detected"}
+            }
             candle_1_0_5 = {"status": "waiting"}
             candle_1_1 = {"status": "waiting"}
             candle_1_2 = {"status": "waiting"}
@@ -1595,10 +1613,46 @@ def BreakevenStopandProfitTracker(market: str, timeframe: str, json_dir: str) ->
             independent_check_1_1 = {"status": "waiting"}
             independent_check_1_2 = {"status": "waiting"}
             
+            # Initialize stoploss_threat data
+            closest_distance_to_stoploss = float('inf')
+            closest_candle_data = None
+            
             # Track first hit positions for independent checks
             first_hit_pos_1_0_5 = None
             first_hit_pos_1_1 = None
             first_hit_pos_1_2 = None
+            
+            # Check executioner candle for stoploss_threat
+            executioner_high = executioner_candle.get("High")
+            executioner_low = executioner_candle.get("Low")
+            if order_type == "short" and executioner_high is not None:
+                # Check if executioner candle's High is at least 0.01% below entry_price
+                if executioner_high <= entry_price * (1 - 0.0001):  # 0.01% below entry_price
+                    distance = abs(executioner_high - exit_price)
+                    closest_distance_to_stoploss = distance
+                    closest_candle_data = {
+                        "status": "Closest to stoploss",
+                        "position_number": executioner_pos,
+                        "Time": executioner_candle.get("Time"),
+                        "Open": executioner_candle.get("Open"),
+                        "High": executioner_high,
+                        "Low": executioner_low,
+                        "Close": executioner_candle.get("Close")
+                    }
+            elif order_type == "long" and executioner_low is not None:
+                # Check if executioner candle's Low is at least 0.01% above entry_price
+                if executioner_low >= entry_price * (1 + 0.0001):  # 0.01% above entry_price
+                    distance = abs(executioner_low - exit_price)
+                    closest_distance_to_stoploss = distance
+                    closest_candle_data = {
+                        "status": "Closest to stoploss",
+                        "position_number": executioner_pos,
+                        "Time": executioner_candle.get("Time"),
+                        "Open": executioner_candle.get("Open"),
+                        "High": executioner_high,
+                        "Low": executioner_low,
+                        "Close": executioner_candle.get("Close")
+                    }
             
             # Search candles after executioner candle in candle_data.json
             for pos in range(executioner_pos - 1, 0, -1):  # Iterate from executioner_pos - 1 to 1
@@ -1623,17 +1677,50 @@ def BreakevenStopandProfitTracker(market: str, timeframe: str, json_dir: str) ->
                     "Close": close_price
                 }
                 
-                if order_type == "short":
-                    # Check stoploss (price reaches or exceeds exit_price)
-                    if high_price is not None and high_price >= exit_price - 0.0001 and not (price_1_0_5_hit or price_1_1_hit or price_1_2_hit or profit_hit):
-                        stoploss_candle = {
-                            "status": "Candle hits stoploss first",
+                # Check stoploss_threat for this candle
+                if order_type == "short" and high_price is not None:
+                    distance = abs(high_price - exit_price)
+                    if distance < closest_distance_to_stoploss and high_price < exit_price - 0.0001:
+                        closest_distance_to_stoploss = distance
+                        closest_candle_data = {
+                            "status": "Closest to stoploss",
                             "position_number": pos,
                             "Time": candle.get("Time"),
                             "Open": candle.get("Open"),
                             "High": high_price,
                             "Low": low_price,
                             "Close": close_price
+                        }
+                elif order_type == "long" and low_price is not None:
+                    distance = abs(low_price - exit_price)
+                    if distance < closest_distance_to_stoploss and low_price > exit_price + 0.0001:
+                        closest_distance_to_stoploss = distance
+                        closest_candle_data = {
+                            "status": "Closest to stoploss",
+                            "position_number": pos,
+                            "Time": candle.get("Time"),
+                            "Open": candle.get("Open"),
+                            "High": high_price,
+                            "Low": low_price,
+                            "Close": close_price
+                        }
+                
+                if order_type == "short":
+                    # Check stoploss (price reaches or exceeds exit_price)
+                    if high_price is not None and high_price >= exit_price - 0.0001 and not (price_1_0_5_hit or price_1_1_hit or price_1_2_hit or profit_hit):
+                        stoploss = {
+                            "exit_price": exit_price,
+                            "status": "hit",
+                            "stoploss candle": {
+                                "status": "Candle hits stoploss first",
+                                "position_number": pos,
+                                "Time": candle.get("Time"),
+                                "Open": candle.get("Open"),
+                                "High": high_price,
+                                "Low": low_price,
+                                "Close": close_price
+                            },
+                            "stoploss_threat": stoploss["stoploss_threat"]  # Preserve existing stoploss_threat
                         }
                         stoploss_hit = True
                         contract_status = "Exit contract at stoploss"
@@ -1752,14 +1839,19 @@ def BreakevenStopandProfitTracker(market: str, timeframe: str, json_dir: str) ->
                 elif order_type == "long":
                     # Check stoploss (price reaches or falls below exit_price)
                     if low_price is not None and low_price <= exit_price + 0.0001 and not (price_1_0_5_hit or price_1_1_hit or price_1_2_hit or profit_hit):
-                        stoploss_candle = {
-                            "status": "Candle hits stoploss first",
-                            "position_number": pos,
-                            "Time": candle.get("Time"),
-                            "Open": candle.get("Open"),
-                            "High": high_price,
-                            "Low": low_price,
-                            "Close": close_price
+                        stoploss = {
+                            "exit_price": exit_price,
+                            "status": "hit",
+                            "stoploss candle": {
+                                "status": "Candle hits stoploss first",
+                                "position_number": pos,
+                                "Time": candle.get("Time"),
+                                "Open": candle.get("Open"),
+                                "High": high_price,
+                                "Low": low_price,
+                                "Close": close_price
+                            },
+                            "stoploss_threat": stoploss["stoploss_threat"]  # Preserve existing stoploss_threat
                         }
                         stoploss_hit = True
                         contract_status = "Exit contract at stoploss"
@@ -1875,6 +1967,10 @@ def BreakevenStopandProfitTracker(market: str, timeframe: str, json_dir: str) ->
                                     "Close": close_price
                                 }
             
+            # Update stoploss_threat if a closest candle was found
+            if closest_candle_data:
+                stoploss["stoploss_threat"] = closest_candle_data
+            
             # Optionally fetch current candle (position 0) if needed
             current_candle_data = None
             try:
@@ -1907,14 +2003,19 @@ def BreakevenStopandProfitTracker(market: str, timeframe: str, json_dir: str) ->
                 
                 if order_type == "short":
                     if high_price is not None and high_price >= exit_price - 0.0001:
-                        stoploss_candle = {
-                            "status": "Candle hits stoploss first",
-                            "position_number": 0,
-                            "Time": current_candle_data.get("Time"),
-                            "Open": current_candle_data.get("Open"),
-                            "High": high_price,
-                            "Low": low_price,
-                            "Close": None
+                        stoploss = {
+                            "exit_price": exit_price,
+                            "status": "hit",
+                            "stoploss candle": {
+                                "status": "Candle hits stoploss first",
+                                "position_number": 0,
+                                "Time": current_candle_data.get("Time"),
+                                "Open": current_candle_data.get("Open"),
+                                "High": high_price,
+                                "Low": low_price,
+                                "Close": None
+                            },
+                            "stoploss_threat": stoploss["stoploss_threat"]  # Preserve existing stoploss_threat
                         }
                         stoploss_hit = True
                         contract_status = "Exit contract at stoploss"
@@ -1925,17 +2026,36 @@ def BreakevenStopandProfitTracker(market: str, timeframe: str, json_dir: str) ->
                         independent_check_1_0_5 = {"status": "couldn't make it (candle reached stoploss first)"}
                         independent_check_1_1 = {"status": "couldn't make it (candle reached stoploss first)"}
                         independent_check_1_2 = {"status": "couldn't make it (candle reached stoploss first)"}
+                    # Check stoploss_threat for current candle
+                    elif high_price is not None and not (stoploss_hit or profit_hit):
+                        distance = abs(high_price - exit_price)
+                        if distance < closest_distance_to_stoploss and high_price < exit_price - 0.0001:
+                            closest_distance_to_stoploss = distance
+                            stoploss["stoploss_threat"] = {
+                                "status": "Closest to stoploss",
+                                "position_number": 0,
+                                "Time": current_candle_data.get("Time"),
+                                "Open": current_candle_data.get("Open"),
+                                "High": high_price,
+                                "Low": low_price,
+                                "Close": None
+                            }
                 
                 elif order_type == "long":
                     if low_price is not None and low_price <= exit_price + 0.0001:
-                        stoploss_candle = {
-                            "status": "Candle hits stoploss first",
-                            "position_number": 0,
-                            "Time": current_candle_data.get("Time"),
-                            "Open": current_candle_data.get("Open"),
-                            "High": high_price,
-                            "Low": low_price,
-                            "Close": None
+                        stoploss = {
+                            "exit_price": exit_price,
+                            "status": "hit",
+                            "stoploss candle": {
+                                "status": "Candle hits stoploss first",
+                                "position_number": 0,
+                                "Time": current_candle_data.get("Time"),
+                                "Open": current_candle_data.get("Open"),
+                                "High": high_price,
+                                "Low": low_price,
+                                "Close": None
+                            },
+                            "stoploss_threat": stoploss["stoploss_threat"]  # Preserve existing stoploss_threat
                         }
                         stoploss_hit = True
                         contract_status = "Exit contract at stoploss"
@@ -1946,6 +2066,20 @@ def BreakevenStopandProfitTracker(market: str, timeframe: str, json_dir: str) ->
                         independent_check_1_0_5 = {"status": "couldn't make it (candle reached stoploss first)"}
                         independent_check_1_1 = {"status": "couldn't make it (candle reached stoploss first)"}
                         independent_check_1_2 = {"status": "couldn't make it (candle reached stoploss first)"}
+                    # Check stoploss_threat for current candle
+                    elif low_price is not None and not (stoploss_hit or profit_hit):
+                        distance = abs(low_price - exit_price)
+                        if distance < closest_distance_to_stoploss and low_price > exit_price + 0.0001:
+                            closest_distance_to_stoploss = distance
+                            stoploss["stoploss_threat"] = {
+                                "status": "Closest to stoploss",
+                                "position_number": 0,
+                                "Time": current_candle_data.get("Time"),
+                                "Open": current_candle_data.get("Open"),
+                                "High": high_price,
+                                "Low": low_price,
+                                "Close": None
+                            }
             
             # Add independent check to ratio candles
             candle_1_0_5["independent_check"] = independent_check_1_0_5
@@ -1953,7 +2087,7 @@ def BreakevenStopandProfitTracker(market: str, timeframe: str, json_dir: str) ->
             candle_1_2["independent_check"] = independent_check_1_2
             
             # Update pricecandle trendline
-            pricecandle_trendline["stoploss candle"] = stoploss_candle
+            pricecandle_trendline["stoploss"] = stoploss
             pricecandle_trendline["1:0.5 candle"] = candle_1_0_5
             pricecandle_trendline["1:1 candle"] = candle_1_1
             pricecandle_trendline["1:2 candle"] = candle_1_2
@@ -1966,7 +2100,8 @@ def BreakevenStopandProfitTracker(market: str, timeframe: str, json_dir: str) ->
                 f"1:1_hit={price_1_1_hit}, 1:2_hit={price_1_2_hit}, profit_hit={profit_hit}, "
                 f"1:0.5_revisit={independent_check_1_0_5['status']}, "
                 f"1:1_revisit={independent_check_1_1['status']}, "
-                f"1:2_revisit={independent_check_1_2['status']} in {market} {timeframe}",
+                f"1:2_revisit={independent_check_1_2['status']}, "
+                f"stoploss_threat_status={stoploss['stoploss_threat']['status']} in {market} {timeframe}",
                 "DEBUG"
             )
             
@@ -1980,24 +2115,17 @@ def BreakevenStopandProfitTracker(market: str, timeframe: str, json_dir: str) ->
         try:
             with open(pricecandle_json_path, 'w') as f:
                 json.dump(updated_pricecandle_data, f, indent=4)
-            log_and_print(f"Updated pricecandle.json with breakeven, stoploss, profit tracking, and independent checks for {market} {timeframe}", "SUCCESS")
+            log_and_print(f"Updated pricecandle.json with breakeven, stoploss, profit tracking, independent checks, and stoploss_threat for {market} {timeframe}", "SUCCESS")
             return True
         except Exception as e:
             log_and_print(f"Error saving updated pricecandle.json for {market} {timeframe}: {e}", "ERROR")
             return False
     
     except Exception as e:
-        log_and_print(f"Error processing breakeven, stoploss, and profit tracking for {market} {timeframe}: {e}", "ERROR")
+        log_and_print(f"Error processing breakeven, stoploss, profit tracking, and stoploss_threat for {market} {timeframe}: {e}", "ERROR")
         return False
-
-
+    
 def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
-    """Extract pending orders and historical orders from pricecandle.json, combine with calculatedprices.json data, 
-    and save to contractpendingorders.json and contracthistory.json without duplicates, including order holder timestamp.
-    Additionally, collect all contractpendingorders and contracthistory across all markets and timeframes into 
-    collectivependingorders.json and collectivehistoryorders.json with summary counts.
-    Further, separate historical orders into contractprofithistory.json and contractstoplosshistory.json based on contract_status, 
-    and collect them into collectivecontractprofithistory.json and collectivecontractstoplosshistory.json."""
     log_and_print(f"Categorizing pending and historical orders for market={market}, timeframe={timeframe}", "INFO")
     
     # Define file paths
@@ -2113,7 +2241,7 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
                     "lot_size": matching_calculated.get("lot_size", 0.0),
                     "trendline_type": trendline_type,
                     "order_holder_position": order_holder_position,
-                    "order_holder_timestamp": order_holder_timestamp  # Add order holder timestamp
+                    "order_holder_timestamp": order_holder_timestamp
                 }
                 
                 # Validate prices
@@ -2151,50 +2279,28 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
             contract_history_orders = []
             profit_history_orders = []
             stoploss_history_orders = []
-            seen_order_keys = set()  # Track unique (trendline_type, order_holder_position) pairs
-            
+            seen_order_keys = set()  # Track unique (order_holder_timestamp, entry_price, order_type) pairs
+
             # Process each trendline in pricecandle.json for historical orders
             for trendline in pricecandle_data:
-                pending_order = trendline.get("pending order", {})
                 trendline_type = trendline.get("type")
                 order_holder = trendline.get("order_holder", {})
                 order_holder_position = order_holder.get("position_number")
                 order_holder_timestamp = order_holder.get("Time", "N/A")  # Extract order holder timestamp
                 contract_status = trendline.get("contract status summary", {}).get("contract status", "")
-                
-                # Only process orders with profit or stoploss status
-                if contract_status not in ["profit reached exit contract", "Exit contract at stoploss"]:
+                receiver = trendline.get("receiver", {})
+                executioner_candle = trendline.get("executioner candle", {})
+                sender_position = trendline.get("sender", {}).get("position_number")
+
+                # Only process orders with profit or stoploss status and an executioner candle
+                if contract_status not in ["profit reached exit contract", "Exit contract at stoploss"] or not executioner_candle:
                     continue
-                
-                # Check if there is a valid pending order
-                if not pending_order or "status" not in pending_order:
-                    log_and_print(f"No valid pending order for executed trendline {trendline_type} in {market} {timeframe}", "INFO")
+
+                # Extract order_type from receiver
+                order_type = receiver.get("order_type", "unknown")
+                if not order_type or order_type.lower() not in ["long", "short", "buy_limit", "sell_limit", "buy", "sell"]:
                     continue
-                
-                # Extract order_type and entry_price from pending order status
-                pending_status = pending_order.get("status", "")
-                status_parts = pending_status.split()
-                if len(status_parts) < 2:
-                    log_and_print(f"Invalid pending order status format '{pending_status}' for executed trendline {trendline_type} in {market} {timeframe}", "WARNING")
-                    continue
-                
-                order_type = status_parts[0]
-                try:
-                    entry_price = float(status_parts[1])
-                except ValueError:
-                    log_and_print(f"Invalid entry price in pending order status '{pending_status}' for executed trendline {trendline_type} in {market} {timeframe}", "WARNING")
-                    continue
-                
-                # Create a unique key for deduplication
-                order_key = (trendline_type, order_holder_position)
-                if order_key in seen_order_keys:
-                    log_and_print(
-                        f"Duplicate historical order detected for trendline {trendline_type} with order_holder_position {order_holder_position} in {market} {timeframe}. Skipping.",
-                        "WARNING"
-                    )
-                    continue
-                seen_order_keys.add(order_key)
-                
+
                 # Find matching entry in calculatedprices.json
                 matching_calculated = None
                 for calc_entry in calculatedprices_data:
@@ -2202,28 +2308,26 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
                         calc_entry.get("order_holder_position") == order_holder_position):
                         matching_calculated = calc_entry
                         break
-                
+
                 if not matching_calculated:
-                    log_and_print(f"No matching calculated prices found for executed trendline {trendline_type} with order_holder_position {order_holder_position} in {market} {timeframe}", "WARNING")
                     continue
-                
-                # Validate order_type and entry_price consistency
-                calc_order_type = matching_calculated.get("order_type")
-                calc_entry_price = matching_calculated.get("entry_price")
-                if calc_order_type != order_type:
-                    log_and_print(f"Order type mismatch for executed trendline {trendline_type} in {market} {timeframe}: pricecandle={order_type}, calculatedprices={calc_order_type}", "WARNING")
+
+                # Get entry_price from calculatedprices.json
+                entry_price = matching_calculated.get("entry_price", 0.0)
+
+                # Create a unique key for deduplication
+                order_key = (order_holder_timestamp, entry_price, order_type.lower())
+                if order_key in seen_order_keys:
                     continue
-                if abs(calc_entry_price - entry_price) > 0.0001:  # Small tolerance for floating-point comparison
-                    log_and_print(f"Entry price mismatch for executed trendline {trendline_type} in {market} {timeframe}: pricecandle={entry_price}, calculatedprices={calc_entry_price}", "WARNING")
-                    continue
-                
+                seen_order_keys.add(order_key)
+
                 # Create contract history order entry
                 contract_entry = {
                     "market": market,
                     "pair": matching_calculated.get("pair", market),
                     "timeframe": timeframe,
                     "order_type": order_type,
-                    "entry_price": calc_entry_price,
+                    "entry_price": entry_price,
                     "exit_price": matching_calculated.get("exit_price", 0.0),
                     "1:0.5_price": matching_calculated.get("1:0.5_price", 0.0),
                     "1:1_price": matching_calculated.get("1:1_price", 0.0),
@@ -2233,9 +2337,10 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
                     "trendline_type": trendline_type,
                     "order_holder_position": order_holder_position,
                     "order_holder_timestamp": order_holder_timestamp,
-                    "contract_status": contract_status
+                    "contract_status": contract_status,
+                    "sender_position": sender_position
                 }
-                
+
                 # Validate prices
                 if any(price <= 0 for price in [
                     contract_entry["entry_price"],
@@ -2245,30 +2350,29 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
                     contract_entry["1:2_price"],
                     contract_entry["profit_price"]
                 ]):
-                    log_and_print(f"Invalid price values for executed trendline {trendline_type} in {market} {timeframe}: {contract_entry}", "WARNING")
                     continue
-                
+
                 if contract_entry["lot_size"] <= 0:
-                    log_and_print(f"Invalid lot_size {contract_entry['lot_size']} for executed trendline {trendline_type} in {market} {timeframe}", "WARNING")
                     continue
-                
+
                 # Add to appropriate lists based on contract_status
                 contract_history_orders.append(contract_entry)
                 if contract_status == "profit reached exit contract":
                     profit_history_orders.append(contract_entry)
                 elif contract_status == "Exit contract at stoploss":
                     stoploss_history_orders.append(contract_entry)
-                
+
                 log_and_print(
                     f"Added historical order for trendline {trendline_type}: order_type={order_type}, "
-                    f"entry_price={entry_price}, exit_price={contract_entry['exit_price']}, "
+                    f"entry_price={contract_entry['entry_price']}, exit_price={contract_entry['exit_price']}, "
                     f"1:0.5_price={contract_entry['1:0.5_price']}, 1:1_price={contract_entry['1:1_price']}, "
                     f"1:2_price={contract_entry['1:2_price']}, profit_price={contract_entry['profit_price']}, "
                     f"lot_size={contract_entry['lot_size']}, order_holder_position={order_holder_position}, "
-                    f"order_holder_timestamp={order_holder_timestamp}, contract_status={contract_status} in {market} {timeframe}",
+                    f"order_holder_timestamp={order_holder_timestamp}, contract_status={contract_entry['contract_status']}, "
+                    f"sender_position={sender_position} in {market} {timeframe}",
                     "DEBUG"
                 )
-            
+
             return contract_history_orders, profit_history_orders, stoploss_history_orders
 
         # Execute both functions
@@ -2339,7 +2443,7 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
             log_and_print(f"Error saving contractstoplosshistory.json for {market} {timeframe}: {str(e)}", "ERROR")
             return False
         
-        # New functionality: Collect all contractpendingorders, contracthistory, profithistory, and stoplosshistory across markets and timeframes
+        # Collect all contractpendingorders, contracthistory, profithistory, and stoplosshistory across markets and timeframes
         def collect_all_orders():
             """Collect all contractpendingorders.json, contracthistory.json, contractprofithistory.json, and contractstoplosshistory.json 
             across all markets and timeframes."""
@@ -2512,7 +2616,7 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
                 log_and_print(f"Error saving collectivehistoryorders.json: {str(e)}", "ERROR")
             
             # Prepare collective profit history orders JSON
-            profit_history_output = {
+            history_output = {
                 "allprofithistoryorders": len(all_profit_history_orders),
                 "5minutes profit history orders": timeframe_counts_profit["5minutes"],
                 "15minutes profit history orders": timeframe_counts_profit["15minutes"],
@@ -2528,7 +2632,7 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
                     os.remove(collective_profit_history_path)
                     log_and_print(f"Existing {collective_profit_history_path} deleted", "INFO")
                 with open(collective_profit_history_path, 'w') as f:
-                    json.dump(profit_history_output, f, indent=4)
+                    json.dump(history_output, f, indent=4)
                 log_and_print(
                     f"Saved {len(all_profit_history_orders)} profit history orders to {collective_profit_history_path} "
                     f"(5m: {timeframe_counts_profit['5minutes']}, 15m: {timeframe_counts_profit['15minutes']}, "
@@ -2567,7 +2671,7 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
             except Exception as e:
                 log_and_print(f"Error saving collectivecontractstoplosshistory.json: {str(e)}", "ERROR")
         
-        # Call the new function to collect and save collective orders
+        # Call the function to collect and save collective orders
         collect_all_orders()
         
         return True
@@ -2607,7 +2711,7 @@ def save_status_json(success_data: List[Dict], no_pending_data: List[Dict], fail
             "fetchlotsizeandriskallowed": process_messages.get("fetchlotsizeandriskallowed", "No message"),
             "match_trendline_with_candle_data": process_messages.get("match_trendline_with_candle_data", "No message"),
             "candleafterbreakoutparent_to_currentprice": process_messages.get("candleafterbreakoutparent_to_currentprice", "No message"),
-            "candleatorderentry_from_candlesafterbreakoutparent": process_messages.get("candleatorderentry_from_candlesafterbreakoutparent", "No message"),
+            "executioncandle_after_breakoutparent": process_messages.get("executioncandle_after_breakoutparent", "No message"),
             "getorderholderpriceswithlotsizeandrisk": process_messages.get("getorderholderpriceswithlotsizeandrisk", "No message"),
             "categorizecontract": process_messages.get("categorizecontract", "No message")
         }
@@ -2630,7 +2734,7 @@ def save_status_json(success_data: List[Dict], no_pending_data: List[Dict], fail
             "fetchlotsizeandriskallowed": process_messages.get("fetchlotsizeandriskallowed", "No message"),
             "match_trendline_with_candle_data": item.get("message", "No pending orders found"),
             "candleafterbreakoutparent_to_currentprice": "Skipped due to no pending orders",
-            "candleatorderentry_from_candlesafterbreakoutparent": "Skipped due to no pending orders",
+            "executioncandle_after_breakoutparent": "Skipped due to no pending orders",
             "getorderholderpriceswithlotsizeandrisk": "Skipped due to no pending orders",
             "categorizecontract": "Skipped due to no pending orders"
         }
@@ -2653,7 +2757,7 @@ def save_status_json(success_data: List[Dict], no_pending_data: List[Dict], fail
             "fetchlotsizeandriskallowed": process_messages.get("fetchlotsizeandriskallowed", "No message"),
             "match_trendline_with_candle_data": process_messages.get("match_trendline_with_candle_data", "No message"),
             "candleafterbreakoutparent_to_currentprice": process_messages.get("candleafterbreakoutparent_to_currentprice", "No message"),
-            "candleatorderentry_from_candlesafterbreakoutparent": process_messages.get("candleatorderentry_from_candlesafterbreakoutparent", "No message"),
+            "executioncandle_after_breakoutparent": process_messages.get("executioncandle_after_breakoutparent", "No message"),
             "getorderholderpriceswithlotsizeandrisk": process_messages.get("getorderholderpriceswithlotsizeandrisk", "No message"),
             "categorizecontract": process_messages.get("categorizecontract", "No message"),
             "error": item.get("error_message", "Unknown error")
@@ -2789,10 +2893,10 @@ def process_market_timeframe(market: str, timeframe: str) -> Tuple[bool, Optiona
             process_messages["candleafterbreakoutparent_to_currentprice"] = f"Fetched {total_candles} candles for {trendline_count} trendlines after Breakout_parent for {market} {timeframe}"
 
         # Search for executioner candle and update pricecandle.json
-        if not candleatorderentry_from_candlesafterbreakoutparent(market, timeframe, json_dir):
+        if not executioncandle_after_breakoutparent(market, timeframe, json_dir):
             error_message = f"Failed to process executioner candle for {market} {timeframe}"
             log_and_print(error_message, "ERROR")
-            process_messages["candleatorderentry_from_candlesafterbreakoutparent"] = error_message
+            process_messages["executioncandle_after_breakoutparent"] = error_message
         else:
             with open(os.path.join(json_dir, 'pricecandle.json'), 'r') as f:
                 pricecandle_data = json.load(f)
@@ -2804,7 +2908,7 @@ def process_market_timeframe(market: str, timeframe: str) -> Tuple[bool, Optiona
                     executioner_found += 1
                 else:
                     executioner_not_found += 1
-            process_messages["candleatorderentry_from_candlesafterbreakoutparent"] = (
+            process_messages["executioncandle_after_breakoutparent"] = (
                 f"Processed {executioner_found} trendlines with executioner candle found, "
                 f"{executioner_not_found} with no executioner candle for {market} {timeframe}"
             )
