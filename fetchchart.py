@@ -228,7 +228,11 @@ def operate(mode="headless"):
         if not os.path.exists(CHROME_BINARY_PATH):
             logger.error(f"Chrome binary not found at {CHROME_BINARY_PATH}")
             raise WebDriverException(f"Chrome binary not found at {CHROME_BINARY_PATH}")
-        driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+        # Use ChromeDriverManager with the version parameter
+        driver = webdriver.Chrome(
+            service=Service(ChromeDriverManager(driver_version="139.0.7258.128").install()),
+            options=options
+        )
         driver.set_page_load_timeout(180)
         logger.debug(f"WebDriver initialized successfully in {mode} mode")
         return driver
@@ -385,9 +389,10 @@ def timeframe(driver, tf, market):
         return False
 
 def search(driver, market):
-    """Search for a market."""
+    """Search for a market and confirm selection by chart canvas presence."""
     try:
         logger.debug(f"[Process-{market}] Searching for market '{market}'")
+        # Locate and interact with the search bar
         search_bar = WebDriverWait(driver, 10).until(
             EC.element_to_be_clickable((By.XPATH, "//input[contains(@id, 'search') or contains(@class, 'search') or contains(@placeholder, 'Search')]"))
         )
@@ -404,25 +409,25 @@ def search(driver, market):
                 search_button.click()
             except (TimeoutException, NoSuchElementException):
                 logger.debug(f"[Process-{market}] Search button not found; assuming Enter worked")
+
+        # Wait for and click the search result
         search_result = WebDriverWait(driver, 10).until(
             EC.element_to_be_clickable((By.XPATH, f"//*[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{market.lower()}')]"))
         )
         search_result.click()
-        time.sleep(1)
-        market_element = WebDriverWait(driver, 5).until(
-            EC.presence_of_element_located((By.XPATH, "//div[contains(@class, 'svelte-19c9jff')]"))
+        time.sleep(1)  # Brief pause to allow UI to update
+
+        # Confirm selection by checking for chart canvas presence
+        WebDriverWait(driver, 60).until(
+            EC.presence_of_element_located((By.TAG_NAME, "canvas"))
         )
-        displayed_market = market_element.text.strip()
-        if market.lower() in displayed_market.lower():
-            logger.debug(f"[Process-{market}] Market '{market}' confirmed")
-            WebDriverWait(driver, 60).until(
-                EC.presence_of_element_located((By.TAG_NAME, "canvas"))
-            )
-            wait_for_page_load(driver, 10)
-            return True
-        else:
-            logger.warning(f"[Process-{market}] Market mismatch: Expected '{market}', found '{displayed_market}'")
-            return False
+        logger.debug(f"[Process-{market}] Chart canvas detected, assuming market '{market}' selected successfully")
+        wait_for_page_load(driver, 10)
+        return True
+
+    except TimeoutException:
+        logger.error(f"[Process-{market}] Timeout waiting for search results or chart canvas for '{market}'")
+        return False
     except Exception as e:
         logger.error(f"[Process-{market}] Error searching for '{market}': {e}")
         return False
@@ -1028,3 +1033,4 @@ if __name__ == "__main__":
         main()
     except Exception as e:
         logger.error(f"Main loop failed: {e}")
+
