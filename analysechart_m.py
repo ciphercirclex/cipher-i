@@ -1909,7 +1909,6 @@ def draw_parent_main_trendlines(img_parent_labeled, all_positions, base_name, le
     
     return main_trendline_image_path, main_trendline_data
 
-
 def save_contracts_data_to_json(contracts_data):
     """
     Save the contracts data to a JSON file named contracts.json in the OUTPUT_FOLDER.

@@ -637,11 +637,22 @@ def save_status(market, timeframe, destination_path, status):
         market_folder = os.path.join(destination_path, market.replace(" ", "_"), timeframe.lower())
         os.makedirs(market_folder, exist_ok=True)
         status_file = os.path.join(market_folder, "status.json")
+        # Get current time in WAT (Africa/Lagos, UTC+1)
+        current_time = datetime.now(pytz.timezone('Africa/Lagos'))
+        # Format timestamp as "YYYY-MM-DD T HH:MM:SS am/pm .microseconds+HH:MM"
+        am_pm = "am" if current_time.hour < 12 else "pm"
+        hour_12 = current_time.hour % 12
+        if hour_12 == 0:
+            hour_12 = 12  # Convert 0 to 12 for 12 AM/PM
+        timestamp = (
+            f"{current_time.strftime('%Y-%m-%d T %I:%M:%S')} {am_pm} "
+            f".{current_time.microsecond:06d}+01:00"
+        )
         status_data = {
             "market": market,
             "timeframe": timeframe,
             "status": status,
-            "timestamp": datetime.now(pytz.UTC).isoformat()
+            "timestamp": timestamp
         }
         with open(status_file, 'w') as f:
             json.dump(status_data, f, indent=4)
