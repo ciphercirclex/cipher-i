@@ -2190,6 +2190,7 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
     collective_ratio_0_5_norevisit_path = os.path.join(BASE_OUTPUT_FOLDER, "collectiveratio0.5norevisit.json")
     collective_ratio_1_norevisit_path = os.path.join(BASE_OUTPUT_FOLDER, "collectiveratio1norevisit.json")
     collective_ratio_2_norevisit_path = os.path.join(BASE_OUTPUT_FOLDER, "collectiveratio2norevisit.json")
+    contract_orders_records_path = os.path.join(BASE_OUTPUT_FOLDER, "contractordersrecords.json")
     
     # Check if required JSON files exist
     if not os.path.exists(pricecandle_json_path):
@@ -3288,8 +3289,93 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
             except Exception as e:
                 log_and_print(f"Error saving collectiveratio2norevisit.json: {str(e)}", "ERROR")
         
-        # Call the function to collect and save collective orders
+        def recordhistoricalorders():
+            """Collect historical orders from contracthistory.json across all markets and timeframes,
+            align with collectivehistoryorders.json, and save to contractordersrecords.json."""
+            all_historical_orders = []
+            timeframe_counts_records = {
+                "5minutes": 0,
+                "15minutes": 0,
+                "30minutes": 0,
+                "1hour": 0,
+                "4hour": 0
+            }
+            seen_order_keys = set()  # Track unique (pair, entry_price, order_type, order_holder_timestamp) tuples
+            
+            # Iterate through all markets and timeframes to collect historical orders
+            for mkt in MARKETS:
+                formatted_market = mkt.replace(" ", "_")
+                for tf in TIMEFRAMES:
+                    tf_dir = os.path.join(BASE_OUTPUT_FOLDER, formatted_market, tf.lower())
+                    history_path = os.path.join(tf_dir, "contracthistory.json")
+                    db_tf = DB_TIMEFRAME_MAPPING.get(tf, tf)  # Map to database timeframe format
+                    
+                    if os.path.exists(history_path):
+                        try:
+                            with open(history_path, 'r') as f:
+                                history_data = json.load(f)
+                            if isinstance(history_data, list):
+                                for order in history_data:
+                                    # Round entry_price to 5 decimal places for consistency
+                                    entry_price = round(order.get("entry_price", 0.0), 5)
+                                    order_key = (
+                                        order.get("pair", ""),
+                                        entry_price,
+                                        order.get("order_type", "").lower(),
+                                        order.get("order_holder_timestamp", "N/A")
+                                    )
+                                    if order_key not in seen_order_keys:
+                                        all_historical_orders.append(order)
+                                        seen_order_keys.add(order_key)
+                                        timeframe_counts_records[db_tf] += 1
+                                        log_and_print(
+                                            f"Collected historical order from {history_path}: pair={order.get('pair')}, "
+                                            f"entry_price={entry_price}, order_type={order.get('order_type')}, "
+                                            f"timestamp={order.get('order_holder_timestamp')}",
+                                            "DEBUG"
+                                        )
+                            else:
+                                log_and_print(f"Invalid data format in {history_path}: Expected list, got {type(history_data)}", "WARNING")
+                        except Exception as e:
+                            log_and_print(f"Error reading {history_path}: {str(e)}", "WARNING")
+            
+            # Prepare output for contractordersrecords.json
+            records_output = {
+                "allhistoricalorders": len(all_historical_orders),
+                "5minutes historical orders": timeframe_counts_records["5minutes"],
+                "15minutes historical orders": timeframe_counts_records["15minutes"],
+                "30minutes historical orders": timeframe_counts_records["30minutes"],
+                "1hour historical orders": timeframe_counts_records["1hour"],
+                "4hours historical orders": timeframe_counts_records["4hour"],
+                "orders": all_historical_orders
+            }
+            
+            # Save to contractordersrecords.json, overwriting to ensure current data
+            try:
+                if os.path.exists(contract_orders_records_path):
+                    os.remove(contract_orders_records_path)
+                    log_and_print(f"Existing {contract_orders_records_path} deleted", "INFO")
+                with open(contract_orders_records_path, 'w') as f:
+                    json.dump(records_output, f, indent=4)
+                log_and_print(
+                    f"Saved {len(all_historical_orders)} historical orders to {contract_orders_records_path} "
+                    f"(5m: {timeframe_counts_records['5minutes']}, 15m: {timeframe_counts_records['15minutes']}, "
+                    f"30m: {timeframe_counts_records['30minutes']}, 1h: {timeframe_counts_records['1hour']}, "
+                    f"4h: {timeframe_counts_records['4hour']})",
+                    "SUCCESS"
+                )
+            except Exception as e:
+                log_and_print(f"Error saving contractordersrecords.json: {str(e)}", "ERROR")
+                return False
+            
+            return True
+        # Call existing functions
         collect_all_orders()
+        
+        # Call the new function to record historical orders
+        if not recordhistoricalorders():
+            log_and_print(f"Failed to record historical orders for {market} {timeframe}", "ERROR")
+            return False
         
         return True
     
@@ -5474,4 +5560,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
