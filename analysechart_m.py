@@ -110,10 +110,10 @@ def candletimeleft(market, timeframe, candle_time):
                 time_left = (next_close_time - current_time).total_seconds() / 60.0
             print(f"[Process-{market}] Candle time: {candle_datetime}, Next close: {next_close_time}, Time left: {time_left:.2f} minutes")
             
-            if time_left > 4:
+            if time_left > 3:
                 return time_left, next_close_time
             else:
-                print(f"[Process-{market}] Time left ({time_left:.2f} minutes) is <= 4 minutes, waiting for next candle")
+                print(f"[Process-{market}] Time left ({time_left:.2f} minutes) is <= 3 minutes, waiting for next candle")
                 time_to_wait = (next_close_time - current_time).total_seconds() + 5  # Wait until next candle starts
                 time.sleep(time_to_wait)
                 
@@ -2254,7 +2254,7 @@ def main():
             print(f"Failed to retrieve candle time for {default_market} (M5). Exiting.")
             return
         
-        if time_left <= 4:
+        if time_left <= 3:
             print(f"Time left for M5 candle is {time_left:.2f} minutes, waiting for next candle")
             # candletimeleft already waits for the next candle, but we confirm here
             time_to_wait = (next_close_time - datetime.now(pytz.UTC)).total_seconds() + 5
@@ -2266,7 +2266,7 @@ def main():
             if time_left is None or next_close_time is None:
                 print(f"Failed to retrieve candle time for {default_market} (M5) after waiting. Exiting.")
                 return
-            if time_left <= 4:
+            if time_left <= 3:
                 print(f"Time left for M5 candle is still {time_left:.2f} minutes after waiting. Exiting.")
                 return
         

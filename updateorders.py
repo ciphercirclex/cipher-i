@@ -159,10 +159,10 @@ def candletimeleft(market, timeframe, candle_time):
                 time_left = (next_close_time - current_time).total_seconds() / 60.0
             print(f"[Process-{market}] Candle time: {candle_datetime}, Next close: {next_close_time}, Time left: {time_left:.2f} minutes")
             
-            if time_left > 4:
+            if time_left > 3:
                 return time_left, next_close_time
             else:
-                print(f"[Process-{market}] Time left ({time_left:.2f} minutes) is <= 4 minutes, waiting for next candle")
+                print(f"[Process-{market}] Time left ({time_left:.2f} minutes) is <= 3 minutes, waiting for next candle")
                 time_to_wait = (next_close_time - current_time).total_seconds() + 5  # Wait until next candle starts
                 time.sleep(time_to_wait)
                 
@@ -1535,9 +1535,6 @@ def getorderholderpriceswithlotsizeandrisk(market: str, timeframe: str, json_dir
         return False
 
 def BreakevenStopandProfitTracker(market: str, timeframe: str, json_dir: str) -> bool:
-    """Track candles after executioner candle using candle_data.json to determine if stoploss, breakeven (1:0.5, 1:1, 1:2), or profit price is hit first,
-    including an independent check for candles revisiting ratio prices before profit or stoploss, and track the closest candle to stoploss (stoploss_threat).
-    Removes duplicates based on position numbers before processing and by pending order status after processing."""
     log_and_print(f"Tracking breakeven, stoploss, profit, and stoploss_threat for market={market}, timeframe={timeframe}", "INFO")
     
     # Define file paths
@@ -4068,7 +4065,7 @@ def main():
             log_and_print(f"Failed to retrieve candle time for {default_market} (M5). Exiting.", "ERROR")
             return
         
-        if time_left <= 4:
+        if time_left <= 3:
             log_and_print(f"Time left for M5 candle is {time_left:.2f} minutes, waiting for next candle", "INFO")
             time_to_wait = (next_close_time - datetime.now(pytz.UTC)).total_seconds() + 5
             if time_to_wait > 0:
@@ -4078,7 +4075,7 @@ def main():
             if time_left is None or next_close_time is None:
                 log_and_print(f"Failed to retrieve candle time for {default_market} (M5) after waiting. Exiting.", "ERROR")
                 return
-            if time_left <= 4:
+            if time_left <= 3:
                 log_and_print(f"Time left for M5 candle is still {time_left:.2f} minutes after waiting. Exiting.", "ERROR")
                 return
         

@@ -23,7 +23,7 @@ def candletimeleft(market, timeframe, candle_time):
         time.sleep(5)
     else:
         print(f"[Process-{market}] Failed to initialize MT5 terminal after 3 attempts")
-        return None, None
+        return None, None, None
     for _ in range(5):
         if mt5.terminal_info() is not None:
             break
@@ -32,7 +32,7 @@ def candletimeleft(market, timeframe, candle_time):
     else:
         print(f"[Process-{market}] MT5 terminal not ready")
         mt5.shutdown()
-        return None, None
+        return None, None, None
     for attempt in range(3):
         if mt5.login(login=101347351, password="@Techknowdge12#", server="DerivSVG-Server-02", timeout=60000):
             print(f"[Process-{market}] Successfully logged in to MT5")
@@ -43,13 +43,13 @@ def candletimeleft(market, timeframe, candle_time):
     else:
         print(f"[Process-{market}] Failed to log in to MT5 after 3 attempts")
         mt5.shutdown()
-        return None, None
+        return None, None, None
 
     try:
         # Fetch current candle
         if not mt5.symbol_select(market, True):
             print(f"[Process-{market}] Failed to select market: {market}, error: {mt5.last_error()}")
-            return None, None
+            return None, None, None
         while True:
             for attempt in range(3):
                 candles = mt5.copy_rates_from_pos(market, mt5.TIMEFRAME_M5, 0, 1)
@@ -67,11 +67,11 @@ def candletimeleft(market, timeframe, candle_time):
                 break
             else:
                 print(f"[Process-{market}] Failed to fetch recent candle data for {market} (M5) after 3 attempts")
-                return None, None
+                return None, None, None
 
             if timeframe.upper() != "M5":
                 print(f"[Process-{market}] Only M5 timeframe is supported, received {timeframe}")
-                return None, None
+                return None, None, None
 
             candle_datetime = datetime.fromtimestamp(candle_time, tz=pytz.UTC)
             minutes_per_candle = 5
@@ -87,10 +87,10 @@ def candletimeleft(market, timeframe, candle_time):
             print(f"[Process-{market}] Candle time: {candle_datetime}, Next close: {next_close_time}, Time left: {time_left:.2f} minutes")
             
             if time_left > 4:
-                return time_left, next_close_time
+                return time_left, next_close_time, candle_datetime
             else:
-                print(f"[Process-{market}] Time left ({time_left:.2f} minutes) is <= 4 minutes, restarting sequence")
-                return None, None  # Return None to trigger restart in run_sequential
+                print(f"[Process-{market}] Time left ({time_left:.2f} minutes) is <= 4 minutes, returning None to restart sequence")
+                return None, None, None
             
     finally:
         mt5.shutdown()
@@ -121,40 +121,60 @@ def execute(mode="loop"):
         default_market = MARKETS[0]  # Use first market from MARKETS list
         timeframe = "M5"
         
-        # First updateorders call
-        time_left, next_close_time = candletimeleft(default_market, timeframe, None)
-        if time_left is None or next_close_time is None:
-            print(f"[Process-{default_market}] Failed to retrieve candle time for {default_market} (M5). Restarting sequence.")
-            return
-        print(f"[Process-{default_market}] Time left for M5 candle: {time_left:.2f} minutes. Running updateorders.")
-        run_updateorders()  # Run updateorders first
+        while True:
+            # First candle check before updateorders
+            time_left, next_close_time, start_candle_time = candletimeleft(default_market, timeframe, None)
+            if time_left is None or next_close_time is None or start_candle_time is None:
+                print(f"[Process-{default_market}] Failed to retrieve candle time or time_left <= 4 for {default_market} (M5). Restarting sequence.")
+                time.sleep(5)  # Small delay before restarting
+                continue
+            initial_time_left = time_left  # Store initial time left for operation time calculation
+            print(f"[Process-{default_market}] Time left for M5 candle: {time_left:.2f} minutes. Running updateorders.")
+            run_updateorders()  # Run updateorders first
 
-        # analysechart_m call
-        time_left, next_close_time = candletimeleft(default_market, timeframe, None)
-        if time_left is None or next_close_time is None:
-            print(f"[Process-{default_market}] Failed to retrieve candle time for {default_market} (M5). Restarting sequence.")
-            return
-        print(f"[Process-{default_market}] Time left for M5 candle: {time_left:.2f} minutes. Running analysechart_m.")
-        run_analysechart_m()  # Run analysechart_m second
+            # Second candle check before analysechart_m
+            time_left, next_close_time, _ = candletimeleft(default_market, timeframe, None)
+            if time_left is None or next_close_time is None:
+                print(f"[Process-{default_market}] Failed to retrieve candle time or time_left <= 4 for {default_market} (M5). Restarting sequence.")
+                time.sleep(5)  # Small delay before restarting
+                continue
+            print(f"[Process-{default_market}] Time left for M5 candle: {time_left:.2f} minutes. Running analysechart_m.")
+            run_analysechart_m()  # Run analysechart_m second
 
-        # Second updateorders call
-        time_left, next_close_time = candletimeleft(default_market, timeframe, None)
-        if time_left is None or next_close_time is None:
-            print(f"[Process-{default_market}] Failed to retrieve candle time for {default_market} (M5). Restarting sequence.")
-            return
-        print(f"[Process-{default_market}] Time left for M5 candle: {time_left:.2f} minutes. Running updateorders.")
-        run_updateorders()  # Run updateorders third
+            # Third candle check before updateorders
+            time_left, next_close_time, _ = candletimeleft(default_market, timeframe, None)
+            if time_left is None or next_close_time is None:
+                print(f"[Process-{default_market}] Failed to retrieve candle time or time_left <= 4 for {default_market} (M5). Restarting sequence.")
+                time.sleep(5)  # Small delay before restarting
+                continue
+            print(f"[Process-{default_market}] Time left for M5 candle: {time_left:.2f} minutes. Running updateorders.")
+            run_updateorders()  # Run updateorders third
 
-        print("Both scripts completed.")
+            print("Both scripts completed successfully.")
+            return time_left, start_candle_time, initial_time_left  # Return values for final print
 
     try:
         if mode == "loop":
             while True:
-                run_sequential()
-                print("Restarting...")
+                result = run_sequential()
+                if result:
+                    time_left, start_candle_time, initial_time_left = result
+                    operation_time = initial_time_left - time_left
+                    print(f"Started time of candle: {start_candle_time}")
+                    print(f"Time remaining: {time_left:.2f} minutes")
+                    print(f"Operated within time: {operation_time:.2f} minutes")
+                print("Restarting entire sequence...")
+                time.sleep(5)  # Small delay before restarting the loop
         else:  # mode == "once"
-            run_sequential()
+            result = run_sequential()
             print("Execution completed (once mode).")
+            if result:
+                time_left, start_candle_time, initial_time_left = result
+                operation_time = initial_time_left - time_left
+                print(f"Candle time left: {time_left:.2f} minutes")
+                print(f"Started time of candle: {start_candle_time}")
+                print(f"Time remaining: {time_left:.2f} minutes")
+                print(f"Operated within time: {operation_time:.2f} minutes")
 
     except Exception as e:
         print(f"Error in main loop: {e}")
