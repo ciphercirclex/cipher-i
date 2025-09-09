@@ -1212,14 +1212,11 @@ def executioncandle_after_breakoutparent(market: str, timeframe: str, json_dir: 
         log_and_print(f"Error processing executioner candle for {market} {timeframe}: {e}", "ERROR")
         return False
 
-def fetchlotsizeandriskallowed(market: str, timeframe: str, json_dir: str) -> bool:
-    """Fetch all lot size and allowed risk data from ciphercontracts_lotsizeandrisk table, filter for market and timeframe, and save to lotsizeandrisk.json."""
-    log_and_print(f"Fetching lot size and allowed risk data for market={market}, timeframe={timeframe}", "INFO")
+def fetchlotsizeandriskallowed(json_dir: str = BASE_PROCESSING_FOLDER) -> bool:
+    """Fetch all lot size and allowed risk data from ciphercontracts_lotsizeandrisk table and save to lotsizeandrisk.json."""
+    log_and_print("Fetching all lot size and allowed risk data", "INFO")
     
-    # Map script timeframe to database timeframe
-    db_timeframe = DB_TIMEFRAME_MAPPING.get(timeframe, timeframe)
-    
-    # SQL query to fetch all rows (no WHERE clause for bulk fetch)
+    # SQL query to fetch all rows
     sql_query = """
         SELECT id, market, pair, timeframe, lot_size, allowed_risk, created_at
         FROM ciphercontracts_lotsizeandrisk
@@ -1231,7 +1228,7 @@ def fetchlotsizeandriskallowed(market: str, timeframe: str, json_dir: str) -> bo
     # Execute query with retries
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            result = db.execute_query(sql_query)  # No params argument
+            result = db.execute_query(sql_query)
             log_and_print(f"Raw query result for lot size and risk: {json.dumps(result, indent=2)}", "DEBUG")
             
             if not isinstance(result, dict):
@@ -1240,7 +1237,7 @@ def fetchlotsizeandriskallowed(market: str, timeframe: str, json_dir: str) -> bo
                 
             if result.get('status') != 'success':
                 error_message = result.get('message', 'No message provided')
-                log_and_print(f"Query failed on attempt {attempt} for {market} {timeframe}: {error_message}", "ERROR")
+                log_and_print(f"Query failed on attempt {attempt}: {error_message}", "ERROR")
                 continue
                 
             # Handle both 'data' and 'results' keys
@@ -1250,23 +1247,17 @@ def fetchlotsizeandriskallowed(market: str, timeframe: str, json_dir: str) -> bo
             elif 'results' in result and isinstance(result['results'], list):
                 rows = result['results']
             else:
-                log_and_print(f"Invalid or missing rows in result on attempt {attempt} for {market} {timeframe}: {json.dumps(result, indent=2)}", "ERROR")
+                log_and_print(f"Invalid or missing rows in result on attempt {attempt}: {json.dumps(result, indent=2)}", "ERROR")
                 continue
-            
-            # Filter rows for the specific market and timeframe
-            filtered_rows = [
-                row for row in rows
-                if row.get('market') == market and row.get('timeframe') == db_timeframe
-            ]
             
             # Normalize data and ensure proper types
             lot_size_risk_data = []
-            for row in filtered_rows:
+            for row in rows:
                 lot_size_risk_data.append({
                     'id': int(row.get('id', 0)),
                     'market': row.get('market', 'N/A'),
                     'pair': row.get('pair', 'N/A'),
-                    'timeframe': row.get('timeframe', 'N/A'),  # Keep database timeframe format in output
+                    'timeframe': row.get('timeframe', 'N/A'),  # Keep database timeframe format
                     'lot_size': float(row.get('lot_size', 0.0)) if row.get('lot_size') is not None else None,
                     'allowed_risk': float(row.get('allowed_risk', 0.0)) if row.get('allowed_risk') is not None else None,
                     'created_at': row.get('created_at', 'N/A')
@@ -1280,36 +1271,32 @@ def fetchlotsizeandriskallowed(market: str, timeframe: str, json_dir: str) -> bo
             try:
                 with open(output_json_path, 'w') as f:
                     json.dump(lot_size_risk_data, f, indent=4)
-                if lot_size_risk_data:
-                    log_and_print(f"Lot size and allowed risk data saved to {output_json_path} for {market} {timeframe}", "SUCCESS")
-                    return True
-                else:
-                    log_and_print(f"No lot size and risk data found for {market} {timeframe}", "ERROR")
-                    return False
+                log_and_print(f"All lot size and allowed risk data saved to {output_json_path}", "SUCCESS")
+                return True
             except Exception as e:
-                log_and_print(f"Error saving lotsizeandrisk.json for {market} {timeframe}: {str(e)}", "ERROR")
+                log_and_print(f"Error saving lotsizeandrisk.json: {str(e)}", "ERROR")
                 return False
                 
         except Exception as e:
-            log_and_print(f"Exception on attempt {attempt} for {market} {timeframe}: {str(e)}", "ERROR")
+            log_and_print(f"Exception on attempt {attempt}: {str(e)}", "ERROR")
             
         if attempt < MAX_RETRIES:
             delay = RETRY_DELAY * (2 ** (attempt - 1))
             log_and_print(f"Retrying after {delay} seconds...", "INFO")
             time.sleep(delay)
         else:
-            log_and_print(f"Max retries reached for fetching lot size and risk data for {market} {timeframe}", "ERROR")
+            log_and_print("Max retries reached for fetching lot size and risk data", "ERROR")
             return False
     
     return False
 
 def getorderholderpriceswithlotsizeandrisk(market: str, timeframe: str, json_dir: str) -> bool:
-    """Fetch order holder prices, calculate exit and profit prices using lot size and allowed risk, and save to calculatedprices.json."""
+    """Fetch order holder prices, calculate exit and profit prices using lot size and allowed risk from centralized lotsizeandrisk.json, and save to calculatedprices.json."""
     log_and_print(f"Calculating order holder prices with lot size and risk for market={market}, timeframe={timeframe}", "INFO")
     
     # Define file paths
     pricecandle_json_path = os.path.join(json_dir, "pricecandle.json")
-    lotsizeandrisk_json_path = os.path.join(json_dir, "lotsizeandrisk.json")
+    lotsizeandrisk_json_path = os.path.join(BASE_PROCESSING_FOLDER, "lotsizeandrisk.json")
     output_json_path = os.path.join(json_dir, "calculatedprices.json")
     
     # Check if pricecandle.json exists
@@ -1363,9 +1350,9 @@ def getorderholderpriceswithlotsizeandrisk(market: str, timeframe: str, json_dir
             return False
 
         # Determine pip size and decimal places
-        pip_size = symbol_info.point  # MT5 point size (e.g., 0.0001 for EURUSD, 0.01 for USDJPY)
-        digits = symbol_info.digits   # Number of decimal places (e.g., 5 for EURUSD, 3 for USDJPY)
-        contract_size = symbol_info.trade_contract_size  # Contract size (e.g., 100,000 for forex)
+        pip_size = symbol_info.point
+        digits = symbol_info.digits
+        contract_size = symbol_info.trade_contract_size
 
         # Load pricecandle.json
         with open(pricecandle_json_path, 'r') as f:
@@ -1374,6 +1361,19 @@ def getorderholderpriceswithlotsizeandrisk(market: str, timeframe: str, json_dir
         # Load lotsizeandrisk.json
         with open(lotsizeandrisk_json_path, 'r') as f:
             lotsizeandrisk_data = json.load(f)
+        
+        # Filter lot size and risk data for the specific market and timeframe
+        db_timeframe = DB_TIMEFRAME_MAPPING.get(timeframe, timeframe)
+        matching_lot_size = None
+        for lot_entry in lotsizeandrisk_data:
+            if lot_entry.get("market") == market and lot_entry.get("timeframe") == db_timeframe:
+                matching_lot_size = lot_entry
+                break
+        
+        if not matching_lot_size:
+            log_and_print(f"No matching lot size and risk data found for {market} {timeframe}", "WARNING")
+            mt5.shutdown()
+            return False
         
         # Initialize output data and deduplication set
         calculated_prices = []
@@ -1411,18 +1411,6 @@ def getorderholderpriceswithlotsizeandrisk(market: str, timeframe: str, json_dir
                 log_and_print(f"No valid entry price for order holder in trendline {trendline_type} in {market} {timeframe}", "WARNING")
                 continue
             
-            # Find corresponding lot size and risk data
-            matching_lot_size = None
-            for lot_entry in lotsizeandrisk_data:
-                if (lot_entry.get("market") == market and 
-                    lot_entry.get("timeframe") == DB_TIMEFRAME_MAPPING.get(timeframe, timeframe)):
-                    matching_lot_size = lot_entry
-                    break
-            
-            if not matching_lot_size:
-                log_and_print(f"No matching lot size and risk data found for {market} {timeframe} in trendline {trendline_type}", "WARNING")
-                continue
-            
             # Extract lot size and allowed risk
             lot_size = float(matching_lot_size.get("lot_size", 0))
             allowed_risk = float(matching_lot_size.get("allowed_risk", 0))
@@ -1430,25 +1418,23 @@ def getorderholderpriceswithlotsizeandrisk(market: str, timeframe: str, json_dir
                 log_and_print(f"Invalid lot_size {lot_size} or allowed_risk {allowed_risk} for trendline {trendline_type} in {market} {timeframe}", "WARNING")
                 continue
             
-            # Calculate pip value (in account currency, assuming USD)
-            # For forex pairs, pip_value = lot_size * contract_size * pip_size
+            # Calculate pip value
             pip_value = lot_size * contract_size * pip_size
-            # Adjust for JPY pairs or non-USD quote currencies
             if market.endswith("JPY"):
                 current_price = mt5.symbol_info_tick(market).bid
                 if current_price > 0:
-                    pip_value = pip_value / current_price  # Convert to USD
+                    pip_value = pip_value / current_price
                 else:
                     log_and_print(f"Failed to fetch current price for {market} to adjust pip value", "WARNING")
-                    pip_value = lot_size * 10  # Fallback: Assume $10 per pip for 1 lot
+                    pip_value = lot_size * 10  # Fallback
             
-            # Calculate risk in pips: allowed_risk (USD) / pip_value (USD per pip)
+            # Calculate risk in pips
             risk_in_pips = allowed_risk / pip_value if pip_value != 0 else 0
             if risk_in_pips <= 0:
                 log_and_print(f"Invalid risk_in_pips {risk_in_pips} for trendline {trendline_type} in {market} {timeframe}", "WARNING")
                 continue
             
-            # Calculate exit_price, 1:0.5_price, 1:1_price, 1:2_price, and profit_price (1:3)
+            # Calculate exit_price, 1:0.5_price, 1:1_price, 1:2_price, and profit_price
             reward_to_risk_ratios = {
                 "1:0.5": 0.5,
                 "1:1": 1,
@@ -1456,17 +1442,17 @@ def getorderholderpriceswithlotsizeandrisk(market: str, timeframe: str, json_dir
                 "1:3": 3
             }
             if order_type == "short":
-                exit_price = entry_price + (risk_in_pips * pip_size)  # Stop loss above entry
-                price_1_0_5 = entry_price - (risk_in_pips * reward_to_risk_ratios["1:0.5"] * pip_size)  # 1:0.5 take profit below
-                price_1_1 = entry_price - (risk_in_pips * reward_to_risk_ratios["1:1"] * pip_size)  # 1:1 take profit below
-                price_1_2 = entry_price - (risk_in_pips * reward_to_risk_ratios["1:2"] * pip_size)  # 1:2 take profit below
-                profit_price = entry_price - (risk_in_pips * reward_to_risk_ratios["1:3"] * pip_size)  # 1:3 take profit below
+                exit_price = entry_price + (risk_in_pips * pip_size)
+                price_1_0_5 = entry_price - (risk_in_pips * reward_to_risk_ratios["1:0.5"] * pip_size)
+                price_1_1 = entry_price - (risk_in_pips * reward_to_risk_ratios["1:1"] * pip_size)
+                price_1_2 = entry_price - (risk_in_pips * reward_to_risk_ratios["1:2"] * pip_size)
+                profit_price = entry_price - (risk_in_pips * reward_to_risk_ratios["1:3"] * pip_size)
             else:  # order_type == "long"
-                exit_price = entry_price - (risk_in_pips * pip_size)  # Stop loss below entry
-                price_1_0_5 = entry_price + (risk_in_pips * reward_to_risk_ratios["1:0.5"] * pip_size)  # 1:0.5 take profit above
-                price_1_1 = entry_price + (risk_in_pips * reward_to_risk_ratios["1:1"] * pip_size)  # 1:1 take profit above
-                price_1_2 = entry_price + (risk_in_pips * reward_to_risk_ratios["1:2"] * pip_size)  # 1:2 take profit above
-                profit_price = entry_price + (risk_in_pips * reward_to_risk_ratios["1:3"] * pip_size)  # 1:3 take profit above
+                exit_price = entry_price - (risk_in_pips * pip_size)
+                price_1_0_5 = entry_price + (risk_in_pips * reward_to_risk_ratios["1:0.5"] * pip_size)
+                price_1_1 = entry_price + (risk_in_pips * reward_to_risk_ratios["1:1"] * pip_size)
+                price_1_2 = entry_price + (risk_in_pips * reward_to_risk_ratios["1:2"] * pip_size)
+                profit_price = entry_price + (risk_in_pips * reward_to_risk_ratios["1:3"] * pip_size)
             
             # Round prices to market-specific decimal places
             entry_price = round(entry_price, digits)
@@ -3762,7 +3748,6 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
         log_and_print(f"Error processing categorizecontract for {market} {timeframe}: {str(e)}", "ERROR")
         return False
 
-
 def save_status_json(success_data: List[Dict], no_pending_data: List[Dict], failed_data: List[Dict]) -> None:
     """Save all status data (success, no pending, failed) to marketsstatus.json with detailed process status messages."""
     successmarkets_path = os.path.join(BASE_OUTPUT_FOLDER, "marketsstatus.json")
@@ -3925,20 +3910,6 @@ def process_market_timeframe(market: str, timeframe: str) -> Tuple[bool, Optiona
             plus_newmostrecent = inbetween_data.get('plus_newmostrecent', '0')
             process_messages["calculate_candles_inbetween"] = f"Calculated {candles_count} candles in between, plus {plus_newmostrecent} including new most recent for {market} {timeframe}"
 
-        # Fetch lot size and allowed risk data
-        if not fetchlotsizeandriskallowed(market, timeframe, json_dir):
-            error_message = f"Failed to fetch lot size and allowed risk data for {market} {timeframe}"
-            log_and_print(error_message, "ERROR")
-            process_messages["fetchlotsizeandriskallowed"] = error_message
-        else:
-            output_json_path = os.path.join(json_dir, 'lotsizeandrisk.json')
-            if os.path.exists(output_json_path):
-                with open(output_json_path, 'r') as f:
-                    lotsize_data = json.load(f)
-                process_messages["fetchlotsizeandriskallowed"] = f"Fetched {len(lotsize_data)} lot size and risk records for {market} {timeframe}"
-            else:
-                process_messages["fetchlotsizeandriskallowed"] = f"No lot size and risk data saved for {market} {timeframe}"
-
         # Match trendline with candle data
         success, error_message, status = match_trendline_with_candle_data(candle_data, json_dir, market, timeframe)
         if not success:
@@ -4014,7 +3985,7 @@ def process_market_timeframe(market: str, timeframe: str) -> Tuple[bool, Optiona
                     f"No calculated prices saved for {market} {timeframe}"
                 )
 
-                # Track breakeven, stoploss, and profit
+        # Track breakeven, stoploss, and profit
         if not BreakevenStopandProfitTracker(market, timeframe, json_dir):
             error_message = f"Failed to track breakeven, stoploss, and profit for {market} {timeframe}"
             log_and_print(error_message, "ERROR")
@@ -4045,25 +4016,23 @@ def process_market_timeframe(market: str, timeframe: str) -> Tuple[bool, Optiona
                     f"No pending orders categorized for {market} {timeframe}"
                 )
 
-        # Copy pending orders to signedpendingorders.json
-        def executecopypendingorders():
-            if not copypendingorders(market, timeframe, json_dir):
-                error_message = f"Failed to copy pending orders for {market} {timeframe}"
-                log_and_print(error_message, "ERROR")
-                process_messages["copypendingorders"] = error_message
+        # Copy pending orders to signedorders.json
+        if not copypendingorders(market, timeframe, json_dir):
+            error_message = f"Failed to copy pending orders for {market} {timeframe}"
+            log_and_print(error_message, "ERROR")
+            process_messages["copypendingorders"] = error_message
+        else:
+            output_json_path = os.path.join(json_dir, 'signedorders.json')
+            if os.path.exists(output_json_path):
+                with open(output_json_path, 'r') as f:
+                    pending_data = json.load(f)
+                process_messages["copypendingorders"] = (
+                    f"Copied {len(pending_data)} pending orders to signedorders.json for {market} {timeframe}"
+                )
             else:
-                output_json_path = os.path.join(json_dir, 'signedpendingorders.json')
-                if os.path.exists(output_json_path):
-                    with open(output_json_path, 'r') as f:
-                        pending_data = json.load(f)
-                    process_messages["copypendingorders"] = (
-                        f"Copied {len(pending_data)} pending orders to signedpendingorders.json for {market} {timeframe}"
-                    )
-                else:
-                    process_messages["copypendingorders"] = (
-                        f"No pending orders copied for {market} {timeframe}"
-                    )
-
+                process_messages["copypendingorders"] = (
+                    f"No pending orders copied for {market} {timeframe}"
+                )
 
         log_and_print(f"Completed processing market: {market}, timeframe: {timeframe}", "SUCCESS")
         return True, None, "success", process_messages
@@ -4081,12 +4050,17 @@ def main():
     try:
         log_and_print("===== Fetch and Process Candle Data =====", "TITLE")
         
-        # Check M5 candle time left globally (using a default market, e.g., first in MARKETS or a specific one)
+        # Fetch lot size and allowed risk data once
+        if not fetchlotsizeandriskallowed():
+            log_and_print("Failed to fetch lot size and allowed risk data. Exiting.", "ERROR")
+            return
+        
+        # Check M5 candle time left globally
         if not MARKETS:
             log_and_print("No markets defined in MARKETS list. Exiting.", "ERROR")
             return
-        default_market = MARKETS[0]  # Use the first market for candle time check
-        timeframe = "M5"  # Fixed to M5 as per candletimeleft logic
+        default_market = MARKETS[0]
+        timeframe = "M5"
         log_and_print(f"Checking M5 candle time left using market: {default_market}", "INFO")
         time_left, next_close_time = candletimeleft(default_market, timeframe, None)
         
@@ -4096,12 +4070,10 @@ def main():
         
         if time_left <= 4:
             log_and_print(f"Time left for M5 candle is {time_left:.2f} minutes, waiting for next candle", "INFO")
-            # candletimeleft already waits for the next candle, but we confirm here
             time_to_wait = (next_close_time - datetime.now(pytz.UTC)).total_seconds() + 5
             if time_to_wait > 0:
                 log_and_print(f"Waiting {time_to_wait:.2f} seconds for the next M5 candle", "INFO")
                 time.sleep(time_to_wait)
-            # Recheck time left after waiting to ensure it's > 4 minutes
             time_left, next_close_time = candletimeleft(default_market, timeframe, None)
             if time_left is None or next_close_time is None:
                 log_and_print(f"Failed to retrieve candle time for {default_market} (M5) after waiting. Exiting.", "ERROR")
