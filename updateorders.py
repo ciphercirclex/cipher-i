@@ -2,10 +2,11 @@ import json
 import os
 import multiprocessing
 import time
-from datetime import datetime, timezone  # Added timezone import
+from datetime import datetime, timezone,  timedelta
 from typing import Dict, Optional, List, Tuple
 import pandas as pd
 import MetaTrader5 as mt5
+import pytz
 from colorama import Fore, Style, init
 import logging
 import connectwithinfinitydb as db
@@ -85,6 +86,89 @@ DB_TIMEFRAME_MAPPING = {
     "H4": "4hour"
 }
 
+def candletimeleft(market, timeframe, candle_time):
+    # Initialize MT5
+    print(f"[Process-{market}] Initializing MT5 for {market}")
+    for attempt in range(3):
+        if mt5.initialize(path=r"C:\Program Files\MetaTrader 5\terminal64.exe", timeout=60000):
+            break
+        print(f"[Process-{market}] Attempt {attempt + 1}/3: Failed to initialize MT5 terminal. Error: {mt5.last_error()}")
+        time.sleep(5)
+    else:
+        print(f"[Process-{market}] Failed to initialize MT5 terminal after 3 attempts")
+        return None, None
+    for _ in range(5):
+        if mt5.terminal_info() is not None:
+            break
+        print(f"[Process-{market}] Waiting for MT5 terminal to fully initialize...")
+        time.sleep(2)
+    else:
+        print(f"[Process-{market}] MT5 terminal not ready")
+        mt5.shutdown()
+        return None, None
+    for attempt in range(3):
+        if mt5.login(login=101347351, password="@Techknowdge12#", server="DerivSVG-Server-02", timeout=60000):
+            print(f"[Process-{market}] Successfully logged in to MT5")
+            break
+        error_code, error_message = mt5.last_error()
+        print(f"[Process-{market}] Attempt {attempt + 1}/3: Failed to log in to MT5. Error code: {error_code}, Message: {error_message}")
+        time.sleep(5)
+    else:
+        print(f"[Process-{market}] Failed to log in to MT5 after 3 attempts")
+        mt5.shutdown()
+        return None, None
+
+    try:
+        # Fetch current candle
+        if not mt5.symbol_select(market, True):
+            print(f"[Process-{market}] Failed to select market: {market}, error: {mt5.last_error()}")
+            return None, None
+        while True:
+            for attempt in range(3):
+                candles = mt5.copy_rates_from_pos(market, mt5.TIMEFRAME_M5, 0, 1)
+                if candles is None or len(candles) == 0:
+                    print(f"[Process-{market}] Attempt {attempt + 1}/3: Failed to fetch candle data for {market} (M5), error: {mt5.last_error()}")
+                    time.sleep(2)
+                    continue
+                current_time = datetime.now(pytz.UTC)
+                candle_time_dt = datetime.fromtimestamp(candles[0]['time'], tz=pytz.UTC)
+                if (current_time - candle_time_dt).total_seconds() > 6 * 60:  # 6 minutes for M5
+                    print(f"[Process-{market}] Attempt {attempt + 1}/3: Candle for {market} (M5) is too old (time: {candle_time_dt})")
+                    time.sleep(2)
+                    continue
+                candle_time = candles[0]['time']
+                break
+            else:
+                print(f"[Process-{market}] Failed to fetch recent candle data for {market} (M5) after 3 attempts")
+                return None, None
+
+            if timeframe.upper() != "M5":
+                print(f"[Process-{market}] Only M5 timeframe is supported, received {timeframe}")
+                return None, None
+
+            candle_datetime = datetime.fromtimestamp(candle_time, tz=pytz.UTC)
+            minutes_per_candle = 5
+            total_minutes = (candle_datetime.hour * 60 + candle_datetime.minute)
+            remainder = total_minutes % minutes_per_candle
+            last_candle_start = candle_datetime - timedelta(minutes=remainder, seconds=candle_datetime.second, microseconds=candle_datetime.microsecond)
+            next_close_time = last_candle_start + timedelta(minutes=minutes_per_candle)
+            current_time = datetime.now(pytz.UTC)
+            time_left = (next_close_time - current_time).total_seconds() / 60.0
+            if time_left <= 0:
+                next_close_time += timedelta(minutes=minutes_per_candle)
+                time_left = (next_close_time - current_time).total_seconds() / 60.0
+            print(f"[Process-{market}] Candle time: {candle_datetime}, Next close: {next_close_time}, Time left: {time_left:.2f} minutes")
+            
+            if time_left > 4:
+                return time_left, next_close_time
+            else:
+                print(f"[Process-{market}] Time left ({time_left:.2f} minutes) is <= 4 minutes, waiting for next candle")
+                time_to_wait = (next_close_time - current_time).total_seconds() + 5  # Wait until next candle starts
+                time.sleep(time_to_wait)
+                
+    finally:
+        mt5.shutdown()
+
 def fetch_candle_data(market: str, timeframe: str) -> tuple[Optional[Dict], Optional[str]]:
     """Fetch candle data from MT5 for a specific market and timeframe."""
     log_and_print(f"Fetching candle data for market={market}, timeframe={timeframe}", "INFO")
@@ -143,8 +227,8 @@ def fetch_candle_data(market: str, timeframe: str) -> tuple[Optional[Dict], Opti
         return None, None
 
     # Fetch candle data
-    candles = mt5.copy_rates_from_pos(market, mt5_timeframe, 1, 300)
-    if candles is None or len(candles) < 300:
+    candles = mt5.copy_rates_from_pos(market, mt5_timeframe, 1, 500)
+    if candles is None or len(candles) < 500:
         log_and_print(f"Failed to fetch candle data for {market} {timeframe}, error: {mt5.last_error()}", "ERROR")
         mt5.shutdown()
         return None, None
@@ -153,7 +237,7 @@ def fetch_candle_data(market: str, timeframe: str) -> tuple[Optional[Dict], Opti
     candle_data = {}
     for i in range(len(candles)):
         candle = df.iloc[i]
-        position = 300 - i  # Position 1 is most recent completed candle, 300 is oldest
+        position = 500 - i  # Position 1 is most recent completed candle, 500 is oldest
         candle_details = {
             "Time": str(pd.to_datetime(candle['time'], unit='s')),
             "Open": float(candle['open']),
@@ -1467,14 +1551,13 @@ def getorderholderpriceswithlotsizeandrisk(market: str, timeframe: str, json_dir
 def BreakevenStopandProfitTracker(market: str, timeframe: str, json_dir: str) -> bool:
     """Track candles after executioner candle using candle_data.json to determine if stoploss, breakeven (1:0.5, 1:1, 1:2), or profit price is hit first,
     including an independent check for candles revisiting ratio prices before profit or stoploss, and track the closest candle to stoploss (stoploss_threat).
-    Before processing, copy pending orders from pricecandle.json to signedorders.json, excluding executioner candles."""
+    Removes duplicates based on position numbers before processing and by pending order status after processing."""
     log_and_print(f"Tracking breakeven, stoploss, profit, and stoploss_threat for market={market}, timeframe={timeframe}", "INFO")
     
     # Define file paths
     pricecandle_json_path = os.path.join(json_dir, "pricecandle.json")
     calculatedprices_json_path = os.path.join(json_dir, "calculatedprices.json")
     candle_data_json_path = os.path.join(json_dir, "candle_data.json")
-    signedorders_json_path = os.path.join(json_dir, "signedorders.json")
     
     # Check if required JSON files exist
     if not os.path.exists(pricecandle_json_path):
@@ -1492,38 +1575,58 @@ def BreakevenStopandProfitTracker(market: str, timeframe: str, json_dir: str) ->
         with open(pricecandle_json_path, 'r') as f:
             pricecandle_data = json.load(f)
         
-        # Copy pending orders to signedorders.json
-        pending_orders = []
-        for trendline in pricecandle_data:
-            executioner_candle = trendline.get("executioner candle", {})
-            if executioner_candle.get("status") != "Candle found at order holder entry level":
-                # Copy the entire trendline entry for pending orders (no valid executioner candle)
-                pending_orders.append(trendline)
+        # First deduplication: Remove duplicates based on position numbers
+        seen_positions = {}
+        deduplicated_pricecandle = []
         
-        # Save pending orders to signedorders.json
-        if pending_orders:
-            if os.path.exists(signedorders_json_path):
-                os.remove(signedorders_json_path)
-                log_and_print(f"Existing {signedorders_json_path} deleted", "INFO")
-            try:
-                with open(signedorders_json_path, 'w') as f:
-                    json.dump(pending_orders, f, indent=4)
-                log_and_print(f"Pending orders copied to {signedorders_json_path} for {market} {timeframe}", "SUCCESS")
-            except Exception as e:
-                log_and_print(f"Error saving signedorders.json for {market} {timeframe}: {e}", "ERROR")
-                return False
-        else:
-            log_and_print(f"No pending orders found to copy to signedorders.json for {market} {timeframe}", "INFO")
-            if os.path.exists(signedorders_json_path):
-                os.remove(signedorders_json_path)
-                log_and_print(f"Existing {signedorders_json_path} deleted", "INFO")
-            try:
-                with open(signedorders_json_path, 'w') as f:
-                    json.dump([], f, indent=4)
-                log_and_print(f"Empty signedorders.json saved for {market} {timeframe}", "INFO")
-            except Exception as e:
-                log_and_print(f"Error saving empty signedorders.json for {market} {timeframe}: {e}", "ERROR")
-                return False
+        for entry in pricecandle_data:
+            # Collect position numbers from sender, receiver, order_holder, and Breakout_parent
+            position_numbers = set()
+            for key in ['sender', 'receiver', 'order_holder', 'Breakout_parent']:
+                if key in entry and isinstance(entry[key], dict) and 'position_number' in entry[key]:
+                    pos = entry[key]['position_number']
+                    if pos is not None:
+                        position_numbers.add(pos)
+            
+            # Skip entries with no position numbers
+            if not position_numbers:
+                deduplicated_pricecandle.append(entry)
+                continue
+            
+            # Create a unique key based on position numbers
+            position_key = tuple(sorted(position_numbers))
+            earliest_position = min(position_numbers)  # Use smallest position number to determine "older"
+            
+            if position_key in seen_positions:
+                # Compare with existing entry
+                existing_earliest = seen_positions[position_key]['earliest_position']
+                if earliest_position < existing_earliest:
+                    # Replace with older entry
+                    seen_positions[position_key] = {
+                        'entry': entry,
+                        'earliest_position': earliest_position
+                    }
+                    log_and_print(f"Duplicate found for positions {position_key} in {market} {timeframe}, keeping older entry with earliest position {earliest_position}", "INFO")
+                else:
+                    log_and_print(f"Duplicate found for positions {position_key} in {market} {timeframe}, skipping newer entry with earliest position {earliest_position}", "INFO")
+            else:
+                seen_positions[position_key] = {
+                    'entry': entry,
+                    'earliest_position': earliest_position
+                }
+        
+        # Collect deduplicated entries
+        deduplicated_pricecandle = [data['entry'] for data in seen_positions.values()]
+        log_and_print(f"Removed duplicates by position numbers, {len(deduplicated_pricecandle)} unique entries remain for {market} {timeframe}", "INFO")
+        
+        # Save deduplicated pricecandle.json
+        try:
+            with open(pricecandle_json_path, 'w') as f:
+                json.dump(deduplicated_pricecandle, f, indent=4)
+            log_and_print(f"Saved deduplicated pricecandle.json (by position numbers) for {market} {timeframe}", "INFO")
+        except Exception as e:
+            log_and_print(f"Error saving deduplicated pricecandle.json (by position numbers) for {market} {timeframe}: {e}", "ERROR")
+            return False
         
         # Load calculatedprices.json
         with open(calculatedprices_json_path, 'r') as f:
@@ -1536,8 +1639,8 @@ def BreakevenStopandProfitTracker(market: str, timeframe: str, json_dir: str) ->
         # Prepare updated pricecandle data
         updated_pricecandle_data = []
         
-        # Process each trendline in pricecandle.json
-        for pricecandle_trendline in pricecandle_data:
+        # Process each trendline in deduplicated pricecandle
+        for pricecandle_trendline in deduplicated_pricecandle:
             trendline_type = pricecandle_trendline.get("type")
             executioner_candle = pricecandle_trendline.get("executioner candle", {})
             order_holder_position = pricecandle_trendline.get("order_holder", {}).get("position_number")
@@ -2146,24 +2249,115 @@ def BreakevenStopandProfitTracker(market: str, timeframe: str, json_dir: str) ->
             
             updated_pricecandle_data.append(pricecandle_trendline)
         
-        # Save updated pricecandle.json
+        # Second deduplication: Remove duplicates based on pending order status
+        seen_pending_orders = {}
+        final_pricecandle_data = []
+        
+        for entry in updated_pricecandle_data:
+            # Get pending order status
+            pending_order_status = None
+            if 'pending order' in entry and isinstance(entry['pending order'], dict):
+                pending_order_status = entry['pending order'].get('status')
+            
+            # Get position number for determining "older" entry (preferably from order_holder)
+            position_number = None
+            if 'order_holder' in entry and isinstance(entry['order_holder'], dict):
+                position_number = entry['order_holder'].get('position_number')
+            elif 'receiver' in entry and isinstance(entry['receiver'], dict):
+                position_number = entry['receiver'].get('position_number')
+            elif 'sender' in entry and isinstance(entry['sender'], dict):
+                position_number = entry['sender'].get('position_number')
+            elif 'Breakout_parent' in entry and isinstance(entry['Breakout_parent'], dict):
+                position_number = entry['Breakout_parent'].get('position_number')
+            
+            # Skip entries with no pending order status or position number
+            if not pending_order_status or position_number is None:
+                final_pricecandle_data.append(entry)
+                continue
+            
+            if pending_order_status in seen_pending_orders:
+                # Compare with existing entry
+                existing_position = seen_pending_orders[pending_order_status]['position_number']
+                if position_number < existing_position:
+                    # Replace with older entry
+                    seen_pending_orders[pending_order_status] = {
+                        'entry': entry,
+                        'position_number': position_number
+                    }
+                    log_and_print(f"Duplicate found for pending order status '{pending_order_status}' in {market} {timeframe}, keeping older entry with position {position_number}", "INFO")
+                else:
+                    log_and_print(f"Duplicate found for pending order status '{pending_order_status}' in {market} {timeframe}, skipping newer entry with position {position_number}", "INFO")
+            else:
+                seen_pending_orders[pending_order_status] = {
+                    'entry': entry,
+                    'position_number': position_number
+                }
+        
+        # Collect final deduplicated entries
+        final_pricecandle_data = [data['entry'] for data in seen_pending_orders.values()]
+        log_and_print(f"Removed duplicates by pending order status, {len(final_pricecandle_data)} unique entries remain for {market} {timeframe}", "INFO")
+        
+        # Save final pricecandle.json
         if os.path.exists(pricecandle_json_path):
             os.remove(pricecandle_json_path)
             log_and_print(f"Existing {pricecandle_json_path} deleted", "INFO")
         
         try:
             with open(pricecandle_json_path, 'w') as f:
-                json.dump(updated_pricecandle_data, f, indent=4)
+                json.dump(final_pricecandle_data, f, indent=4)
             log_and_print(f"Updated pricecandle.json with breakeven, stoploss, profit tracking, independent checks, and stoploss_threat for {market} {timeframe}", "SUCCESS")
             return True
         except Exception as e:
-            log_and_print(f"Error saving updated pricecandle.json for {market} {timeframe}: {e}", "ERROR")
+            log_and_print(f"Error saving final pricecandle.json for {market} {timeframe}: {e}", "ERROR")
             return False
     
     except Exception as e:
         log_and_print(f"Error processing breakeven, stoploss, profit tracking, and stoploss_threat for {market} {timeframe}: {e}", "ERROR")
-        return False   
-     
+        return False
+
+def copypendingorders(market: str, timeframe: str, json_dir: str) -> bool:
+    """Copy entries with pending order status from pricecandle.json to signedorders.json."""
+    log_and_print(f"Copying pending orders for market={market}, timeframe={timeframe}", "INFO")
+    
+    # Define file paths
+    pricecandle_json_path = os.path.join(json_dir, "pricecandle.json")
+    signedorders_json_path = os.path.join(json_dir, "signedorders.json")
+    
+    # Check if pricecandle.json exists
+    if not os.path.exists(pricecandle_json_path):
+        log_and_print(f"pricecandle.json not found at {pricecandle_json_path} for {market} {timeframe}", "ERROR")
+        return False
+    
+    try:
+        # Load pricecandle.json
+        with open(pricecandle_json_path, 'r') as f:
+            pricecandle_data = json.load(f)
+        
+        # Filter entries with pending order status
+        pending_orders = [
+            entry for entry in pricecandle_data
+            if "pending order" in entry and isinstance(entry["pending order"], dict)
+            and entry["pending order"].get("status") and "buy_limit" in entry["pending order"]["status"]
+            or "sell_limit" in entry["pending order"]["status"]
+        ]
+        
+        # Log the number of pending orders found
+        log_and_print(f"Found {len(pending_orders)} pending orders for {market} {timeframe}", "INFO")
+        
+        # Save to signedorders.json
+        try:
+            with open(signedorders_json_path, 'w') as f:
+                json.dump(pending_orders, f, indent=4)
+            log_and_print(f"Saved {len(pending_orders)} pending orders to signedorders.json for {market} {timeframe}", "SUCCESS")
+            return True
+        except Exception as e:
+            log_and_print(f"Error saving signedorders.json for {market} {timeframe}: {e}", "ERROR")
+            return False
+    
+    except Exception as e:
+        log_and_print(f"Error processing pending orders for {market} {timeframe}: {e}", "ERROR")
+        return False
+
 def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
     log_and_print(f"Categorizing pending, historical, and reward ratio orders for market={market}, timeframe={timeframe}", "INFO")
     
@@ -2588,10 +2782,6 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
         ) = rewardratios()
         
         # Save pending orders to contractpendingorders.json
-        if os.path.exists(pending_orders_json_path):
-            os.remove(pending_orders_json_path)
-            log_and_print(f"Existing {pending_orders_json_path} deleted", "INFO")
-        
         try:
             with open(pending_orders_json_path, 'w') as f:
                 json.dump(contract_pending_orders, f, indent=4)
@@ -2604,10 +2794,6 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
             return False
         
         # Save historical orders to contracthistory.json
-        if os.path.exists(history_orders_json_path):
-            os.remove(history_orders_json_path)
-            log_and_print(f"Existing {history_orders_json_path} deleted", "INFO")
-        
         try:
             with open(history_orders_json_path, 'w') as f:
                 json.dump(contract_history_orders, f, indent=4)
@@ -2620,10 +2806,6 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
             return False
         
         # Save profit history orders to contractprofithistory.json
-        if os.path.exists(profit_history_json_path):
-            os.remove(profit_history_json_path)
-            log_and_print(f"Existing {profit_history_json_path} deleted", "INFO")
-        
         try:
             with open(profit_history_json_path, 'w') as f:
                 json.dump(profit_history_orders, f, indent=4)
@@ -2636,10 +2818,6 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
             return False
         
         # Save stoploss history orders to contractstoplosshistory.json
-        if os.path.exists(stoploss_history_json_path):
-            os.remove(stoploss_history_json_path)
-            log_and_print(f"Existing {stoploss_history_json_path} deleted", "INFO")
-        
         try:
             with open(stoploss_history_json_path, 'w') as f:
                 json.dump(stoploss_history_orders, f, indent=4)
@@ -2652,10 +2830,6 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
             return False
         
         # Save ratio 0.5 revisit orders
-        if os.path.exists(ratio_0_5_revisit_json_path):
-            os.remove(ratio_0_5_revisit_json_path)
-            log_and_print(f"Existing {ratio_0_5_revisit_json_path} deleted", "INFO")
-        
         try:
             with open(ratio_0_5_revisit_json_path, 'w') as f:
                 json.dump(ratio_0_5_revisit_orders, f, indent=4)
@@ -2668,10 +2842,6 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
             return False
         
         # Save ratio 1 revisit orders
-        if os.path.exists(ratio_1_revisit_json_path):
-            os.remove(ratio_1_revisit_json_path)
-            log_and_print(f"Existing {ratio_1_revisit_json_path} deleted", "INFO")
-        
         try:
             with open(ratio_1_revisit_json_path, 'w') as f:
                 json.dump(ratio_1_revisit_orders, f, indent=4)
@@ -2684,10 +2854,6 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
             return False
         
         # Save ratio 2 revisit orders
-        if os.path.exists(ratio_2_revisit_json_path):
-            os.remove(ratio_2_revisit_json_path)
-            log_and_print(f"Existing {ratio_2_revisit_json_path} deleted", "INFO")
-        
         try:
             with open(ratio_2_revisit_json_path, 'w') as f:
                 json.dump(ratio_2_revisit_orders, f, indent=4)
@@ -2700,10 +2866,6 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
             return False
         
         # Save ratio 0.5 no revisit orders
-        if os.path.exists(ratio_0_5_norevisit_json_path):
-            os.remove(ratio_0_5_norevisit_json_path)
-            log_and_print(f"Existing {ratio_0_5_norevisit_json_path} deleted", "INFO")
-        
         try:
             with open(ratio_0_5_norevisit_json_path, 'w') as f:
                 json.dump(ratio_0_5_norevisit_orders, f, indent=4)
@@ -2716,10 +2878,6 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
             return False
         
         # Save ratio 1 no revisit orders
-        if os.path.exists(ratio_1_norevisit_json_path):
-            os.remove(ratio_1_norevisit_json_path)
-            log_and_print(f"Existing {ratio_1_norevisit_json_path} deleted", "INFO")
-        
         try:
             with open(ratio_1_norevisit_json_path, 'w') as f:
                 json.dump(ratio_1_norevisit_orders, f, indent=4)
@@ -2732,10 +2890,6 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
             return False
         
         # Save ratio 2 no revisit orders
-        if os.path.exists(ratio_2_norevisit_json_path):
-            os.remove(ratio_2_norevisit_json_path)
-            log_and_print(f"Existing {ratio_2_norevisit_json_path} deleted", "INFO")
-        
         try:
             with open(ratio_2_norevisit_json_path, 'w') as f:
                 json.dump(ratio_2_norevisit_orders, f, indent=4)
@@ -3031,9 +3185,6 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
             }
             
             try:
-                if os.path.exists(collective_pending_path):
-                    os.remove(collective_pending_path)
-                    log_and_print(f"Existing {collective_pending_path} deleted", "INFO")
                 with open(collective_pending_path, 'w') as f:
                     json.dump(pending_output, f, indent=4)
                 log_and_print(
@@ -3058,9 +3209,6 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
             }
             
             try:
-                if os.path.exists(collective_history_path):
-                    os.remove(collective_history_path)
-                    log_and_print(f"Existing {collective_history_path} deleted", "INFO")
                 with open(collective_history_path, 'w') as f:
                     json.dump(history_output, f, indent=4)
                 log_and_print(
@@ -3085,9 +3233,6 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
             }
             
             try:
-                if os.path.exists(collective_profit_history_path):
-                    os.remove(collective_profit_history_path)
-                    log_and_print(f"Existing {collective_profit_history_path} deleted", "INFO")
                 with open(collective_profit_history_path, 'w') as f:
                     json.dump(profit_history_output, f, indent=4)
                 log_and_print(
@@ -3112,9 +3257,6 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
             }
             
             try:
-                if os.path.exists(collective_stoploss_history_path):
-                    os.remove(collective_stoploss_history_path)
-                    log_and_print(f"Existing {collective_stoploss_history_path} deleted", "INFO")
                 with open(collective_stoploss_history_path, 'w') as f:
                     json.dump(stoploss_history_output, f, indent=4)
                 log_and_print(
@@ -3139,9 +3281,6 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
             }
             
             try:
-                if os.path.exists(collective_ratio_0_5_revisit_path):
-                    os.remove(collective_ratio_0_5_revisit_path)
-                    log_and_print(f"Existing {collective_ratio_0_5_revisit_path} deleted", "INFO")
                 with open(collective_ratio_0_5_revisit_path, 'w') as f:
                     json.dump(ratio_0_5_revisit_output, f, indent=4)
                 log_and_print(
@@ -3166,9 +3305,6 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
             }
             
             try:
-                if os.path.exists(collective_ratio_1_revisit_path):
-                    os.remove(collective_ratio_1_revisit_path)
-                    log_and_print(f"Existing {collective_ratio_1_revisit_path} deleted", "INFO")
                 with open(collective_ratio_1_revisit_path, 'w') as f:
                     json.dump(ratio_1_revisit_output, f, indent=4)
                 log_and_print(
@@ -3193,9 +3329,6 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
             }
             
             try:
-                if os.path.exists(collective_ratio_2_revisit_path):
-                    os.remove(collective_ratio_2_revisit_path)
-                    log_and_print(f"Existing {collective_ratio_2_revisit_path} deleted", "INFO")
                 with open(collective_ratio_2_revisit_path, 'w') as f:
                     json.dump(ratio_2_revisit_output, f, indent=4)
                 log_and_print(
@@ -3220,9 +3353,6 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
             }
             
             try:
-                if os.path.exists(collective_ratio_0_5_norevisit_path):
-                    os.remove(collective_ratio_0_5_norevisit_path)
-                    log_and_print(f"Existing {collective_ratio_0_5_norevisit_path} deleted", "INFO")
                 with open(collective_ratio_0_5_norevisit_path, 'w') as f:
                     json.dump(ratio_0_5_norevisit_output, f, indent=4)
                 log_and_print(
@@ -3247,9 +3377,6 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
             }
             
             try:
-                if os.path.exists(collective_ratio_1_norevisit_path):
-                    os.remove(collective_ratio_1_norevisit_path)
-                    log_and_print(f"Existing {collective_ratio_1_norevisit_path} deleted", "INFO")
                 with open(collective_ratio_1_norevisit_path, 'w') as f:
                     json.dump(ratio_1_norevisit_output, f, indent=4)
                 log_and_print(
@@ -3274,9 +3401,6 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
             }
             
             try:
-                if os.path.exists(collective_ratio_2_norevisit_path):
-                    os.remove(collective_ratio_2_norevisit_path)
-                    log_and_print(f"Existing {collective_ratio_2_norevisit_path} deleted", "INFO")
                 with open(collective_ratio_2_norevisit_path, 'w') as f:
                     json.dump(ratio_2_norevisit_output, f, indent=4)
                 log_and_print(
@@ -3291,7 +3415,9 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
         
         def recordhistoricalorders():
             """Collect historical orders from contracthistory.json across all markets and timeframes,
-            align with collectivehistoryorders.json, and save to allordersrecords.json."""
+            align with collectivehistoryorders.json, and append to allordersrecords.json without duplicates."""
+            log_and_print(f"Appending historical orders to {contract_orders_records_path} for {market} {timeframe}", "INFO")
+            
             all_historical_orders = []
             timeframe_counts_records = {
                 "5minutes": 0,
@@ -3302,7 +3428,40 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
             }
             seen_order_keys = set()  # Track unique (pair, entry_price, order_type, order_holder_timestamp) tuples
             
-            # Iterate through all markets and timeframes to collect historical orders
+            # Load existing orders from allordersrecords.json if it exists
+            if os.path.exists(contract_orders_records_path):
+                try:
+                    with open(contract_orders_records_path, 'r') as f:
+                        existing_data = json.load(f)
+                    if isinstance(existing_data, dict) and "orders" in existing_data:
+                        all_historical_orders = existing_data.get("orders", [])
+                        # Initialize counts from existing data
+                        timeframe_counts_records["5minutes"] = existing_data.get("5minutes historical orders", 0)
+                        timeframe_counts_records["15minutes"] = existing_data.get("15minutes historical orders", 0)
+                        timeframe_counts_records["30minutes"] = existing_data.get("30minutes historical orders", 0)
+                        timeframe_counts_records["1hour"] = existing_data.get("1hour historical orders", 0)
+                        timeframe_counts_records["4hour"] = existing_data.get("4hours historical orders", 0)
+                        # Populate seen_order_keys with existing orders
+                        for order in all_historical_orders:
+                            entry_price = round(order.get("entry_price", 0.0), 5)
+                            order_key = (
+                                order.get("pair", ""),
+                                entry_price,
+                                order.get("order_type", "").lower(),
+                                order.get("order_holder_timestamp", "N/A")
+                            )
+                            seen_order_keys.add(order_key)
+                        log_and_print(
+                            f"Loaded {len(all_historical_orders)} existing historical orders from {contract_orders_records_path}",
+                            "DEBUG"
+                        )
+                    else:
+                        log_and_print(f"Invalid data format in {contract_orders_records_path}: Expected dict with 'orders', got {type(existing_data)}", "WARNING")
+                except Exception as e:
+                    log_and_print(f"Error reading {contract_orders_records_path}: {str(e)}", "WARNING")
+            
+            # Iterate through all markets and timeframes to collect new historical orders
+            new_orders = []
             for mkt in MARKETS:
                 formatted_market = mkt.replace(" ", "_")
                 for tf in TIMEFRAMES:
@@ -3325,11 +3484,18 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
                                         order.get("order_holder_timestamp", "N/A")
                                     )
                                     if order_key not in seen_order_keys:
-                                        all_historical_orders.append(order)
+                                        new_orders.append(order)
                                         seen_order_keys.add(order_key)
                                         timeframe_counts_records[db_tf] += 1
                                         log_and_print(
-                                            f"Collected historical order from {history_path}: pair={order.get('pair')}, "
+                                            f"Collected new historical order from {history_path}: pair={order.get('pair')}, "
+                                            f"entry_price={entry_price}, order_type={order.get('order_type')}, "
+                                            f"timestamp={order.get('order_holder_timestamp')}",
+                                            "DEBUG"
+                                        )
+                                    else:
+                                        log_and_print(
+                                            f"Skipped duplicate historical order from {history_path}: pair={order.get('pair')}, "
                                             f"entry_price={entry_price}, order_type={order.get('order_type')}, "
                                             f"timestamp={order.get('order_holder_timestamp')}",
                                             "DEBUG"
@@ -3339,7 +3505,10 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
                         except Exception as e:
                             log_and_print(f"Error reading {history_path}: {str(e)}", "WARNING")
             
-            # Prepare output for contractordersrecords.json
+            # Append new orders to the existing list
+            all_historical_orders.extend(new_orders)
+            
+            # Prepare output for allordersrecords.json
             records_output = {
                 "allhistoricalorders": len(all_historical_orders),
                 "5minutes historical orders": timeframe_counts_records["5minutes"],
@@ -3350,18 +3519,15 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
                 "orders": all_historical_orders
             }
             
-            # Save to contractordersrecords.json, overwriting to ensure current data
+            # Save to allordersrecords.json
             try:
-                if os.path.exists(contract_orders_records_path):
-                    os.remove(contract_orders_records_path)
-                    log_and_print(f"Existing {contract_orders_records_path} deleted", "INFO")
                 with open(contract_orders_records_path, 'w') as f:
                     json.dump(records_output, f, indent=4)
                 log_and_print(
-                    f"Saved {len(all_historical_orders)} historical orders to {contract_orders_records_path} "
-                    f"(5m: {timeframe_counts_records['5minutes']}, 15m: {timeframe_counts_records['15minutes']}, "
-                    f"30m: {timeframe_counts_records['30minutes']}, 1h: {timeframe_counts_records['1hour']}, "
-                    f"4h: {timeframe_counts_records['4hour']})",
+                    f"Appended {len(new_orders)} new historical orders to {contract_orders_records_path} "
+                    f"(Total: {len(all_historical_orders)}, 5m: {timeframe_counts_records['5minutes']}, "
+                    f"15m: {timeframe_counts_records['15minutes']}, 30m: {timeframe_counts_records['30minutes']}, "
+                    f"1h: {timeframe_counts_records['1hour']}, 4h: {timeframe_counts_records['4hour']})",
                     "SUCCESS"
                 )
             except Exception as e:
@@ -3472,9 +3638,6 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
                 "filtered_orders": filtered_orders
             }
             try:
-                if os.path.exists(filtered_orders_path):
-                    os.remove(filtered_orders_path)
-                    log_and_print(f"Existing {filtered_orders_path} deleted", "INFO")
                 with open(filtered_orders_path, 'w') as f:
                     json.dump(filtered_output, f, indent=4)
                 log_and_print(
@@ -3487,9 +3650,6 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
             
             # Update individual contractpendingorders.json
             try:
-                if os.path.exists(pending_orders_json_path):
-                    os.remove(pending_orders_json_path)
-                    log_and_print(f"Existing {pending_orders_json_path} deleted", "INFO")
                 with open(pending_orders_json_path, 'w') as f:
                     json.dump(kept_pending_orders, f, indent=4)
                 log_and_print(
@@ -3541,9 +3701,6 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
                 "filtered_orders": collective_filtered_orders
             }
             try:
-                if os.path.exists(collective_filtered_orders_path):
-                    os.remove(collective_filtered_orders_path)
-                    log_and_print(f"Existing {collective_filtered_orders_path} deleted", "INFO")
                 with open(collective_filtered_orders_path, 'w') as f:
                     json.dump(collective_filtered_output, f, indent=4)
                 log_and_print(
@@ -3570,9 +3727,6 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
                 "orders": kept_collective_pending_orders
             }
             try:
-                if os.path.exists(collective_pending_path):
-                    os.remove(collective_pending_path)
-                    log_and_print(f"Existing {collective_pending_path} deleted", "INFO")
                 with open(collective_pending_path, 'w') as f:
                     json.dump(collective_pending_output, f, indent=4)
                 log_and_print(
@@ -3607,6 +3761,7 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
     except Exception as e:
         log_and_print(f"Error processing categorizecontract for {market} {timeframe}: {str(e)}", "ERROR")
         return False
+
 
 def save_status_json(success_data: List[Dict], no_pending_data: List[Dict], failed_data: List[Dict]) -> None:
     """Save all status data (success, no pending, failed) to marketsstatus.json with detailed process status messages."""
@@ -3841,19 +3996,6 @@ def process_market_timeframe(market: str, timeframe: str) -> Tuple[bool, Optiona
                 f"{executioner_not_found} with no executioner candle for {market} {timeframe}"
             )
 
-        # Track breakeven, stoploss, and profit
-        if not BreakevenStopandProfitTracker(market, timeframe, json_dir):
-            error_message = f"Failed to track breakeven, stoploss, and profit for {market} {timeframe}"
-            log_and_print(error_message, "ERROR")
-            process_messages["BreakevenStopandProfitTracker"] = error_message
-        else:
-            with open(os.path.join(json_dir, 'pricecandle.json'), 'r') as f:
-                pricecandle_data = json.load(f)
-            contract_statuses = [t.get('contract status summary', {}).get('contract status', 'unknown') for t in pricecandle_data]
-            process_messages["BreakevenStopandProfitTracker"] = (
-                f"Tracked breakeven, stoploss, and profit for {len(pricecandle_data)} trendlines: {', '.join(set(contract_statuses))} for {market} {timeframe}"
-            )
-
         # Calculate order holder prices with lot size and risk
         if not getorderholderpriceswithlotsizeandrisk(market, timeframe, json_dir):
             error_message = f"Failed to calculate order holder prices with lot size and risk for {market} {timeframe}"
@@ -3871,6 +4013,19 @@ def process_market_timeframe(market: str, timeframe: str) -> Tuple[bool, Optiona
                 process_messages["getorderholderpriceswithlotsizeandrisk"] = (
                     f"No calculated prices saved for {market} {timeframe}"
                 )
+
+                # Track breakeven, stoploss, and profit
+        if not BreakevenStopandProfitTracker(market, timeframe, json_dir):
+            error_message = f"Failed to track breakeven, stoploss, and profit for {market} {timeframe}"
+            log_and_print(error_message, "ERROR")
+            process_messages["BreakevenStopandProfitTracker"] = error_message
+        else:
+            with open(os.path.join(json_dir, 'pricecandle.json'), 'r') as f:
+                pricecandle_data = json.load(f)
+            contract_statuses = [t.get('contract status summary', {}).get('contract status', 'unknown') for t in pricecandle_data]
+            process_messages["BreakevenStopandProfitTracker"] = (
+                f"Tracked breakeven, stoploss, and profit for {len(pricecandle_data)} trendlines: {', '.join(set(contract_statuses))} for {market} {timeframe}"
+            )
 
         # Categorize pending orders into contractpendingorders.json
         if not categorizecontract(market, timeframe, json_dir):
@@ -3890,6 +4045,26 @@ def process_market_timeframe(market: str, timeframe: str) -> Tuple[bool, Optiona
                     f"No pending orders categorized for {market} {timeframe}"
                 )
 
+        # Copy pending orders to signedpendingorders.json
+        def executecopypendingorders():
+            if not copypendingorders(market, timeframe, json_dir):
+                error_message = f"Failed to copy pending orders for {market} {timeframe}"
+                log_and_print(error_message, "ERROR")
+                process_messages["copypendingorders"] = error_message
+            else:
+                output_json_path = os.path.join(json_dir, 'signedpendingorders.json')
+                if os.path.exists(output_json_path):
+                    with open(output_json_path, 'r') as f:
+                        pending_data = json.load(f)
+                    process_messages["copypendingorders"] = (
+                        f"Copied {len(pending_data)} pending orders to signedpendingorders.json for {market} {timeframe}"
+                    )
+                else:
+                    process_messages["copypendingorders"] = (
+                        f"No pending orders copied for {market} {timeframe}"
+                    )
+
+
         log_and_print(f"Completed processing market: {market}, timeframe: {timeframe}", "SUCCESS")
         return True, None, "success", process_messages
 
@@ -3906,6 +4081,38 @@ def main():
     try:
         log_and_print("===== Fetch and Process Candle Data =====", "TITLE")
         
+        # Check M5 candle time left globally (using a default market, e.g., first in MARKETS or a specific one)
+        if not MARKETS:
+            log_and_print("No markets defined in MARKETS list. Exiting.", "ERROR")
+            return
+        default_market = MARKETS[0]  # Use the first market for candle time check
+        timeframe = "M5"  # Fixed to M5 as per candletimeleft logic
+        log_and_print(f"Checking M5 candle time left using market: {default_market}", "INFO")
+        time_left, next_close_time = candletimeleft(default_market, timeframe, None)
+        
+        if time_left is None or next_close_time is None:
+            log_and_print(f"Failed to retrieve candle time for {default_market} (M5). Exiting.", "ERROR")
+            return
+        
+        if time_left <= 4:
+            log_and_print(f"Time left for M5 candle is {time_left:.2f} minutes, waiting for next candle", "INFO")
+            # candletimeleft already waits for the next candle, but we confirm here
+            time_to_wait = (next_close_time - datetime.now(pytz.UTC)).total_seconds() + 5
+            if time_to_wait > 0:
+                log_and_print(f"Waiting {time_to_wait:.2f} seconds for the next M5 candle", "INFO")
+                time.sleep(time_to_wait)
+            # Recheck time left after waiting to ensure it's > 4 minutes
+            time_left, next_close_time = candletimeleft(default_market, timeframe, None)
+            if time_left is None or next_close_time is None:
+                log_and_print(f"Failed to retrieve candle time for {default_market} (M5) after waiting. Exiting.", "ERROR")
+                return
+            if time_left <= 4:
+                log_and_print(f"Time left for M5 candle is still {time_left:.2f} minutes after waiting. Exiting.", "ERROR")
+                return
+        
+        log_and_print(f"M5 candle time left: {time_left:.2f} minutes. Proceeding with execution.", "INFO")
+
+        # Create tasks for all market-timeframe combinations
         tasks = [(market, timeframe) for market in MARKETS for timeframe in TIMEFRAMES]
         success_data = []
         no_pending_data = []
