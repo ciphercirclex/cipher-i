@@ -52,7 +52,6 @@ def load_markets_and_timeframes(json_path):
     except Exception as e:
         print(f"Error loading base.json: {e}")
         return [], []
-
 # Load markets, timeframes, and credentials at startup
 MARKETS, TIMEFRAMES = load_markets_and_timeframes(MARKETS_JSON_PATH)
 
@@ -132,7 +131,7 @@ def candletimeleft(market, timeframe, candle_time):
             if time_left > 3.8:
                 return time_left, next_close_time
             else:
-                print(f"[Process-{market}] Time left ({time_left:.2f} minutes) is <= 3.6 minutes, returning None to restart sequence")
+                print(f"[Process-{market}] Time left ({time_left:.2f} minutes) is <= 3.8 minutes, returning None to restart sequence")
                 return None, None
             
     finally:
@@ -177,7 +176,7 @@ def execute(mode="loop"):
             start_time = datetime.now(pytz.UTC)  # Capture system time at the start
             time_left, next_close_time = candletimeleft(default_market, timeframe, None)
             if time_left is None or next_close_time is None:
-                print(f"[Process-{default_market}] Failed to retrieve candle time or time_left <= 4 for {default_market} (M5). Restarting sequence.")
+                print(f"[Process-{default_market}] candle time_left <= 4 for {default_market} (M5). Restarting sequence.")
                 time.sleep(5)  # Small delay before restarting
                 continue
             initial_time_left = time_left  # Store initial time left for operation time calculation
@@ -187,7 +186,7 @@ def execute(mode="loop"):
             # Second candle check before analysechart_m
             time_left, next_close_time = candletimeleft(default_market, timeframe, None)
             if time_left is None or next_close_time is None:
-                print(f"[Process-{default_market}] Failed to retrieve candle time or time_left <= 4 for {default_market} (M5). Restarting sequence.")
+                print(f"[Process-{default_market}] candle time_left <= 4 for {default_market} (M5). Restarting sequence.")
                 time.sleep(5)  # Small delay before restarting
                 continue
             print(f"[Process-{default_market}] Time left for M5 candle: {time_left:.2f} minutes. Running analysechart_m.")
@@ -196,7 +195,7 @@ def execute(mode="loop"):
             # Third candle check before updateorders
             time_left, next_close_time = candletimeleft(default_market, timeframe, None)
             if time_left is None or next_close_time is None:
-                print(f"[Process-{default_market}] Failed to retrieve candle time or time_left <= 4 for {default_market} (M5). Restarting sequence.")
+                print(f"[Process-{default_market}] candle time_left <= 4 for {default_market} (M5). Restarting sequence.")
                 time.sleep(5)  # Small delay before restarting
                 continue
             print(f"[Process-{default_market}] Time left for M5 candle: {time_left:.2f} minutes. Running updateorders.")

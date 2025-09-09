@@ -117,7 +117,6 @@ def load_markets_and_timeframes(json_path):
     except Exception as e:
         log_and_print(f"Error loading base.json: {str(e)}", "ERROR")
         return [], [], {}
-
 # Load markets, timeframes, and credentials at startup
 MARKETS, TIMEFRAMES, CREDENTIALS = load_markets_and_timeframes(MARKETS_JSON_PATH)
 
@@ -3888,6 +3887,112 @@ def save_status_json(success_data: List[Dict], no_pending_data: List[Dict], fail
     except Exception as e:
         log_and_print(f"Error saving marketsstatus.json: {str(e)}", "ERROR")
 
+def marketsliststatus() -> bool:
+    """Generate marketsorderlist.json with pending orders and order-free markets by timeframe."""
+    log_and_print("Generating markets order list status", "INFO")
+    
+    markets_order_list_path = os.path.join(BASE_OUTPUT_FOLDER, "marketsorderlist.json")
+    collective_pending_path = os.path.join(BASE_OUTPUT_FOLDER, "allpendingorders.json")
+    
+    # Initialize the output structure
+    markets_pending = {}
+    order_free_markets = {
+        "m5": [],
+        "m15": [],
+        "m30": [],
+        "1h": [],
+        "4h": []
+    }
+    
+    # Map timeframes to the required format
+    timeframe_mapping = {
+        "M5": "m5",
+        "M15": "m15",
+        "M30": "m30",
+        "H1": "1h",
+        "H4": "4h"
+    }
+    
+    try:
+        # Load allpendingorders.json
+        if not os.path.exists(collective_pending_path):
+            log_and_print(f"allpendingorders.json not found at {collective_pending_path}", "ERROR")
+            return False
+        
+        with open(collective_pending_path, 'r') as f:
+            pending_data = json.load(f)
+        
+        if not isinstance(pending_data, dict) or "orders" not in pending_data:
+            log_and_print(f"Invalid data format in {collective_pending_path}: Expected dict with 'orders'", "ERROR")
+            return False
+        
+        pending_orders = pending_data.get("orders", [])
+        log_and_print(f"Loaded {len(pending_orders)} pending orders from {collective_pending_path}", "DEBUG")
+        
+        # Initialize counts for all markets and timeframes
+        for market in MARKETS:
+            formatted_market = market.replace(" ", "_")
+            for tf in TIMEFRAMES:
+                tf_key = timeframe_mapping.get(tf, tf.lower())
+                markets_pending.setdefault(formatted_market, {})[tf_key] = {
+                    "buy_limit": 0,
+                    "sell_limit": 0
+                }
+        
+        # Count pending orders by market, timeframe, and order type
+        for order in pending_orders:
+            market = order.get("market", "").replace(" ", "_")
+            timeframe = order.get("timeframe", "")
+            order_type = order.get("order_type", "").lower()
+            
+            tf_key = timeframe_mapping.get(timeframe, timeframe.lower())
+            
+            if market in markets_pending and tf_key in markets_pending[market]:
+                if order_type == "buy_limit":
+                    markets_pending[market][tf_key]["buy_limit"] += 1
+                elif order_type == "sell_limit":
+                    markets_pending[market][tf_key]["sell_limit"] += 1
+        
+        # Determine order-free markets
+        for market in MARKETS:
+            formatted_market = market.replace(" ", "_")
+            for tf in TIMEFRAMES:
+                tf_key = timeframe_mapping.get(tf, tf.lower())
+                # Check if the market has no pending orders for this timeframe
+                if (markets_pending.get(formatted_market, {}).get(tf_key, {}).get("buy_limit", 0) == 0 and
+                    markets_pending.get(formatted_market, {}).get(tf_key, {}).get("sell_limit", 0) == 0):
+                    order_free_markets[tf_key].append(market)
+        
+        # Prepare output structure
+        output = {
+            "markets_pending": markets_pending,
+            "order_free_markets": order_free_markets
+        }
+        
+        # Save to marketsorderlist.json
+        try:
+            with open(markets_order_list_path, 'w') as f:
+                json.dump(output, f, indent=4)
+            log_and_print(
+                f"Saved markets order list to {markets_order_list_path}: "
+                f"{len(markets_pending)} markets with pending orders, "
+                f"order-free markets - M5: {len(order_free_markets['m5'])}, "
+                f"M15: {len(order_free_markets['m15'])}, "
+                f"M30: {len(order_free_markets['m30'])}, "
+                f"H1: {len(order_free_markets['1h'])}, "
+                f"H4: {len(order_free_markets['4h'])}",
+                "SUCCESS"
+            )
+        except Exception as e:
+            log_and_print(f"Error saving marketsorderlist.json: {str(e)}", "ERROR")
+            return False
+        
+        return True
+    
+    except Exception as e:
+        log_and_print(f"Error processing marketsliststatus: {str(e)}", "ERROR")
+        return False
+
 def process_market_timeframe(market: str, timeframe: str) -> Tuple[bool, Optional[str], str, Dict]:
     """Process a single market and timeframe combination, returning success status, error message, status, and process messages."""
     error_message = None
@@ -4065,6 +4170,31 @@ def process_market_timeframe(market: str, timeframe: str) -> Tuple[bool, Optiona
             else:
                 process_messages["copypendingorders"] = (
                     f"No pending orders copied for {market} {timeframe}"
+                )
+
+        # Generate markets order list status
+        if not marketsliststatus():
+            error_message = f"Failed to generate markets order list status for {market} {timeframe}"
+            log_and_print(error_message, "ERROR")
+            process_messages["marketsliststatus"] = error_message
+        else:
+            markets_order_list_path = os.path.join(BASE_OUTPUT_FOLDER, "marketsorderlist.json")
+            if os.path.exists(markets_order_list_path):
+                with open(markets_order_list_path, 'r') as f:
+                    markets_data = json.load(f)
+                pending_markets = markets_data.get("markets_pending", {})
+                order_free = markets_data.get("order_free_markets", {})
+                process_messages["marketsliststatus"] = (
+                    f"Generated markets order list: {len(pending_markets)} markets with pending orders, "
+                    f"order-free markets - M5: {len(order_free.get('market_m5', []))}, "
+                    f"M15: {len(order_free.get('market_m15', []))}, "
+                    f"M30: {len(order_free.get('market_m30', []))}, "
+                    f"H1: {len(order_free.get('market_1h', []))}, "
+                    f"H4: {len(order_free.get('market_4h', []))}"
+                )
+            else:
+                process_messages["marketsliststatus"] = (
+                    f"No markets order list generated for {market} {timeframe}"
                 )
 
         log_and_print(f"Completed processing market: {market}, timeframe: {timeframe}", "SUCCESS")
