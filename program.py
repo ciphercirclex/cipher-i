@@ -4,26 +4,69 @@ import MetaTrader5 as mt5
 import time
 from datetime import datetime, timedelta
 import pytz
+import json
+import os
 
-MARKETS = [
-    "AUDUSD", "Volatility 75 Index", "Step Index", "Drift Switch Index 30",
-    "Drift Switch Index 20", "Drift Switch Index 10", "Volatility 25 Index",
-    "XAUUSD", "US Tech 100", "Wall Street 30", "GBPUSD", "EURUSD", "USDJPY",
-    "USDCAD", "USDCHF", "NZDUSD"
-]
-TIMEFRAMES = ["M5", "M15", "M30", "H1", "H4"]
+# Path configuration
+MARKETS_JSON_PATH = r"C:\xampp\htdocs\CIPHER\cipher i\bouncestream\chart\base.json"
+
+# Initialize global variables
+MARKETS = []
+TIMEFRAMES = []
+LOGIN_ID = None
+PASSWORD = None
+SERVER = None
+TERMINAL_PATH = None
+
+# Function to load markets, timeframes, and credentials from JSON
+def load_markets_and_timeframes(json_path):
+    """Load MARKETS, TIMEFRAMES, and CREDENTIALS from base.json file."""
+    global MARKETS, TIMEFRAMES, LOGIN_ID, PASSWORD, SERVER, TERMINAL_PATH
+    try:
+        if not os.path.exists(json_path):
+            raise FileNotFoundError(f"Markets JSON file not found at: {json_path}")
+        with open(json_path, 'r') as f:
+            data = json.load(f)
+        
+        # Load markets and timeframes
+        MARKETS = data.get("MARKETS", [])
+        TIMEFRAMES = data.get("TIMEFRAMES", [])
+        if not MARKETS or not TIMEFRAMES:
+            raise ValueError("MARKETS or TIMEFRAMES not found in base.json or are empty")
+        
+        # Load credentials
+        credentials = data.get("CREDENTIALS", {})
+        LOGIN_ID = credentials.get("LOGIN_ID", None)
+        PASSWORD = credentials.get("PASSWORD", None)
+        SERVER = credentials.get("SERVER", None)
+        TERMINAL_PATH = credentials.get("TERMINAL_PATH", None)
+        
+        # Validate credentials
+        if not all([LOGIN_ID, PASSWORD, SERVER, TERMINAL_PATH]):
+            raise ValueError("One or more credentials (LOGIN_ID, PASSWORD, SERVER, TERMINAL_PATH) not found in base.json")
+        
+        print(f"Loaded MARKETS: {MARKETS}")
+        print(f"Loaded TIMEFRAMES: {TIMEFRAMES}")
+        print(f"Loaded CREDENTIALS: LOGIN_ID={LOGIN_ID}, SERVER={SERVER}, TERMINAL_PATH={TERMINAL_PATH}")
+        return MARKETS, TIMEFRAMES
+    except Exception as e:
+        print(f"Error loading base.json: {e}")
+        return [], []
+
+# Load markets, timeframes, and credentials at startup
+MARKETS, TIMEFRAMES = load_markets_and_timeframes(MARKETS_JSON_PATH)
 
 def candletimeleft(market, timeframe, candle_time):
     # Initialize MT5
     print(f"[Process-{market}] Initializing MT5 for {market}")
     for attempt in range(3):
-        if mt5.initialize(path=r"C:\Program Files\MetaTrader 5\terminal64.exe", timeout=60000):
+        if mt5.initialize(path=TERMINAL_PATH, timeout=60000):
             break
         print(f"[Process-{market}] Attempt {attempt + 1}/3: Failed to initialize MT5 terminal. Error: {mt5.last_error()}")
         time.sleep(5)
     else:
         print(f"[Process-{market}] Failed to initialize MT5 terminal after 3 attempts")
-        return None, None, None
+        return None, None
     for _ in range(5):
         if mt5.terminal_info() is not None:
             break
@@ -32,9 +75,9 @@ def candletimeleft(market, timeframe, candle_time):
     else:
         print(f"[Process-{market}] MT5 terminal not ready")
         mt5.shutdown()
-        return None, None, None
+        return None, None
     for attempt in range(3):
-        if mt5.login(login=101347351, password="@Techknowdge12#", server="DerivSVG-Server-02", timeout=60000):
+        if mt5.login(login=int(LOGIN_ID), password=PASSWORD, server=SERVER, timeout=60000):
             print(f"[Process-{market}] Successfully logged in to MT5")
             break
         error_code, error_message = mt5.last_error()
@@ -43,13 +86,13 @@ def candletimeleft(market, timeframe, candle_time):
     else:
         print(f"[Process-{market}] Failed to log in to MT5 after 3 attempts")
         mt5.shutdown()
-        return None, None, None
+        return None, None
 
     try:
         # Fetch current candle
         if not mt5.symbol_select(market, True):
             print(f"[Process-{market}] Failed to select market: {market}, error: {mt5.last_error()}")
-            return None, None, None
+            return None, None
         while True:
             for attempt in range(3):
                 candles = mt5.copy_rates_from_pos(market, mt5.TIMEFRAME_M5, 0, 1)
@@ -67,11 +110,11 @@ def candletimeleft(market, timeframe, candle_time):
                 break
             else:
                 print(f"[Process-{market}] Failed to fetch recent candle data for {market} (M5) after 3 attempts")
-                return None, None, None
+                return None, None
 
             if timeframe.upper() != "M5":
                 print(f"[Process-{market}] Only M5 timeframe is supported, received {timeframe}")
-                return None, None, None
+                return None, None
 
             candle_datetime = datetime.fromtimestamp(candle_time, tz=pytz.UTC)
             minutes_per_candle = 5
@@ -86,11 +129,11 @@ def candletimeleft(market, timeframe, candle_time):
                 time_left = (next_close_time - current_time).total_seconds() / 60.0
             print(f"[Process-{market}] Candle time: {candle_datetime}, Next close: {next_close_time}, Time left: {time_left:.2f} minutes")
             
-            if time_left > 4:
-                return time_left, next_close_time, candle_datetime
+            if time_left > 3.8:
+                return time_left, next_close_time
             else:
-                print(f"[Process-{market}] Time left ({time_left:.2f} minutes) is <= 4 minutes, returning None to restart sequence")
-                return None, None, None
+                print(f"[Process-{market}] Time left ({time_left:.2f} minutes) is <= 3.6 minutes, returning None to restart sequence")
+                return None, None
             
     finally:
         mt5.shutdown()
@@ -115,6 +158,14 @@ def execute(mode="loop"):
     """Execute the scripts sequentially with the specified mode: 'loop' or 'once'."""
     if mode not in ["loop", "once"]:
         raise ValueError("Invalid mode. Use 'loop' or 'once'.")
+    
+    # Verify that credentials and markets were loaded
+    if not all([LOGIN_ID, PASSWORD, SERVER, TERMINAL_PATH]):
+        print("Credentials not properly loaded from base.json. Exiting.")
+        return
+    if not MARKETS:
+        print("No markets defined in MARKETS list. Exiting.")
+        return
 
     def run_sequential():
         """Helper function to run analysechart_m and updateorders sequentially with candle time checks."""
@@ -123,8 +174,9 @@ def execute(mode="loop"):
         
         while True:
             # First candle check before updateorders
-            time_left, next_close_time, start_candle_time = candletimeleft(default_market, timeframe, None)
-            if time_left is None or next_close_time is None or start_candle_time is None:
+            start_time = datetime.now(pytz.UTC)  # Capture system time at the start
+            time_left, next_close_time = candletimeleft(default_market, timeframe, None)
+            if time_left is None or next_close_time is None:
                 print(f"[Process-{default_market}] Failed to retrieve candle time or time_left <= 4 for {default_market} (M5). Restarting sequence.")
                 time.sleep(5)  # Small delay before restarting
                 continue
@@ -133,7 +185,7 @@ def execute(mode="loop"):
             run_updateorders()  # Run updateorders first
 
             # Second candle check before analysechart_m
-            time_left, next_close_time, _ = candletimeleft(default_market, timeframe, None)
+            time_left, next_close_time = candletimeleft(default_market, timeframe, None)
             if time_left is None or next_close_time is None:
                 print(f"[Process-{default_market}] Failed to retrieve candle time or time_left <= 4 for {default_market} (M5). Restarting sequence.")
                 time.sleep(5)  # Small delay before restarting
@@ -142,7 +194,7 @@ def execute(mode="loop"):
             run_analysechart_m()  # Run analysechart_m second
 
             # Third candle check before updateorders
-            time_left, next_close_time, _ = candletimeleft(default_market, timeframe, None)
+            time_left, next_close_time = candletimeleft(default_market, timeframe, None)
             if time_left is None or next_close_time is None:
                 print(f"[Process-{default_market}] Failed to retrieve candle time or time_left <= 4 for {default_market} (M5). Restarting sequence.")
                 time.sleep(5)  # Small delay before restarting
@@ -151,16 +203,16 @@ def execute(mode="loop"):
             run_updateorders()  # Run updateorders third
 
             print("Both scripts completed successfully.")
-            return time_left, start_candle_time, initial_time_left  # Return values for final print
+            return time_left, start_time, initial_time_left  # Return values for final print
 
     try:
         if mode == "loop":
             while True:
                 result = run_sequential()
                 if result:
-                    time_left, start_candle_time, initial_time_left = result
+                    time_left, start_time, initial_time_left = result
                     operation_time = initial_time_left - time_left
-                    print(f"Started time of candle: {start_candle_time}")
+                    print(f"Started time of candle: {start_time}")
                     print(f"Time remaining: {time_left:.2f} minutes")
                     print(f"Operated within time: {operation_time:.2f} minutes")
                 print("Restarting entire sequence...")
@@ -169,11 +221,10 @@ def execute(mode="loop"):
             result = run_sequential()
             print("Execution completed (once mode).")
             if result:
-                time_left, start_candle_time, initial_time_left = result
+                time_left, start_time, initial_time_left = result
                 operation_time = initial_time_left - time_left
+                print(f"Started time of candle: {start_time}")
                 print(f"Candle time left: {time_left:.2f} minutes")
-                print(f"Started time of candle: {start_candle_time}")
-                print(f"Time remaining: {time_left:.2f} minutes")
                 print(f"Operated within time: {operation_time:.2f} minutes")
 
     except Exception as e:

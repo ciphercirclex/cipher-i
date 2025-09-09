@@ -48,26 +48,23 @@ def log_and_print(message, level="INFO"):
     logger.log(getattr(logging, log_level), message)
 
 # Configuration
-LOGIN_ID = "101347351"
-PASSWORD = "@Techknowdge12#"
-SERVER = "DerivSVG-Server-02"
-TERMINAL_PATH = r"C:\Program Files\MetaTrader 5\terminal64.exe"  # Update with your MT5 terminal path
 MAX_RETRIES = 5
 RETRY_DELAY = 3
 
-# Market names and timeframes
-MARKETS = [
-    "AUDUSD", "Volatility 75 Index", "Step Index", "Drift Switch Index 30",
-    "Drift Switch Index 20", "Drift Switch Index 10", "Volatility 25 Index",
-    "XAUUSD", "US Tech 100", "Wall Street 30", "GBPUSD", "EURUSD", "USDJPY",
-    "USDCAD", "USDCHF", "NZDUSD"
-]
-TIMEFRAMES = ["M5", "M15", "M30", "H1", "H4"]
+# Initialize global credentials as None
+LOGIN_ID = None
+PASSWORD = None
+SERVER = None
+TERMINAL_PATH = None
+MARKETS = []
+TIMEFRAMES = []
+CREDENTIALS = {}
 
 # Base paths
 BASE_PROCESSING_FOLDER = r"C:\xampp\htdocs\CIPHER\cipher i\bouncestream\chart\processing"
 BASE_OUTPUT_FOLDER = r"C:\xampp\htdocs\CIPHER\cipher i\bouncestream\chart\orders"
 FETCHCHART_DESTINATION_PATH = r"C:\xampp\htdocs\CIPHER\cipher i\bouncestream\chart\fetched"
+MARKETS_JSON_PATH = r"C:\xampp\htdocs\CIPHER\cipher i\bouncestream\chart\base.json"
 
 # Timeframe mapping
 TIMEFRAME_MAPPING = {
@@ -85,6 +82,45 @@ DB_TIMEFRAME_MAPPING = {
     "H1": "1hour",
     "H4": "4hour"
 }
+
+# Function to load markets, timeframes, and credentials from JSON
+def load_markets_and_timeframes(json_path):
+    """Load MARKETS, TIMEFRAMES, and CREDENTIALS from base.json file."""
+    global LOGIN_ID, PASSWORD, SERVER, TERMINAL_PATH, MARKETS, TIMEFRAMES, CREDENTIALS
+    try:
+        if not os.path.exists(json_path):
+            raise FileNotFoundError(f"Markets JSON file not found at: {json_path}")
+        with open(json_path, 'r') as f:
+            data = json.load(f)
+        
+        # Load markets and timeframes
+        MARKETS = data.get("MARKETS", [])
+        TIMEFRAMES = data.get("TIMEFRAMES", [])
+        if not MARKETS or not TIMEFRAMES:
+            raise ValueError("MARKETS or TIMEFRAMES not found in base.json or are empty")
+        
+        # Load credentials
+        CREDENTIALS = data.get("CREDENTIALS", {})
+        LOGIN_ID = CREDENTIALS.get("LOGIN_ID", None)
+        PASSWORD = CREDENTIALS.get("PASSWORD", None)
+        SERVER = CREDENTIALS.get("SERVER", None)
+        TERMINAL_PATH = CREDENTIALS.get("TERMINAL_PATH", None)
+        
+        # Validate credentials
+        if not all([LOGIN_ID, PASSWORD, SERVER, TERMINAL_PATH]):
+            raise ValueError("One or more credentials (LOGIN_ID, PASSWORD, SERVER, TERMINAL_PATH) not found in base.json")
+        
+        log_and_print(f"Loaded MARKETS: {MARKETS}", "INFO")
+        log_and_print(f"Loaded TIMEFRAMES: {TIMEFRAMES}", "INFO")
+        log_and_print(f"Loaded CREDENTIALS: LOGIN_ID={LOGIN_ID}, SERVER={SERVER}, TERMINAL_PATH={TERMINAL_PATH}", "INFO")
+        return MARKETS, TIMEFRAMES, CREDENTIALS
+    except Exception as e:
+        log_and_print(f"Error loading base.json: {str(e)}", "ERROR")
+        return [], [], {}
+
+# Load markets, timeframes, and credentials at startup
+MARKETS, TIMEFRAMES, CREDENTIALS = load_markets_and_timeframes(MARKETS_JSON_PATH)
+
 
 def candletimeleft(market, timeframe, candle_time):
     # Initialize MT5
@@ -4046,6 +4082,11 @@ def main():
     """Main function to process all markets and timeframes, saving all status to marketsstatus.json."""
     try:
         log_and_print("===== Fetch and Process Candle Data =====", "TITLE")
+        
+        # Verify that credentials were loaded
+        if not all([LOGIN_ID, PASSWORD, SERVER, TERMINAL_PATH]):
+            log_and_print("Credentials not properly loaded from base.json. Exiting.", "ERROR")
+            return
         
         # Fetch lot size and allowed risk data once
         if not fetchlotsizeandriskallowed():

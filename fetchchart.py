@@ -31,24 +31,44 @@ logger = logging.getLogger(__name__)
 for name in ['webdriver_manager', 'selenium', 'urllib3', 'selenium.webdriver', 'tensorflow']:
     logging.getLogger(name).setLevel(logging.WARNING)
 
-# Credentials and configuration
-LOGIN_ID = "101347351"
-PASSWORD = "@Techknowdge12#"
-SERVER = "DerivSVG-Server-02"
-BASE_URL = "https://mt5-real02-web-svg.deriv.com/terminal?login=101347351&server=DerivSVG-Server-02"
-TERMINAL_PATH = r"C:\Program Files\MetaTrader 5\terminal64.exe"
-MARKETS = [
-    "Volatility 75 Index", "Step Index", "Drift Switch Index 30", "Drift Switch Index 20",
-    "Drift Switch Index 10", "Volatility 25 Index", "XAUUSD", "US Tech 100",
-    "Wall Street 30", "GBPUSD", "EURUSD", "USDJPY", "AUDUSD", "USDCAD", "USDCHF", "NZDUSD"
-]
-FOREX_MARKETS = ["XAUUSD", "GBPUSD", "EURUSD", "USDJPY", "AUDUSD", "USDCAD", "USDCHF", "NZDUSD"]
-SYNTHETIC_INDICES = [
-    "Volatility 75 Index", "Step Index", "Drift Switch Index 30",
-    "Drift Switch Index 20", "Drift Switch Index 10", "Volatility 25 Index"
-]
-INDEX_MARKETS = ["US Tech 100", "Wall Street 30"]
-TIMEFRAMES = ["M5", "M15", "M30", "H1", "H4"]
+# Configuration
+MARKETS_JSON_PATH = r"C:\xampp\htdocs\CIPHER\cipher i\bouncestream\chart\base.json"
+
+# Function to load markets, timeframes, and credentials from JSON
+def load_markets_and_credentials(json_path):
+    """Load MARKETS, FOREX_MARKETS, SYNTHETIC_INDICES, INDEX_MARKETS, TIMEFRAMES, and CREDENTIALS from base.json file."""
+    try:
+        if not os.path.exists(json_path):
+            raise FileNotFoundError(f"Markets JSON file not found at: {json_path}")
+        with open(json_path, 'r') as f:
+            data = json.load(f)
+        markets = data.get("MARKETS", [])
+        forex_markets = data.get("FOREX_MARKETS", [])
+        synthetic_indices = data.get("SYNTHETIC_INDICES", [])
+        index_markets = data.get("INDEX_MARKETS", [])
+        timeframes = data.get("TIMEFRAMES", [])
+        credentials = data.get("CREDENTIALS", {})
+        login_id = credentials.get("LOGIN_ID", "")
+        password = credentials.get("PASSWORD", "")
+        server = credentials.get("SERVER", "")
+        base_url = credentials.get("BASE_URL", "")
+        terminal_path = credentials.get("TERMINAL_PATH", "")
+        if not markets or not timeframes or not all([login_id, password, server, base_url, terminal_path]):
+            raise ValueError("MARKETS, TIMEFRAMES, or CREDENTIALS not found in base.json or are empty")
+        logger.debug(f"Loaded MARKETS: {markets}")
+        logger.debug(f"Loaded FOREX_MARKETS: {forex_markets}")
+        logger.debug(f"Loaded SYNTHETIC_INDICES: {synthetic_indices}")
+        logger.debug(f"Loaded INDEX_MARKETS: {index_markets}")
+        logger.debug(f"Loaded TIMEFRAMES: {timeframes}")
+        logger.debug("Loaded CREDENTIALS: [Sensitive data not logged]")
+        return markets, forex_markets, synthetic_indices, index_markets, timeframes, login_id, password, server, base_url, terminal_path
+    except Exception as e:
+        logger.error(f"Error loading base.json: {e}")
+        return [], [], [], [], [], "", "", "", "", ""
+
+# Load MARKETS, FOREX_MARKETS, SYNTHETIC_INDICES, INDEX_MARKETS, TIMEFRAMES, and credentials from JSON
+MARKETS, FOREX_MARKETS, SYNTHETIC_INDICES, INDEX_MARKETS, TIMEFRAMES, LOGIN_ID, PASSWORD, SERVER, BASE_URL, TERMINAL_PATH = load_markets_and_credentials(MARKETS_JSON_PATH)
+
 MT5_TIMEFRAMES = {
     "M5": mt5.TIMEFRAME_M5,
     "M15": mt5.TIMEFRAME_M15,
@@ -923,6 +943,61 @@ def download_and_verify_chart(driver, market, timeframe, destination_path, max_t
             return False
     return False
 
+def marketsstatus(destination_path, markets, timeframes):
+    """Generate a status report for all markets based on their verification.json files."""
+    logger.debug("Generating market status report")
+    try:
+        chart_identified_markets = {}
+        incomplete_markets = {}
+
+        for market in markets:
+            verification_file = os.path.join(destination_path, market.replace(" ", "_"), "verification.json")
+            if not os.path.exists(verification_file):
+                logger.warning(f"No verification.json found for {market}, marking all timeframes as incomplete")
+                incomplete_markets[market] = timeframes
+                continue
+
+            try:
+                with open(verification_file, 'r') as f:
+                    verification_data = json.load(f)
+                identified_timeframes = []
+                incomplete_timeframes = []
+
+                for tf in timeframes:
+                    status = verification_data.get(tf.lower(), "missing_status")
+                    if status == "chart_identified":
+                        identified_timeframes.append(tf)
+                    else:
+                        incomplete_timeframes.append(tf)
+
+                if identified_timeframes:
+                    chart_identified_markets[market] = identified_timeframes
+                if incomplete_timeframes:
+                    incomplete_markets[market] = incomplete_timeframes
+
+            except Exception as e:
+                logger.error(f"Error reading verification.json for {market}: {e}")
+                incomplete_markets[market] = timeframes
+
+        status_data = {
+            "chart_identified_markets": chart_identified_markets,
+            "incomplete_markets": incomplete_markets,
+            "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime(
+                "%Y-%m-%d T %I:%M:%S %p .%f+01:00"
+            )
+        }
+
+        output_file = os.path.join(destination_path, "fetchmarketstatus.json")
+        os.makedirs(destination_path, exist_ok=True)
+        with open(output_file, 'w') as f:
+            json.dump(status_data, f, indent=4)
+        logger.debug(f"Saved market status report to {output_file}")
+        return True
+
+    except Exception as e:
+        logger.error(f"Error generating market status report: {e}")
+        return False
+
 def run_script_for_market(market):
     """Process a single market for all timeframes."""
     driver = None
@@ -997,6 +1072,12 @@ def run_script_for_market(market):
 def main():
     """Main loop to process all markets until all are verified."""
     logger.debug("Starting main loop")
+    
+    # Check if required lists and credentials are loaded
+    if not MARKETS or not TIMEFRAMES or not FOREX_MARKETS or not SYNTHETIC_INDICES or not INDEX_MARKETS or not all([LOGIN_ID, PASSWORD, SERVER, BASE_URL, TERMINAL_PATH]):
+        logger.error("One or more required lists (MARKETS, FOREX_MARKETS, SYNTHETIC_INDICES, INDEX_MARKETS, TIMEFRAMES) or credentials (LOGIN_ID, PASSWORD, SERVER, BASE_URL, TERMINAL_PATH) are empty. Check base.json file. Exiting.")
+        return False
+    
     markets_to_process = MARKETS.copy()
     while markets_to_process:
         failed_markets = []
@@ -1021,6 +1102,9 @@ def main():
             markets_to_process = failed_markets
             if not markets_to_process:
                 logger.debug("All markets processed successfully")
+                # Generate market status report after successful processing
+                if not marketsstatus(DESTINATION_PATH, MARKETS, TIMEFRAMES):
+                    logger.error("Failed to generate market status report")
                 return True
             logger.debug(f"Markets failed: {failed_markets}. Retrying...")
             time.sleep(10)
@@ -1036,6 +1120,9 @@ def main():
             markets_to_process = failed_markets if failed_markets else MARKETS.copy()
             time.sleep(10)
     logger.debug("Main loop completed successfully")
+    # Generate market status report in case loop exits unexpectedly
+    if not marketsstatus(DESTINATION_PATH, MARKETS, TIMEFRAMES):
+        logger.error("Failed to generate market status report")
     return True
 
 if __name__ == "__main__":
