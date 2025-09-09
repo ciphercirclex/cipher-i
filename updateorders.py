@@ -2174,23 +2174,23 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
     history_orders_json_path = os.path.join(json_dir, "contracthistory.json")
     profit_history_json_path = os.path.join(json_dir, "contractprofithistory.json")
     stoploss_history_json_path = os.path.join(json_dir, "contractstoplosshistory.json")
-    ratio_0_5_revisit_json_path = os.path.join(json_dir, "ratio0.5revisit.json")
-    ratio_1_revisit_json_path = os.path.join(json_dir, "ratio1revisit.json")
-    ratio_2_revisit_json_path = os.path.join(json_dir, "ratio2revisit.json")
-    ratio_0_5_norevisit_json_path = os.path.join(json_dir, "ratio0.5norevisit.json")
-    ratio_1_norevisit_json_path = os.path.join(json_dir, "ratio1norevisit.json")
-    ratio_2_norevisit_json_path = os.path.join(json_dir, "ratio2norevisit.json")
-    collective_pending_path = os.path.join(BASE_OUTPUT_FOLDER, "collectivependingorders.json")
-    collective_history_path = os.path.join(BASE_OUTPUT_FOLDER, "collectivehistoryorders.json")
-    collective_profit_history_path = os.path.join(BASE_OUTPUT_FOLDER, "collectivecontractprofithistory.json")
-    collective_stoploss_history_path = os.path.join(BASE_OUTPUT_FOLDER, "collectivecontractstoplosshistory.json")
-    collective_ratio_0_5_revisit_path = os.path.join(BASE_OUTPUT_FOLDER, "collectiveratio0.5revisit.json")
-    collective_ratio_1_revisit_path = os.path.join(BASE_OUTPUT_FOLDER, "collectiveratio1revisit.json")
-    collective_ratio_2_revisit_path = os.path.join(BASE_OUTPUT_FOLDER, "collectiveratio2revisit.json")
-    collective_ratio_0_5_norevisit_path = os.path.join(BASE_OUTPUT_FOLDER, "collectiveratio0.5norevisit.json")
-    collective_ratio_1_norevisit_path = os.path.join(BASE_OUTPUT_FOLDER, "collectiveratio1norevisit.json")
-    collective_ratio_2_norevisit_path = os.path.join(BASE_OUTPUT_FOLDER, "collectiveratio2norevisit.json")
-    contract_orders_records_path = os.path.join(BASE_OUTPUT_FOLDER, "contractordersrecords.json")
+    ratio_0_5_revisit_json_path = os.path.join(json_dir, "contractratio0.5revisit.json")
+    ratio_1_revisit_json_path = os.path.join(json_dir, "contractratio1revisit.json")
+    ratio_2_revisit_json_path = os.path.join(json_dir, "contractratio2revisit.json")
+    ratio_0_5_norevisit_json_path = os.path.join(json_dir, "contractratio0.5norevisit.json")
+    ratio_1_norevisit_json_path = os.path.join(json_dir, "contractratio1norevisit.json")
+    ratio_2_norevisit_json_path = os.path.join(json_dir, "contractratio2norevisit.json")
+    collective_pending_path = os.path.join(BASE_OUTPUT_FOLDER, "allpendingorders.json")
+    collective_history_path = os.path.join(BASE_OUTPUT_FOLDER, "allhistoryorders.json")
+    collective_profit_history_path = os.path.join(BASE_OUTPUT_FOLDER, "allcontractprofithistory.json")
+    collective_stoploss_history_path = os.path.join(BASE_OUTPUT_FOLDER, "allcontractstoplosshistory.json")
+    collective_ratio_0_5_revisit_path = os.path.join(BASE_OUTPUT_FOLDER, "allratio0.5revisit.json")
+    collective_ratio_1_revisit_path = os.path.join(BASE_OUTPUT_FOLDER, "allratio1revisit.json")
+    collective_ratio_2_revisit_path = os.path.join(BASE_OUTPUT_FOLDER, "allratio2revisit.json")
+    collective_ratio_0_5_norevisit_path = os.path.join(BASE_OUTPUT_FOLDER, "allratio0.5norevisit.json")
+    collective_ratio_1_norevisit_path = os.path.join(BASE_OUTPUT_FOLDER, "allratio1norevisit.json")
+    collective_ratio_2_norevisit_path = os.path.join(BASE_OUTPUT_FOLDER, "allratio2norevisit.json")
+    contract_orders_records_path = os.path.join(BASE_OUTPUT_FOLDER, "allordersrecords.json")
     
     # Check if required JSON files exist
     if not os.path.exists(pricecandle_json_path):
@@ -2429,8 +2429,8 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
 
         def rewardratios() -> tuple[list, list, list, list, list, list]:
             """Extract orders with specific reward ratio statuses from pricecandle.json based on independent_check,
-            and separate into ratio0.5revisit.json, ratio1revisit.json, ratio2revisit.json,
-            ratio0.5norevisit.json, ratio1norevisit.json, and ratio2norevisit.json."""
+            and separate into contractratio0.5revisit.json, contractratio1revisit.json, contractratio2revisit.json,
+            contractratio0.5norevisit.json, contractratio1norevisit.json, and contractratio2norevisit.json."""
             ratio_0_5_revisit_orders = []
             ratio_1_revisit_orders = []
             ratio_2_revisit_orders = []
@@ -2841,12 +2841,12 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
                     history_path = os.path.join(tf_dir, "contracthistory.json")
                     profit_path = os.path.join(tf_dir, "contractprofithistory.json")
                     stoploss_path = os.path.join(tf_dir, "contractstoplosshistory.json")
-                    ratio_0_5_revisit_path = os.path.join(tf_dir, "ratio0.5revisit.json")
-                    ratio_1_revisit_path = os.path.join(tf_dir, "ratio1revisit.json")
-                    ratio_2_revisit_path = os.path.join(tf_dir, "ratio2revisit.json")
-                    ratio_0_5_norevisit_path = os.path.join(tf_dir, "ratio0.5norevisit.json")
-                    ratio_1_norevisit_path = os.path.join(tf_dir, "ratio1norevisit.json")
-                    ratio_2_norevisit_path = os.path.join(tf_dir, "ratio2norevisit.json")
+                    ratio_0_5_revisit_path = os.path.join(tf_dir, "contractratio0.5revisit.json")
+                    ratio_1_revisit_path = os.path.join(tf_dir, "contractratio1revisit.json")
+                    ratio_2_revisit_path = os.path.join(tf_dir, "contractratio2revisit.json")
+                    ratio_0_5_norevisit_path = os.path.join(tf_dir, "contractratio0.5norevisit.json")
+                    ratio_1_norevisit_path = os.path.join(tf_dir, "contractratio1norevisit.json")
+                    ratio_2_norevisit_path = os.path.join(tf_dir, "contractratio2norevisit.json")
                     db_tf = DB_TIMEFRAME_MAPPING.get(tf, tf)  # Map to database timeframe format
                     
                     # Collect pending orders
@@ -3291,7 +3291,7 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
         
         def recordhistoricalorders():
             """Collect historical orders from contracthistory.json across all markets and timeframes,
-            align with collectivehistoryorders.json, and save to contractordersrecords.json."""
+            align with collectivehistoryorders.json, and save to allordersrecords.json."""
             all_historical_orders = []
             timeframe_counts_records = {
                 "5minutes": 0,
@@ -3365,16 +3365,241 @@ def categorizecontract(market: str, timeframe: str, json_dir: str) -> bool:
                     "SUCCESS"
                 )
             except Exception as e:
-                log_and_print(f"Error saving contractordersrecords.json: {str(e)}", "ERROR")
+                log_and_print(f"Error saving allordersrecords.json: {str(e)}", "ERROR")
                 return False
             
             return True
+
+        def filterorders() -> bool:
+            """Filter pending orders that match historical orders in contractordersrecords.json based on pair, entry_price, order_type, and order_holder_timestamp."""
+            log_and_print(f"Filtering pending orders for {market} {timeframe} against historical orders", "INFO")
+            
+            # Define paths
+            filtered_orders_path = os.path.join(json_dir, "contractfilteredorders.json")
+            collective_filtered_orders_path = os.path.join(BASE_OUTPUT_FOLDER, "allfilteredorders.json")
+            
+            # Load contractordersrecords.json
+            if not os.path.exists(contract_orders_records_path):
+                log_and_print(f"allordersrecords.json not found at {contract_orders_records_path}", "ERROR")
+                return False
+            
+            try:
+                with open(contract_orders_records_path, 'r') as f:
+                    records_data = json.load(f)
+                historical_orders = records_data.get("orders", [])
+                log_and_print(f"Loaded {len(historical_orders)} historical orders from {contract_orders_records_path}", "DEBUG")
+            except Exception as e:
+                log_and_print(f"Error reading allordersrecords.json: {str(e)}", "ERROR")
+                return False
+            
+            # Load contractpendingorders.json for the current market and timeframe
+            if not os.path.exists(pending_orders_json_path):
+                log_and_print(f"allpendingorders.json not found at {pending_orders_json_path} for {market} {timeframe}", "ERROR")
+                return False
+            
+            try:
+                with open(pending_orders_json_path, 'r') as f:
+                    pending_data = json.load(f)
+                if not isinstance(pending_data, list):
+                    log_and_print(f"Invalid data format in {pending_orders_json_path}: Expected list, got {type(pending_data)}", "ERROR")
+                    return False
+                pending_orders = pending_data
+                log_and_print(f"Loaded {len(pending_orders)} pending orders from {pending_orders_json_path}", "DEBUG")
+            except Exception as e:
+                log_and_print(f"Error reading allpendingorders.json for {market} {timeframe}: {str(e)}", "ERROR")
+                return False
+            
+            # Load collectivependingorders.json
+            if not os.path.exists(collective_pending_path):
+                log_and_print(f"allpendingorders.json not found at {collective_pending_path}", "ERROR")
+                return False
+            
+            try:
+                with open(collective_pending_path, 'r') as f:
+                    collective_pending_data = json.load(f)
+                collective_pending_orders = collective_pending_data.get("orders", [])
+                timeframe_counts_pending = {
+                    "5minutes": collective_pending_data.get("5minutes pending orders", 0),
+                    "15minutes": collective_pending_data.get("15minutes pending orders", 0),
+                    "30minutes": collective_pending_data.get("30minutes pending orders", 0),
+                    "1hour": collective_pending_data.get("1hour pending orders", 0),
+                    "4hour": collective_pending_data.get("4hours pending orders", 0)
+                }
+                log_and_print(f"Loaded {len(collective_pending_orders)} all pending orders from {collective_pending_path}", "DEBUG")
+            except Exception as e:
+                log_and_print(f"Error reading allpendingorders.json: {str(e)}", "ERROR")
+                return False
+            
+            # Create a set of historical order keys for comparison
+            historical_keys = set()
+            for order in historical_orders:
+                entry_price = round(order.get("entry_price", 0.0), 5)  # Round to 5 decimal places for consistency
+                order_key = (
+                    order.get("pair", ""),
+                    entry_price,
+                    order.get("order_type", "").lower(),
+                    order.get("order_holder_timestamp", "N/A")
+                )
+                historical_keys.add(order_key)
+            
+            # Filter individual pending orders
+            filtered_orders = []
+            kept_pending_orders = []
+            for order in pending_orders:
+                entry_price = round(order.get("entry_price", 0.0), 5)
+                order_key = (
+                    order.get("pair", ""),
+                    entry_price,
+                    order.get("order_type", "").lower(),
+                    order.get("order_holder_timestamp", "N/A")
+                )
+                if order_key in historical_keys:
+                    filtered_orders.append(order)
+                    log_and_print(
+                        f"Filtered pending order from {pending_orders_json_path}: pair={order.get('pair')}, "
+                        f"entry_price={entry_price}, order_type={order.get('order_type')}, "
+                        f"timestamp={order.get('order_holder_timestamp')} (matched historical order)",
+                        "INFO"
+                    )
+                else:
+                    kept_pending_orders.append(order)
+            
+            # Save filtered orders for the current market and timeframe
+            filtered_output = {
+                "filtered_orders_count": len(filtered_orders),
+                "market": market,
+                "timeframe": timeframe,
+                "filtered_orders": filtered_orders
+            }
+            try:
+                if os.path.exists(filtered_orders_path):
+                    os.remove(filtered_orders_path)
+                    log_and_print(f"Existing {filtered_orders_path} deleted", "INFO")
+                with open(filtered_orders_path, 'w') as f:
+                    json.dump(filtered_output, f, indent=4)
+                log_and_print(
+                    f"Saved {len(filtered_orders)} filtered orders to {filtered_orders_path} for {market} {timeframe}",
+                    "SUCCESS"
+                )
+            except Exception as e:
+                log_and_print(f"Error saving contractfilteredorders.json for {market} {timeframe}: {str(e)}", "ERROR")
+                return False
+            
+            # Update individual contractpendingorders.json
+            try:
+                if os.path.exists(pending_orders_json_path):
+                    os.remove(pending_orders_json_path)
+                    log_and_print(f"Existing {pending_orders_json_path} deleted", "INFO")
+                with open(pending_orders_json_path, 'w') as f:
+                    json.dump(kept_pending_orders, f, indent=4)
+                log_and_print(
+                    f"Updated {pending_orders_json_path} with {len(kept_pending_orders)} pending orders after filtering for {market} {timeframe}",
+                    "SUCCESS"
+                )
+            except Exception as e:
+                log_and_print(f"Error updating contractpendingorders.json for {market} {timeframe}: {str(e)}", "ERROR")
+                return False
+            
+            # Filter collective pending orders
+            collective_filtered_orders = []
+            kept_collective_pending_orders = []
+            db_tf = DB_TIMEFRAME_MAPPING.get(timeframe, timeframe.lower())
+            for order in collective_pending_orders:
+                entry_price = round(order.get("entry_price", 0.0), 5)
+                order_key = (
+                    order.get("pair", ""),
+                    entry_price,
+                    order.get("order_type", "").lower(),
+                    order.get("order_holder_timestamp", "N/A")
+                )
+                if order_key in historical_keys:
+                    collective_filtered_orders.append(order)
+                    log_and_print(
+                        f"Filtered collective pending order: pair={order.get('pair')}, "
+                        f"entry_price={entry_price}, order_type={order.get('order_type')}, "
+                        f"timestamp={order.get('order_holder_timestamp')} (matched historical order)",
+                        "INFO"
+                    )
+                else:
+                    kept_collective_pending_orders.append(order)
+            
+            # Update timeframe counts for collective pending orders
+            if filtered_orders and timeframe.lower() in [tf.lower() for tf in TIMEFRAMES]:
+                timeframe_counts_pending[db_tf] -= len(filtered_orders)
+                if timeframe_counts_pending[db_tf] < 0:
+                    log_and_print(f"Negative timeframe count detected for {db_tf} in collective pending orders", "WARNING")
+                    timeframe_counts_pending[db_tf] = 0
+            
+            # Save collective filtered orders
+            collective_filtered_output = {
+                "allfilteredorders": len(collective_filtered_orders),
+                "5minutes filtered orders": sum(1 for order in collective_filtered_orders if order.get("timeframe").lower() == "5minutes"),
+                "15minutes filtered orders": sum(1 for order in collective_filtered_orders if order.get("timeframe").lower() == "15minutes"),
+                "30minutes filtered orders": sum(1 for order in collective_filtered_orders if order.get("timeframe").lower() == "30minutes"),
+                "1hour filtered orders": sum(1 for order in collective_filtered_orders if order.get("timeframe").lower() == "1hour"),
+                "4hours filtered orders": sum(1 for order in collective_filtered_orders if order.get("timeframe").lower() == "4hour"),
+                "filtered_orders": collective_filtered_orders
+            }
+            try:
+                if os.path.exists(collective_filtered_orders_path):
+                    os.remove(collective_filtered_orders_path)
+                    log_and_print(f"Existing {collective_filtered_orders_path} deleted", "INFO")
+                with open(collective_filtered_orders_path, 'w') as f:
+                    json.dump(collective_filtered_output, f, indent=4)
+                log_and_print(
+                    f"Saved {len(collective_filtered_orders)} collective filtered orders to {collective_filtered_orders_path} "
+                    f"(5m: {collective_filtered_output['5minutes filtered orders']}, "
+                    f"15m: {collective_filtered_output['15minutes filtered orders']}, "
+                    f"30m: {collective_filtered_output['30minutes filtered orders']}, "
+                    f"1h: {collective_filtered_output['1hour filtered orders']}, "
+                    f"4h: {collective_filtered_output['4hours filtered orders']})",
+                    "SUCCESS"
+                )
+            except Exception as e:
+                log_and_print(f"Error saving allfilteredorders.json: {str(e)}", "ERROR")
+                return False
+            
+            # Update collectivependingorders.json
+            collective_pending_output = {
+                "allpendingorders": len(kept_collective_pending_orders),
+                "5minutes pending orders": timeframe_counts_pending["5minutes"],
+                "15minutes pending orders": timeframe_counts_pending["15minutes"],
+                "30minutes pending orders": timeframe_counts_pending["30minutes"],
+                "1hour pending orders": timeframe_counts_pending["1hour"],
+                "4hours pending orders": timeframe_counts_pending["4hour"],
+                "orders": kept_collective_pending_orders
+            }
+            try:
+                if os.path.exists(collective_pending_path):
+                    os.remove(collective_pending_path)
+                    log_and_print(f"Existing {collective_pending_path} deleted", "INFO")
+                with open(collective_pending_path, 'w') as f:
+                    json.dump(collective_pending_output, f, indent=4)
+                log_and_print(
+                    f"Updated {collective_pending_path} with {len(kept_collective_pending_orders)} pending orders after filtering "
+                    f"(5m: {timeframe_counts_pending['5minutes']}, 15m: {timeframe_counts_pending['15minutes']}, "
+                    f"30m: {timeframe_counts_pending['30minutes']}, 1h: {timeframe_counts_pending['1hour']}, "
+                    f"4h: {timeframe_counts_pending['4hour']})",
+                    "SUCCESS"
+                )
+            except Exception as e:
+                log_and_print(f"Error updating allpendingorders.json: {str(e)}", "ERROR")
+                return False
+            
+            log_and_print(f"Completed filtering for {market} {timeframe}: {len(filtered_orders)} orders removed", "SUCCESS")
+            return True
+
         # Call existing functions
         collect_all_orders()
         
         # Call the new function to record historical orders
         if not recordhistoricalorders():
             log_and_print(f"Failed to record historical orders for {market} {timeframe}", "ERROR")
+            return False
+        
+        # Call the new function to filter pending orders
+        if not filterorders():
+            log_and_print(f"Failed to filter pending orders for {market} {timeframe}", "ERROR")
             return False
         
         return True
@@ -4051,29 +4276,30 @@ def SignedBreakevenStopandProfitTracker(market: str, timeframe: str, json_dir: s
 def categorizesignedcontract(market: str, timeframe: str, json_dir: str) -> bool:
     log_and_print(f"Categorizing pending, historical, and reward ratio orders for market={market}, timeframe={timeframe}", "INFO")
     
-    # Define file paths with "signed" prefix (except for calculatedprices.json)
+    # Define file paths
     signedorders_json_path = os.path.join(json_dir, "signedorders.json")
     calculatedprices_json_path = os.path.join(json_dir, "calculatedprices.json")
-    pending_orders_json_path = os.path.join(json_dir, "signedpendingorders.json")
-    history_orders_json_path = os.path.join(json_dir, "signedhistory.json")
-    profit_history_json_path = os.path.join(json_dir, "signedprofithistory.json")
-    stoploss_history_json_path = os.path.join(json_dir, "signedstoplosshistory.json")
-    ratio_0_5_revisit_json_path = os.path.join(json_dir, "signedratio0.5revisit.json")
-    ratio_1_revisit_json_path = os.path.join(json_dir, "signedratio1revisit.json")
-    ratio_2_revisit_json_path = os.path.join(json_dir, "signedratio2revisit.json")
-    ratio_0_5_norevisit_json_path = os.path.join(json_dir, "signedratio0.5norevisit.json")
-    ratio_1_norevisit_json_path = os.path.join(json_dir, "signedratio1norevisit.json")
-    ratio_2_norevisit_json_path = os.path.join(json_dir, "signedratio2norevisit.json")
-    collective_pending_path = os.path.join(BASE_OUTPUT_FOLDER, "signedcollectivependingorders.json")
-    collective_history_path = os.path.join(BASE_OUTPUT_FOLDER, "signedcollectivehistoryorders.json")
-    collective_profit_history_path = os.path.join(BASE_OUTPUT_FOLDER, "signedcollectiveprofithistory.json")
-    collective_stoploss_history_path = os.path.join(BASE_OUTPUT_FOLDER, "signedcollectivestoplosshistory.json")
-    collective_ratio_0_5_revisit_path = os.path.join(BASE_OUTPUT_FOLDER, "signedcollectiveratio0.5revisit.json")
-    collective_ratio_1_revisit_path = os.path.join(BASE_OUTPUT_FOLDER, "signedcollectiveratio1revisit.json")
-    collective_ratio_2_revisit_path = os.path.join(BASE_OUTPUT_FOLDER, "signedcollectiveratio2revisit.json")
-    collective_ratio_0_5_norevisit_path = os.path.join(BASE_OUTPUT_FOLDER, "signedcollectiveratio0.5norevisit.json")
-    collective_ratio_1_norevisit_path = os.path.join(BASE_OUTPUT_FOLDER, "signedcollectiveratio1norevisit.json")
-    collective_ratio_2_norevisit_path = os.path.join(BASE_OUTPUT_FOLDER, "signedcollectiveratio2norevisit.json")
+    pending_orders_json_path = os.path.join(json_dir, "orders_pendingorders.json")
+    history_orders_json_path = os.path.join(json_dir, "orders_history.json")
+    profit_history_json_path = os.path.join(json_dir, "orders_profithistory.json")
+    stoploss_history_json_path = os.path.join(json_dir, "orders_stoplosshistory.json")
+    ratio_0_5_revisit_json_path = os.path.join(json_dir, "orders_ratio0.5revisit.json")
+    ratio_1_revisit_json_path = os.path.join(json_dir, "orders_ratio1revisit.json")
+    ratio_2_revisit_json_path = os.path.join(json_dir, "orders_ratio2revisit.json")
+    ratio_0_5_norevisit_json_path = os.path.join(json_dir, "orders_ratio0.5norevisit.json")
+    ratio_1_norevisit_json_path = os.path.join(json_dir, "orders_ratio1norevisit.json")
+    ratio_2_norevisit_json_path = os.path.join(json_dir, "orders_ratio2norevisit.json")
+    collective_pending_path = os.path.join(BASE_OUTPUT_FOLDER, "collectivependingorders.json")
+    collective_history_path = os.path.join(BASE_OUTPUT_FOLDER, "collectivehistoryorders.json")
+    collective_profit_history_path = os.path.join(BASE_OUTPUT_FOLDER, "collectiveprofithistory.json")
+    collective_stoploss_history_path = os.path.join(BASE_OUTPUT_FOLDER, "collectivestoplosshistory.json")
+    collective_ratio_0_5_revisit_path = os.path.join(BASE_OUTPUT_FOLDER, "collectiveratio0.5revisit.json")
+    collective_ratio_1_revisit_path = os.path.join(BASE_OUTPUT_FOLDER, "collectiveratio1revisit.json")
+    collective_ratio_2_revisit_path = os.path.join(BASE_OUTPUT_FOLDER, "collectiveratio2revisit.json")
+    collective_ratio_0_5_norevisit_path = os.path.join(BASE_OUTPUT_FOLDER, "collectiveratio0.5norevisit.json")
+    collective_ratio_1_norevisit_path = os.path.join(BASE_OUTPUT_FOLDER, "collectiveratio1norevisit.json")
+    collective_ratio_2_norevisit_path = os.path.join(BASE_OUTPUT_FOLDER, "collectiveratio2norevisit.json")
+    orders__orders_records_path = os.path.join(BASE_OUTPUT_FOLDER, "collectiveordersrecords.json")
     
     # Check if required JSON files exist
     if not os.path.exists(signedorders_json_path):
@@ -4092,9 +4318,9 @@ def categorizesignedcontract(market: str, timeframe: str, json_dir: str) -> bool
         with open(calculatedprices_json_path, 'r') as f:
             calculatedprices_data = json.load(f)
         
-        def contractpendingorders() -> list:
-            """Extract pending orders from signedorders.json and save to signedpendingorders.json."""
-            contract_pending_orders = []
+        def orders_pendingorders() -> list:
+            """Extract pending orders from signedorders.json and save to orders_pendingorders.json."""
+            orders__pending_orders = []
             seen_order_keys = set()  # Track unique (trendline_type, order_holder_position) pairs
             
             # Process each trendline in signedorders.json for pending orders
@@ -4104,10 +4330,10 @@ def categorizesignedcontract(market: str, timeframe: str, json_dir: str) -> bool
                 order_holder = trendline.get("order_holder", {})
                 order_holder_position = order_holder.get("position_number")
                 order_holder_timestamp = order_holder.get("Time", "N/A")  # Extract order holder timestamp
-                contract_status = trendline.get("contract status summary", {}).get("contract status", "")
+                orders__status = trendline.get("orders_ status summary", {}).get("orders_ status", "")
                 
                 # Skip if the order is already executed (has profit or stoploss status)
-                if contract_status in ["profit reached exit contract", "Exit contract at stoploss"]:
+                if orders__status in ["profit reached exit orders_", "Exit orders_ at stoploss"]:
                     continue
                 
                 # Check if there is a valid pending order
@@ -4157,12 +4383,12 @@ def categorizesignedcontract(market: str, timeframe: str, json_dir: str) -> bool
                 if calc_order_type != order_type:
                     log_and_print(f"Order type mismatch for trendline {trendline_type} in {market} {timeframe}: signedorders={order_type}, calculatedprices={calc_order_type}", "WARNING")
                     continue
-                if abs(calc_entry_price - entry_price) > 0.0001:  # Small tolerance for floating-point comparison
+                if abs(calc_entry_price - entry_price) > 0.0001:  # Smcollective tolerance for floating-point comparison
                     log_and_print(f"Entry price mismatch for trendline {trendline_type} in {market} {timeframe}: signedorders={entry_price}, calculatedprices={calc_entry_price}", "WARNING")
                     continue
                 
-                # Create contract pending order entry
-                contract_entry = {
+                # Create orders_ pending order entry
+                orders__entry = {
                     "market": market,
                     "pair": matching_calculated.get("pair", market),
                     "timeframe": timeframe,
@@ -4181,37 +4407,37 @@ def categorizesignedcontract(market: str, timeframe: str, json_dir: str) -> bool
                 
                 # Validate prices
                 if any(price <= 0 for price in [
-                    contract_entry["entry_price"],
-                    contract_entry["exit_price"],
-                    contract_entry["1:0.5_price"],
-                    contract_entry["1:1_price"],
-                    contract_entry["1:2_price"],
-                    contract_entry["profit_price"]
+                    orders__entry["entry_price"],
+                    orders__entry["exit_price"],
+                    orders__entry["1:0.5_price"],
+                    orders__entry["1:1_price"],
+                    orders__entry["1:2_price"],
+                    orders__entry["profit_price"]
                 ]):
-                    log_and_print(f"Invalid price values for trendline {trendline_type} in {market} {timeframe}: {contract_entry}", "WARNING")
+                    log_and_print(f"Invalid price values for trendline {trendline_type} in {market} {timeframe}: {orders__entry}", "WARNING")
                     continue
                 
-                if contract_entry["lot_size"] <= 0:
-                    log_and_print(f"Invalid lot_size {contract_entry['lot_size']} for trendline {trendline_type} in {market} {timeframe}", "WARNING")
+                if orders__entry["lot_size"] <= 0:
+                    log_and_print(f"Invalid lot_size {orders__entry['lot_size']} for trendline {trendline_type} in {market} {timeframe}", "WARNING")
                     continue
                 
-                contract_pending_orders.append(contract_entry)
+                orders__pending_orders.append(orders__entry)
                 log_and_print(
                     f"Added pending order for trendline {trendline_type}: order_type={order_type}, "
-                    f"entry_price={entry_price}, exit_price={contract_entry['exit_price']}, "
-                    f"1:0.5_price={contract_entry['1:0.5_price']}, 1:1_price={contract_entry['1:1_price']}, "
-                    f"1:2_price={contract_entry['1:2_price']}, profit_price={contract_entry['profit_price']}, "
-                    f"lot_size={contract_entry['lot_size']}, order_holder_position={order_holder_position}, "
+                    f"entry_price={entry_price}, exit_price={orders__entry['exit_price']}, "
+                    f"1:0.5_price={orders__entry['1:0.5_price']}, 1:1_price={orders__entry['1:1_price']}, "
+                    f"1:2_price={orders__entry['1:2_price']}, profit_price={orders__entry['profit_price']}, "
+                    f"lot_size={orders__entry['lot_size']}, order_holder_position={order_holder_position}, "
                     f"order_holder_timestamp={order_holder_timestamp} in {market} {timeframe}",
                     "DEBUG"
                 )
             
-            return contract_pending_orders
+            return orders__pending_orders
 
         def historyorders() -> tuple[list, list, list]:
-            """Extract executed orders (profit or stoploss) from signedorders.json, save to signedhistory.json,
-            and separate into signedprofithistory.json and signedstoplosshistory.json based on contract_status."""
-            contract_history_orders = []
+            """Extract executed orders (profit or stoploss) from signedorders.json, save to orders_history.json,
+            and separate into orders_profithistory.json and orders_stoplosshistory.json based on orders__status."""
+            orders__history_orders = []
             profit_history_orders = []
             stoploss_history_orders = []
             seen_order_keys = set()  # Track unique (order_holder_timestamp, entry_price, order_type) pairs
@@ -4222,13 +4448,13 @@ def categorizesignedcontract(market: str, timeframe: str, json_dir: str) -> bool
                 order_holder = trendline.get("order_holder", {})
                 order_holder_position = order_holder.get("position_number")
                 order_holder_timestamp = order_holder.get("Time", "N/A")  # Extract order holder timestamp
-                contract_status = trendline.get("contract status summary", {}).get("contract status", "")
+                orders__status = trendline.get("orders_ status summary", {}).get("orders_ status", "")
                 receiver = trendline.get("receiver", {})
                 executioner_candle = trendline.get("executioner candle", {})
                 sender_position = trendline.get("sender", {}).get("position_number")
 
                 # Only process orders with profit or stoploss status and an executioner candle
-                if contract_status not in ["profit reached exit contract", "Exit contract at stoploss"] or not executioner_candle:
+                if orders__status not in ["profit reached exit orders_", "Exit orders_ at stoploss"] or not executioner_candle:
                     continue
 
                 # Extract order_type from receiver
@@ -4256,8 +4482,8 @@ def categorizesignedcontract(market: str, timeframe: str, json_dir: str) -> bool
                     continue
                 seen_order_keys.add(order_key)
 
-                # Create contract history order entry
-                contract_entry = {
+                # Create orders_ history order entry
+                orders__entry = {
                     "market": market,
                     "pair": matching_calculated.get("pair", market),
                     "timeframe": timeframe,
@@ -4272,48 +4498,48 @@ def categorizesignedcontract(market: str, timeframe: str, json_dir: str) -> bool
                     "trendline_type": trendline_type,
                     "order_holder_position": order_holder_position,
                     "order_holder_timestamp": order_holder_timestamp,
-                    "contract_status": contract_status,
+                    "orders__status": orders__status,
                     "sender_position": sender_position
                 }
 
                 # Validate prices
                 if any(price <= 0 for price in [
-                    contract_entry["entry_price"],
-                    contract_entry["exit_price"],
-                    contract_entry["1:0.5_price"],
-                    contract_entry["1:1_price"],
-                    contract_entry["1:2_price"],
-                    contract_entry["profit_price"]
+                    orders__entry["entry_price"],
+                    orders__entry["exit_price"],
+                    orders__entry["1:0.5_price"],
+                    orders__entry["1:1_price"],
+                    orders__entry["1:2_price"],
+                    orders__entry["profit_price"]
                 ]):
                     continue
 
-                if contract_entry["lot_size"] <= 0:
+                if orders__entry["lot_size"] <= 0:
                     continue
 
-                # Add to appropriate lists based on contract_status
-                contract_history_orders.append(contract_entry)
-                if contract_status == "profit reached exit contract":
-                    profit_history_orders.append(contract_entry)
-                elif contract_status == "Exit contract at stoploss":
-                    stoploss_history_orders.append(contract_entry)
+                # Add to appropriate lists based on orders__status
+                orders__history_orders.append(orders__entry)
+                if orders__status == "profit reached exit orders_":
+                    profit_history_orders.append(orders__entry)
+                elif orders__status == "Exit orders_ at stoploss":
+                    stoploss_history_orders.append(orders__entry)
 
                 log_and_print(
                     f"Added historical order for trendline {trendline_type}: order_type={order_type}, "
-                    f"entry_price={contract_entry['entry_price']}, exit_price={contract_entry['exit_price']}, "
-                    f"1:0.5_price={contract_entry['1:0.5_price']}, 1:1_price={contract_entry['1:1_price']}, "
-                    f"1:2_price={contract_entry['1:2_price']}, profit_price={contract_entry['profit_price']}, "
-                    f"lot_size={contract_entry['lot_size']}, order_holder_position={order_holder_position}, "
-                    f"order_holder_timestamp={order_holder_timestamp}, contract_status={contract_entry['contract_status']}, "
+                    f"entry_price={orders__entry['entry_price']}, exit_price={orders__entry['exit_price']}, "
+                    f"1:0.5_price={orders__entry['1:0.5_price']}, 1:1_price={orders__entry['1:1_price']}, "
+                    f"1:2_price={orders__entry['1:2_price']}, profit_price={orders__entry['profit_price']}, "
+                    f"lot_size={orders__entry['lot_size']}, order_holder_position={order_holder_position}, "
+                    f"order_holder_timestamp={order_holder_timestamp}, orders__status={orders__entry['orders__status']}, "
                     f"sender_position={sender_position} in {market} {timeframe}",
                     "DEBUG"
                 )
 
-            return contract_history_orders, profit_history_orders, stoploss_history_orders
+            return orders__history_orders, profit_history_orders, stoploss_history_orders
 
         def rewardratios() -> tuple[list, list, list, list, list, list]:
             """Extract orders with specific reward ratio statuses from signedorders.json based on independent_check,
-            and separate into signedratio0.5revisit.json, signedratio1revisit.json, signedratio2revisit.json,
-            signedratio0.5norevisit.json, signedratio1norevisit.json, and signedratio2norevisit.json."""
+            and separate into orders_ratio0.5revisit.json, orders_ratio1revisit.json, orders_ratio2revisit.json,
+            orders_ratio0.5norevisit.json, orders_ratio1norevisit.json, and orders_ratio2norevisit.json."""
             ratio_0_5_revisit_orders = []
             ratio_1_revisit_orders = []
             ratio_2_revisit_orders = []
@@ -4328,13 +4554,13 @@ def categorizesignedcontract(market: str, timeframe: str, json_dir: str) -> bool
                 order_holder = trendline.get("order_holder", {})
                 order_holder_position = order_holder.get("position_number")
                 order_holder_timestamp = order_holder.get("Time", "N/A")  # Extract order holder timestamp
-                contract_status = trendline.get("contract status summary", {}).get("contract status", "")
+                orders__status = trendline.get("orders_ status summary", {}).get("orders_ status", "")
                 receiver = trendline.get("receiver", {})
                 executioner_candle = trendline.get("executioner candle", {})
                 sender_position = trendline.get("sender", {}).get("position_number")
 
                 # Only process orders with profit or stoploss status and an executioner candle
-                if contract_status not in ["profit reached exit contract", "Exit contract at stoploss"] or not executioner_candle:
+                if orders__status not in ["profit reached exit orders_", "Exit orders_ at stoploss"] or not executioner_candle:
                     continue
 
                 # Extract order_type from receiver
@@ -4362,8 +4588,8 @@ def categorizesignedcontract(market: str, timeframe: str, json_dir: str) -> bool
                     continue
                 seen_order_keys.add(order_key)
 
-                # Create contract entry
-                contract_entry = {
+                # Create orders_ entry
+                orders__entry = {
                     "market": market,
                     "pair": matching_calculated.get("pair", market),
                     "timeframe": timeframe,
@@ -4378,22 +4604,22 @@ def categorizesignedcontract(market: str, timeframe: str, json_dir: str) -> bool
                     "trendline_type": trendline_type,
                     "order_holder_position": order_holder_position,
                     "order_holder_timestamp": order_holder_timestamp,
-                    "contract_status": contract_status,
+                    "orders__status": orders__status,
                     "sender_position": sender_position
                 }
 
                 # Validate prices
                 if any(price <= 0 for price in [
-                    contract_entry["entry_price"],
-                    contract_entry["exit_price"],
-                    contract_entry["1:0.5_price"],
-                    contract_entry["1:1_price"],
-                    contract_entry["1:2_price"],
-                    contract_entry["profit_price"]
+                    orders__entry["entry_price"],
+                    orders__entry["exit_price"],
+                    orders__entry["1:0.5_price"],
+                    orders__entry["1:1_price"],
+                    orders__entry["1:2_price"],
+                    orders__entry["profit_price"]
                 ]):
                     continue
 
-                if contract_entry["lot_size"] <= 0:
+                if orders__entry["lot_size"] <= 0:
                     continue
 
                 # Check independent_check statuses for each reward ratio
@@ -4403,14 +4629,14 @@ def categorizesignedcontract(market: str, timeframe: str, json_dir: str) -> bool
 
                 # Categorize based on 1:0.5 independent_check status
                 if ratio_0_5_status == "1:0.5 breakseven":
-                    ratio_0_5_revisit_orders.append(contract_entry)
+                    ratio_0_5_revisit_orders.append(orders__entry)
                     log_and_print(
                         f"Added 1:0.5 revisit order for trendline {trendline_type}: order_type={order_type}, "
                         f"entry_price={entry_price}, status={ratio_0_5_status} in {market} {timeframe}",
                         "DEBUG"
                     )
                 elif ratio_0_5_status == "no revisit before profit":
-                    ratio_0_5_norevisit_orders.append(contract_entry)
+                    ratio_0_5_norevisit_orders.append(orders__entry)
                     log_and_print(
                         f"Added 1:0.5 no revisit order for trendline {trendline_type}: order_type={order_type}, "
                         f"entry_price={entry_price}, status={ratio_0_5_status} in {market} {timeframe}",
@@ -4419,14 +4645,14 @@ def categorizesignedcontract(market: str, timeframe: str, json_dir: str) -> bool
 
                 # Categorize based on 1:1 independent_check status
                 if ratio_1_status == "1:1 breakseven":
-                    ratio_1_revisit_orders.append(contract_entry)
+                    ratio_1_revisit_orders.append(orders__entry)
                     log_and_print(
                         f"Added 1:1 revisit order for trendline {trendline_type}: order_type={order_type}, "
                         f"entry_price={entry_price}, status={ratio_1_status} in {market} {timeframe}",
                         "DEBUG"
                     )
                 elif ratio_1_status == "no revisit before profit":
-                    ratio_1_norevisit_orders.append(contract_entry)
+                    ratio_1_norevisit_orders.append(orders__entry)
                     log_and_print(
                         f"Added 1:1 no revisit order for trendline {trendline_type}: order_type={order_type}, "
                         f"entry_price={entry_price}, status={ratio_1_status} in {market} {timeframe}",
@@ -4435,14 +4661,14 @@ def categorizesignedcontract(market: str, timeframe: str, json_dir: str) -> bool
 
                 # Categorize based on 1:2 independent_check status
                 if ratio_2_status == "1:2 breakseven":
-                    ratio_2_revisit_orders.append(contract_entry)
+                    ratio_2_revisit_orders.append(orders__entry)
                     log_and_print(
                         f"Added 1:2 revisit order for trendline {trendline_type}: order_type={order_type}, "
                         f"entry_price={entry_price}, status={ratio_2_status} in {market} {timeframe}",
                         "DEBUG"
                     )
                 elif ratio_2_status == "no revisit before profit":
-                    ratio_2_norevisit_orders.append(contract_entry)
+                    ratio_2_norevisit_orders.append(orders__entry)
                     log_and_print(
                         f"Added 1:2 no revisit order for trendline {trendline_type}: order_type={order_type}, "
                         f"entry_price={entry_price}, status={ratio_2_status} in {market} {timeframe}",
@@ -4458,9 +4684,9 @@ def categorizesignedcontract(market: str, timeframe: str, json_dir: str) -> bool
                 ratio_2_norevisit_orders
             )
 
-        # Execute all functions
-        contract_pending_orders = contractpendingorders()
-        contract_history_orders, profit_history_orders, stoploss_history_orders = historyorders()
+        # Execute collective functions
+        orders__pending_orders = orders_pendingorders()
+        orders__history_orders, profit_history_orders, stoploss_history_orders = historyorders()
         (
             ratio_0_5_revisit_orders,
             ratio_1_revisit_orders,
@@ -4470,39 +4696,39 @@ def categorizesignedcontract(market: str, timeframe: str, json_dir: str) -> bool
             ratio_2_norevisit_orders
         ) = rewardratios()
         
-        # Save pending orders to signedpendingorders.json
+        # Save pending orders to orders_pendingorders.json
         if os.path.exists(pending_orders_json_path):
             os.remove(pending_orders_json_path)
             log_and_print(f"Existing {pending_orders_json_path} deleted", "INFO")
         
         try:
             with open(pending_orders_json_path, 'w') as f:
-                json.dump(contract_pending_orders, f, indent=4)
+                json.dump(orders__pending_orders, f, indent=4)
             log_and_print(
-                f"Saved {len(contract_pending_orders)} unique pending orders to {pending_orders_json_path} for {market} {timeframe}",
+                f"Saved {len(orders__pending_orders)} unique pending orders to {pending_orders_json_path} for {market} {timeframe}",
                 "SUCCESS"
             )
         except Exception as e:
-            log_and_print(f"Error saving signedpendingorders.json for {market} {timeframe}: {str(e)}", "ERROR")
+            log_and_print(f"Error saving orders_pendingorders.json for {market} {timeframe}: {str(e)}", "ERROR")
             return False
         
-        # Save historical orders to signedhistory.json
+        # Save historical orders to orders_history.json
         if os.path.exists(history_orders_json_path):
             os.remove(history_orders_json_path)
             log_and_print(f"Existing {history_orders_json_path} deleted", "INFO")
         
         try:
             with open(history_orders_json_path, 'w') as f:
-                json.dump(contract_history_orders, f, indent=4)
+                json.dump(orders__history_orders, f, indent=4)
             log_and_print(
-                f"Saved {len(contract_history_orders)} unique historical orders to {history_orders_json_path} for {market} {timeframe}",
+                f"Saved {len(orders__history_orders)} unique historical orders to {history_orders_json_path} for {market} {timeframe}",
                 "SUCCESS"
             )
         except Exception as e:
-            log_and_print(f"Error saving signedhistory.json for {market} {timeframe}: {str(e)}", "ERROR")
+            log_and_print(f"Error saving orders_history.json for {market} {timeframe}: {str(e)}", "ERROR")
             return False
         
-        # Save profit history orders to signedprofithistory.json
+        # Save profit history orders to orders_profithistory.json
         if os.path.exists(profit_history_json_path):
             os.remove(profit_history_json_path)
             log_and_print(f"Existing {profit_history_json_path} deleted", "INFO")
@@ -4515,10 +4741,10 @@ def categorizesignedcontract(market: str, timeframe: str, json_dir: str) -> bool
                 "SUCCESS"
             )
         except Exception as e:
-            log_and_print(f"Error saving signedprofithistory.json for {market} {timeframe}: {str(e)}", "ERROR")
+            log_and_print(f"Error saving orders_profithistory.json for {market} {timeframe}: {str(e)}", "ERROR")
             return False
         
-        # Save stoploss history orders to signedstoplosshistory.json
+        # Save stoploss history orders to orders_stoplosshistory.json
         if os.path.exists(stoploss_history_json_path):
             os.remove(stoploss_history_json_path)
             log_and_print(f"Existing {stoploss_history_json_path} deleted", "INFO")
@@ -4531,7 +4757,7 @@ def categorizesignedcontract(market: str, timeframe: str, json_dir: str) -> bool
                 "SUCCESS"
             )
         except Exception as e:
-            log_and_print(f"Error saving signedstoplosshistory.json for {market} {timeframe}: {str(e)}", "ERROR")
+            log_and_print(f"Error saving orders_stoplosshistory.json for {market} {timeframe}: {str(e)}", "ERROR")
             return False
         
         # Save ratio 0.5 revisit orders
@@ -4547,7 +4773,7 @@ def categorizesignedcontract(market: str, timeframe: str, json_dir: str) -> bool
                 "SUCCESS"
             )
         except Exception as e:
-            log_and_print(f"Error saving signedratio0.5revisit.json for {market} {timeframe}: {str(e)}", "ERROR")
+            log_and_print(f"Error saving ratio0.5revisit.json for {market} {timeframe}: {str(e)}", "ERROR")
             return False
         
         # Save ratio 1 revisit orders
@@ -4563,7 +4789,7 @@ def categorizesignedcontract(market: str, timeframe: str, json_dir: str) -> bool
                 "SUCCESS"
             )
         except Exception as e:
-            log_and_print(f"Error saving signedratio1revisit.json for {market} {timeframe}: {str(e)}", "ERROR")
+            log_and_print(f"Error saving ratio1revisit.json for {market} {timeframe}: {str(e)}", "ERROR")
             return False
         
         # Save ratio 2 revisit orders
@@ -4579,7 +4805,7 @@ def categorizesignedcontract(market: str, timeframe: str, json_dir: str) -> bool
                 "SUCCESS"
             )
         except Exception as e:
-            log_and_print(f"Error saving signedratio2revisit.json for {market} {timeframe}: {str(e)}", "ERROR")
+            log_and_print(f"Error saving ratio2revisit.json for {market} {timeframe}: {str(e)}", "ERROR")
             return False
         
         # Save ratio 0.5 no revisit orders
@@ -4595,7 +4821,7 @@ def categorizesignedcontract(market: str, timeframe: str, json_dir: str) -> bool
                 "SUCCESS"
             )
         except Exception as e:
-            log_and_print(f"Error saving signedratio0.5norevisit.json for {market} {timeframe}: {str(e)}", "ERROR")
+            log_and_print(f"Error saving ratio0.5norevisit.json for {market} {timeframe}: {str(e)}", "ERROR")
             return False
         
         # Save ratio 1 no revisit orders
@@ -4611,7 +4837,7 @@ def categorizesignedcontract(market: str, timeframe: str, json_dir: str) -> bool
                 "SUCCESS"
             )
         except Exception as e:
-            log_and_print(f"Error saving signedratio1norevisit.json for {market} {timeframe}: {str(e)}", "ERROR")
+            log_and_print(f"Error saving ratio1norevisit.json for {market} {timeframe}: {str(e)}", "ERROR")
             return False
         
         # Save ratio 2 no revisit orders
@@ -4627,23 +4853,23 @@ def categorizesignedcontract(market: str, timeframe: str, json_dir: str) -> bool
                 "SUCCESS"
             )
         except Exception as e:
-            log_and_print(f"Error saving signedratio2norevisit.json for {market} {timeframe}: {str(e)}", "ERROR")
+            log_and_print(f"Error saving ratio2norevisit.json for {market} {timeframe}: {str(e)}", "ERROR")
             return False
         
-        # Collect all signedpendingorders, signedhistory, signedprofithistory, signedstoplosshistory, and reward ratio orders across markets and timeframes
-        def collect_all_orders():
-            """Collect all signedpendingorders.json, signedhistory.json, signedprofithistory.json, 
-            signedstoplosshistory.json, and reward ratio JSONs across all markets and timeframes."""
-            all_pending_orders = []
-            all_history_orders = []
-            all_profit_history_orders = []
-            all_stoploss_history_orders = []
-            all_ratio_0_5_revisit_orders = []
-            all_ratio_1_revisit_orders = []
-            all_ratio_2_revisit_orders = []
-            all_ratio_0_5_norevisit_orders = []
-            all_ratio_1_norevisit_orders = []
-            all_ratio_2_norevisit_orders = []
+        # Collect collective orders_pendingorders, orders_history, profithistory, stoplosshistory, and reward ratio orders across markets and timeframes
+        def collect_collective_orders():
+            """Collect collective orders_pendingorders.json, orders_history.json, orders_profithistory.json, 
+            orders_stoplosshistory.json, and reward ratio JSONs across collective markets and timeframes."""
+            collective_pending_orders = []
+            collective_history_orders = []
+            collective_profit_history_orders = []
+            collective_stoploss_history_orders = []
+            collective_ratio_0_5_revisit_orders = []
+            collective_ratio_1_revisit_orders = []
+            collective_ratio_2_revisit_orders = []
+            collective_ratio_0_5_norevisit_orders = []
+            collective_ratio_1_norevisit_orders = []
+            collective_ratio_2_norevisit_orders = []
             timeframe_counts_pending = {
                 "5minutes": 0,
                 "15minutes": 0,
@@ -4715,21 +4941,21 @@ def categorizesignedcontract(market: str, timeframe: str, json_dir: str) -> bool
                 "4hour": 0
             }
             
-            # Iterate through all markets and timeframes
+            # Iterate through collective markets and timeframes
             for mkt in MARKETS:
                 formatted_market = mkt.replace(" ", "_")
                 for tf in TIMEFRAMES:
                     tf_dir = os.path.join(BASE_OUTPUT_FOLDER, formatted_market, tf.lower())
-                    pending_path = os.path.join(tf_dir, "signedpendingorders.json")
-                    history_path = os.path.join(tf_dir, "signedhistory.json")
-                    profit_path = os.path.join(tf_dir, "signedprofithistory.json")
-                    stoploss_path = os.path.join(tf_dir, "signedstoplosshistory.json")
-                    ratio_0_5_revisit_path = os.path.join(tf_dir, "signedratio0.5revisit.json")
-                    ratio_1_revisit_path = os.path.join(tf_dir, "signedratio1revisit.json")
-                    ratio_2_revisit_path = os.path.join(tf_dir, "signedratio2revisit.json")
-                    ratio_0_5_norevisit_path = os.path.join(tf_dir, "signedratio0.5norevisit.json")
-                    ratio_1_norevisit_path = os.path.join(tf_dir, "signedratio1norevisit.json")
-                    ratio_2_norevisit_path = os.path.join(tf_dir, "signedratio2norevisit.json")
+                    pending_path = os.path.join(tf_dir, "orders_pendingorders.json")
+                    history_path = os.path.join(tf_dir, "orders_history.json")
+                    profit_path = os.path.join(tf_dir, "orders_profithistory.json")
+                    stoploss_path = os.path.join(tf_dir, "orders_stoplosshistory.json")
+                    ratio_0_5_revisit_path = os.path.join(tf_dir, "orders_ratio0.5revisit.json")
+                    ratio_1_revisit_path = os.path.join(tf_dir, "orders_ratio1revisit.json")
+                    ratio_2_revisit_path = os.path.join(tf_dir, "orders_ratio2revisit.json")
+                    ratio_0_5_norevisit_path = os.path.join(tf_dir, "orders_ratio0.5norevisit.json")
+                    ratio_1_norevisit_path = os.path.join(tf_dir, "orders_ratio1norevisit.json")
+                    ratio_2_norevisit_path = os.path.join(tf_dir, "orders_ratio2norevisit.json")
                     db_tf = DB_TIMEFRAME_MAPPING.get(tf, tf)  # Map to database timeframe format
                     
                     # Collect pending orders
@@ -4738,7 +4964,7 @@ def categorizesignedcontract(market: str, timeframe: str, json_dir: str) -> bool
                             with open(pending_path, 'r') as f:
                                 pending_data = json.load(f)
                             if isinstance(pending_data, list):
-                                all_pending_orders.extend(pending_data)
+                                collective_pending_orders.extend(pending_data)
                                 timeframe_counts_pending[db_tf] += len(pending_data)
                                 log_and_print(
                                     f"Collected {len(pending_data)} pending orders from {pending_path}",
@@ -4755,7 +4981,7 @@ def categorizesignedcontract(market: str, timeframe: str, json_dir: str) -> bool
                             with open(history_path, 'r') as f:
                                 history_data = json.load(f)
                             if isinstance(history_data, list):
-                                all_history_orders.extend(history_data)
+                                collective_history_orders.extend(history_data)
                                 timeframe_counts_history[db_tf] += len(history_data)
                                 log_and_print(
                                     f"Collected {len(history_data)} historical orders from {history_path}",
@@ -4772,7 +4998,7 @@ def categorizesignedcontract(market: str, timeframe: str, json_dir: str) -> bool
                             with open(profit_path, 'r') as f:
                                 profit_data = json.load(f)
                             if isinstance(profit_data, list):
-                                all_profit_history_orders.extend(profit_data)
+                                collective_profit_history_orders.extend(profit_data)
                                 timeframe_counts_profit[db_tf] += len(profit_data)
                                 log_and_print(
                                     f"Collected {len(profit_data)} profit history orders from {profit_path}",
@@ -4789,7 +5015,7 @@ def categorizesignedcontract(market: str, timeframe: str, json_dir: str) -> bool
                             with open(stoploss_path, 'r') as f:
                                 stoploss_data = json.load(f)
                             if isinstance(stoploss_data, list):
-                                all_stoploss_history_orders.extend(stoploss_data)
+                                collective_stoploss_history_orders.extend(stoploss_data)
                                 timeframe_counts_stoploss[db_tf] += len(stoploss_data)
                                 log_and_print(
                                     f"Collected {len(stoploss_data)} stoploss history orders from {stoploss_path}",
@@ -4806,7 +5032,7 @@ def categorizesignedcontract(market: str, timeframe: str, json_dir: str) -> bool
                             with open(ratio_0_5_revisit_path, 'r') as f:
                                 ratio_data = json.load(f)
                             if isinstance(ratio_data, list):
-                                all_ratio_0_5_revisit_orders.extend(ratio_data)
+                                collective_ratio_0_5_revisit_orders.extend(ratio_data)
                                 timeframe_counts_ratio_0_5_revisit[db_tf] += len(ratio_data)
                                 log_and_print(
                                     f"Collected {len(ratio_data)} 1:0.5 revisit orders from {ratio_0_5_revisit_path}",
@@ -4823,7 +5049,7 @@ def categorizesignedcontract(market: str, timeframe: str, json_dir: str) -> bool
                             with open(ratio_1_revisit_path, 'r') as f:
                                 ratio_data = json.load(f)
                             if isinstance(ratio_data, list):
-                                all_ratio_1_revisit_orders.extend(ratio_data)
+                                collective_ratio_1_revisit_orders.extend(ratio_data)
                                 timeframe_counts_ratio_1_revisit[db_tf] += len(ratio_data)
                                 log_and_print(
                                     f"Collected {len(ratio_data)} 1:1 revisit orders from {ratio_1_revisit_path}",
@@ -4840,7 +5066,7 @@ def categorizesignedcontract(market: str, timeframe: str, json_dir: str) -> bool
                             with open(ratio_2_revisit_path, 'r') as f:
                                 ratio_data = json.load(f)
                             if isinstance(ratio_data, list):
-                                all_ratio_2_revisit_orders.extend(ratio_data)
+                                collective_ratio_2_revisit_orders.extend(ratio_data)
                                 timeframe_counts_ratio_2_revisit[db_tf] += len(ratio_data)
                                 log_and_print(
                                     f"Collected {len(ratio_data)} 1:2 revisit orders from {ratio_2_revisit_path}",
@@ -4857,7 +5083,7 @@ def categorizesignedcontract(market: str, timeframe: str, json_dir: str) -> bool
                             with open(ratio_0_5_norevisit_path, 'r') as f:
                                 ratio_data = json.load(f)
                             if isinstance(ratio_data, list):
-                                all_ratio_0_5_norevisit_orders.extend(ratio_data)
+                                collective_ratio_0_5_norevisit_orders.extend(ratio_data)
                                 timeframe_counts_ratio_0_5_norevisit[db_tf] += len(ratio_data)
                                 log_and_print(
                                     f"Collected {len(ratio_data)} 1:0.5 no revisit orders from {ratio_0_5_norevisit_path}",
@@ -4874,7 +5100,7 @@ def categorizesignedcontract(market: str, timeframe: str, json_dir: str) -> bool
                             with open(ratio_1_norevisit_path, 'r') as f:
                                 ratio_data = json.load(f)
                             if isinstance(ratio_data, list):
-                                all_ratio_1_norevisit_orders.extend(ratio_data)
+                                collective_ratio_1_norevisit_orders.extend(ratio_data)
                                 timeframe_counts_ratio_1_norevisit[db_tf] += len(ratio_data)
                                 log_and_print(
                                     f"Collected {len(ratio_data)} 1:1 no revisit orders from {ratio_1_norevisit_path}",
@@ -4891,7 +5117,7 @@ def categorizesignedcontract(market: str, timeframe: str, json_dir: str) -> bool
                             with open(ratio_2_norevisit_path, 'r') as f:
                                 ratio_data = json.load(f)
                             if isinstance(ratio_data, list):
-                                all_ratio_2_norevisit_orders.extend(ratio_data)
+                                collective_ratio_2_norevisit_orders.extend(ratio_data)
                                 timeframe_counts_ratio_2_norevisit[db_tf] += len(ratio_data)
                                 log_and_print(
                                     f"Collected {len(ratio_data)} 1:2 no revisit orders from {ratio_2_norevisit_path}",
@@ -4904,13 +5130,13 @@ def categorizesignedcontract(market: str, timeframe: str, json_dir: str) -> bool
             
             # Prepare and save collective pending orders JSON
             pending_output = {
-                "allpendingorders": len(all_pending_orders),
+                "collectivependingorders": len(collective_pending_orders),
                 "5minutes pending orders": timeframe_counts_pending["5minutes"],
                 "15minutes pending orders": timeframe_counts_pending["15minutes"],
                 "30minutes pending orders": timeframe_counts_pending["30minutes"],
                 "1hour pending orders": timeframe_counts_pending["1hour"],
                 "4hours pending orders": timeframe_counts_pending["4hour"],
-                "orders": all_pending_orders
+                "orders": collective_pending_orders
             }
             
             try:
@@ -4920,24 +5146,24 @@ def categorizesignedcontract(market: str, timeframe: str, json_dir: str) -> bool
                 with open(collective_pending_path, 'w') as f:
                     json.dump(pending_output, f, indent=4)
                 log_and_print(
-                    f"Saved {len(all_pending_orders)} pending orders to {collective_pending_path} "
+                    f"Saved {len(collective_pending_orders)} pending orders to {collective_pending_path} "
                     f"(5m: {timeframe_counts_pending['5minutes']}, 15m: {timeframe_counts_pending['15minutes']}, "
                     f"30m: {timeframe_counts_pending['30minutes']}, 1h: {timeframe_counts_pending['1hour']}, "
                     f"4h: {timeframe_counts_pending['4hour']})",
                     "SUCCESS"
                 )
             except Exception as e:
-                log_and_print(f"Error saving signedcollectivependingorders.json: {str(e)}", "ERROR")
+                log_and_print(f"Error saving collectivependingorders.json: {str(e)}", "ERROR")
             
             # Prepare and save collective history orders JSON
             history_output = {
-                "allhistoryorders": len(all_history_orders),
+                "collectivehistoryorders": len(collective_history_orders),
                 "5minutes history orders": timeframe_counts_history["5minutes"],
                 "15minutes history orders": timeframe_counts_history["15minutes"],
                 "30minutes history orders": timeframe_counts_history["30minutes"],
                 "1hour history orders": timeframe_counts_history["1hour"],
                 "4hours history orders": timeframe_counts_history["4hour"],
-                "orders": all_history_orders
+                "orders": collective_history_orders
             }
             
             try:
@@ -4947,24 +5173,24 @@ def categorizesignedcontract(market: str, timeframe: str, json_dir: str) -> bool
                 with open(collective_history_path, 'w') as f:
                     json.dump(history_output, f, indent=4)
                 log_and_print(
-                    f"Saved {len(all_history_orders)} historical orders to {collective_history_path} "
+                    f"Saved {len(collective_history_orders)} historical orders to {collective_history_path} "
                     f"(5m: {timeframe_counts_history['5minutes']}, 15m: {timeframe_counts_history['15minutes']}, "
                     f"30m: {timeframe_counts_history['30minutes']}, 1h: {timeframe_counts_history['1hour']}, "
                     f"4h: {timeframe_counts_history['4hour']})",
                     "SUCCESS"
                 )
             except Exception as e:
-                log_and_print(f"Error saving signedcollectivehistoryorders.json: {str(e)}", "ERROR")
+                log_and_print(f"Error saving collectivehistoryorders.json: {str(e)}", "ERROR")
             
             # Prepare and save collective profit history orders JSON
             profit_history_output = {
-                "allprofithistoryorders": len(all_profit_history_orders),
+                "collectiveprofithistoryorders": len(collective_profit_history_orders),
                 "5minutes profit history orders": timeframe_counts_profit["5minutes"],
                 "15minutes profit history orders": timeframe_counts_profit["15minutes"],
                 "30minutes profit history orders": timeframe_counts_profit["30minutes"],
                 "1hour profit history orders": timeframe_counts_profit["1hour"],
                 "4hours profit history orders": timeframe_counts_profit["4hour"],
-                "orders": all_profit_history_orders
+                "orders": collective_profit_history_orders
             }
             
             try:
@@ -4974,24 +5200,24 @@ def categorizesignedcontract(market: str, timeframe: str, json_dir: str) -> bool
                 with open(collective_profit_history_path, 'w') as f:
                     json.dump(profit_history_output, f, indent=4)
                 log_and_print(
-                    f"Saved {len(all_profit_history_orders)} profit history orders to {collective_profit_history_path} "
+                    f"Saved {len(collective_profit_history_orders)} profit history orders to {collective_profit_history_path} "
                     f"(5m: {timeframe_counts_profit['5minutes']}, 15m: {timeframe_counts_profit['15minutes']}, "
                     f"30m: {timeframe_counts_profit['30minutes']}, 1h: {timeframe_counts_profit['1hour']}, "
                     f"4h: {timeframe_counts_profit['4hour']})",
                     "SUCCESS"
                 )
             except Exception as e:
-                log_and_print(f"Error saving signedcollectiveprofithistory.json: {str(e)}", "ERROR")
+                log_and_print(f"Error saving collectiveprofithistory.json: {str(e)}", "ERROR")
             
             # Prepare and save collective stoploss history orders JSON
             stoploss_history_output = {
-                "allstoplosshistoryorders": len(all_stoploss_history_orders),
+                "collectivestoplosshistoryorders": len(collective_stoploss_history_orders),
                 "5minutes stoploss history orders": timeframe_counts_stoploss["5minutes"],
                 "15minutes stoploss history orders": timeframe_counts_stoploss["15minutes"],
                 "30minutes stoploss history orders": timeframe_counts_stoploss["30minutes"],
                 "1hour stoploss history orders": timeframe_counts_stoploss["1hour"],
                 "4hours stoploss history orders": timeframe_counts_stoploss["4hour"],
-                "orders": all_stoploss_history_orders
+                "orders": collective_stoploss_history_orders
             }
             
             try:
@@ -5001,24 +5227,24 @@ def categorizesignedcontract(market: str, timeframe: str, json_dir: str) -> bool
                 with open(collective_stoploss_history_path, 'w') as f:
                     json.dump(stoploss_history_output, f, indent=4)
                 log_and_print(
-                    f"Saved {len(all_stoploss_history_orders)} stoploss history orders to {collective_stoploss_history_path} "
+                    f"Saved {len(collective_stoploss_history_orders)} stoploss history orders to {collective_stoploss_history_path} "
                     f"(5m: {timeframe_counts_stoploss['5minutes']}, 15m: {timeframe_counts_stoploss['15minutes']}, "
                     f"30m: {timeframe_counts_stoploss['30minutes']}, 1h: {timeframe_counts_stoploss['1hour']}, "
                     f"4h: {timeframe_counts_stoploss['4hour']})",
                     "SUCCESS"
                 )
             except Exception as e:
-                log_and_print(f"Error saving signedcollectivestoplosshistory.json: {str(e)}", "ERROR")
+                log_and_print(f"Error saving collectivestoplosshistory.json: {str(e)}", "ERROR")
             
             # Prepare and save collective ratio 0.5 revisit orders JSON
             ratio_0_5_revisit_output = {
-                "allratio0.5revisitorders": len(all_ratio_0_5_revisit_orders),
+                "collectiveratio0.5revisitorders": len(collective_ratio_0_5_revisit_orders),
                 "5minutes ratio0.5 revisit orders": timeframe_counts_ratio_0_5_revisit["5minutes"],
                 "15minutes ratio0.5 revisit orders": timeframe_counts_ratio_0_5_revisit["15minutes"],
                 "30minutes ratio0.5 revisit orders": timeframe_counts_ratio_0_5_revisit["30minutes"],
                 "1hour ratio0.5 revisit orders": timeframe_counts_ratio_0_5_revisit["1hour"],
                 "4hours ratio0.5 revisit orders": timeframe_counts_ratio_0_5_revisit["4hour"],
-                "orders": all_ratio_0_5_revisit_orders
+                "orders": collective_ratio_0_5_revisit_orders
             }
             
             try:
@@ -5028,24 +5254,24 @@ def categorizesignedcontract(market: str, timeframe: str, json_dir: str) -> bool
                 with open(collective_ratio_0_5_revisit_path, 'w') as f:
                     json.dump(ratio_0_5_revisit_output, f, indent=4)
                 log_and_print(
-                    f"Saved {len(all_ratio_0_5_revisit_orders)} 1:0.5 revisit orders to {collective_ratio_0_5_revisit_path} "
+                    f"Saved {len(collective_ratio_0_5_revisit_orders)} 1:0.5 revisit orders to {collective_ratio_0_5_revisit_path} "
                     f"(5m: {timeframe_counts_ratio_0_5_revisit['5minutes']}, 15m: {timeframe_counts_ratio_0_5_revisit['15minutes']}, "
                     f"30m: {timeframe_counts_ratio_0_5_revisit['30minutes']}, 1h: {timeframe_counts_ratio_0_5_revisit['1hour']}, "
                     f"4h: {timeframe_counts_ratio_0_5_revisit['4hour']})",
                     "SUCCESS"
                 )
             except Exception as e:
-                log_and_print(f"Error saving signedcollectiveratio0.5revisit.json: {str(e)}", "ERROR")
+                log_and_print(f"Error saving collectiveratio0.5revisit.json: {str(e)}", "ERROR")
             
             # Prepare and save collective ratio 1 revisit orders JSON
             ratio_1_revisit_output = {
-                "allratio1revisitorders": len(all_ratio_1_revisit_orders),
+                "collectiveratio1revisitorders": len(collective_ratio_1_revisit_orders),
                 "5minutes ratio1 revisit orders": timeframe_counts_ratio_1_revisit["5minutes"],
                 "15minutes ratio1 revisit orders": timeframe_counts_ratio_1_revisit["15minutes"],
                 "30minutes ratio1 revisit orders": timeframe_counts_ratio_1_revisit["30minutes"],
                 "1hour ratio1 revisit orders": timeframe_counts_ratio_1_revisit["1hour"],
                 "4hours ratio1 revisit orders": timeframe_counts_ratio_1_revisit["4hour"],
-                "orders": all_ratio_1_revisit_orders
+                "orders": collective_ratio_1_revisit_orders
             }
             
             try:
@@ -5055,24 +5281,24 @@ def categorizesignedcontract(market: str, timeframe: str, json_dir: str) -> bool
                 with open(collective_ratio_1_revisit_path, 'w') as f:
                     json.dump(ratio_1_revisit_output, f, indent=4)
                 log_and_print(
-                    f"Saved {len(all_ratio_1_revisit_orders)} 1:1 revisit orders to {collective_ratio_1_revisit_path} "
+                    f"Saved {len(collective_ratio_1_revisit_orders)} 1:1 revisit orders to {collective_ratio_1_revisit_path} "
                     f"(5m: {timeframe_counts_ratio_1_revisit['5minutes']}, 15m: {timeframe_counts_ratio_1_revisit['15minutes']}, "
                     f"30m: {timeframe_counts_ratio_1_revisit['30minutes']}, 1h: {timeframe_counts_ratio_1_revisit['1hour']}, "
                     f"4h: {timeframe_counts_ratio_1_revisit['4hour']})",
                     "SUCCESS"
                 )
             except Exception as e:
-                log_and_print(f"Error saving signedcollectiveratio1revisit.json: {str(e)}", "ERROR")
+                log_and_print(f"Error saving collectiveratio1revisit.json: {str(e)}", "ERROR")
             
             # Prepare and save collective ratio 2 revisit orders JSON
             ratio_2_revisit_output = {
-                "allratio2revisitorders": len(all_ratio_2_revisit_orders),
+                "collectiveratio2revisitorders": len(collective_ratio_2_revisit_orders),
                 "5minutes ratio2 revisit orders": timeframe_counts_ratio_2_revisit["5minutes"],
                 "15minutes ratio2 revisit orders": timeframe_counts_ratio_2_revisit["15minutes"],
                 "30minutes ratio2 revisit orders": timeframe_counts_ratio_2_revisit["30minutes"],
                 "1hour ratio2 revisit orders": timeframe_counts_ratio_2_revisit["1hour"],
                 "4hours ratio2 revisit orders": timeframe_counts_ratio_2_revisit["4hour"],
-                "orders": all_ratio_2_revisit_orders
+                "orders": collective_ratio_2_revisit_orders
             }
             
             try:
@@ -5082,24 +5308,24 @@ def categorizesignedcontract(market: str, timeframe: str, json_dir: str) -> bool
                 with open(collective_ratio_2_revisit_path, 'w') as f:
                     json.dump(ratio_2_revisit_output, f, indent=4)
                 log_and_print(
-                    f"Saved {len(all_ratio_2_revisit_orders)} 1:2 revisit orders to {collective_ratio_2_revisit_path} "
+                    f"Saved {len(collective_ratio_2_revisit_orders)} 1:2 revisit orders to {collective_ratio_2_revisit_path} "
                     f"(5m: {timeframe_counts_ratio_2_revisit['5minutes']}, 15m: {timeframe_counts_ratio_2_revisit['15minutes']}, "
                     f"30m: {timeframe_counts_ratio_2_revisit['30minutes']}, 1h: {timeframe_counts_ratio_2_revisit['1hour']}, "
                     f"4h: {timeframe_counts_ratio_2_revisit['4hour']})",
                     "SUCCESS"
                 )
             except Exception as e:
-                log_and_print(f"Error saving signedcollectiveratio2revisit.json: {str(e)}", "ERROR")
+                log_and_print(f"Error saving collectiveratio2revisit.json: {str(e)}", "ERROR")
             
             # Prepare and save collective ratio 0.5 no revisit orders JSON
             ratio_0_5_norevisit_output = {
-                "allratio0.5norevisitorders": len(all_ratio_0_5_norevisit_orders),
+                "collectiveratio0.5norevisitorders": len(collective_ratio_0_5_norevisit_orders),
                 "5minutes ratio0.5 no revisit orders": timeframe_counts_ratio_0_5_norevisit["5minutes"],
                 "15minutes ratio0.5 no revisit orders": timeframe_counts_ratio_0_5_norevisit["15minutes"],
                 "30minutes ratio0.5 no revisit orders": timeframe_counts_ratio_0_5_norevisit["30minutes"],
                 "1hour ratio0.5 no revisit orders": timeframe_counts_ratio_0_5_norevisit["1hour"],
                 "4hours ratio0.5 no revisit orders": timeframe_counts_ratio_0_5_norevisit["4hour"],
-                "orders": all_ratio_0_5_norevisit_orders
+                "orders": collective_ratio_0_5_norevisit_orders
             }
             
             try:
@@ -5109,24 +5335,24 @@ def categorizesignedcontract(market: str, timeframe: str, json_dir: str) -> bool
                 with open(collective_ratio_0_5_norevisit_path, 'w') as f:
                     json.dump(ratio_0_5_norevisit_output, f, indent=4)
                 log_and_print(
-                    f"Saved {len(all_ratio_0_5_norevisit_orders)} 1:0.5 no revisit orders to {collective_ratio_0_5_norevisit_path} "
+                    f"Saved {len(collective_ratio_0_5_norevisit_orders)} 1:0.5 no revisit orders to {collective_ratio_0_5_norevisit_path} "
                     f"(5m: {timeframe_counts_ratio_0_5_norevisit['5minutes']}, 15m: {timeframe_counts_ratio_0_5_norevisit['15minutes']}, "
                     f"30m: {timeframe_counts_ratio_0_5_norevisit['30minutes']}, 1h: {timeframe_counts_ratio_0_5_norevisit['1hour']}, "
                     f"4h: {timeframe_counts_ratio_0_5_norevisit['4hour']})",
                     "SUCCESS"
                 )
             except Exception as e:
-                log_and_print(f"Error saving signedcollectiveratio0.5norevisit.json: {str(e)}", "ERROR")
+                log_and_print(f"Error saving collectiveratio0.5norevisit.json: {str(e)}", "ERROR")
             
             # Prepare and save collective ratio 1 no revisit orders JSON
             ratio_1_norevisit_output = {
-                "allratio1norevisitorders": len(all_ratio_1_norevisit_orders),
+                "collectiveratio1norevisitorders": len(collective_ratio_1_norevisit_orders),
                 "5minutes ratio1 no revisit orders": timeframe_counts_ratio_1_norevisit["5minutes"],
                 "15minutes ratio1 no revisit orders": timeframe_counts_ratio_1_norevisit["15minutes"],
                 "30minutes ratio1 no revisit orders": timeframe_counts_ratio_1_norevisit["30minutes"],
                 "1hour ratio1 no revisit orders": timeframe_counts_ratio_1_norevisit["1hour"],
                 "4hours ratio1 no revisit orders": timeframe_counts_ratio_1_norevisit["4hour"],
-                "orders": all_ratio_1_norevisit_orders
+                "orders": collective_ratio_1_norevisit_orders
             }
             
             try:
@@ -5136,24 +5362,24 @@ def categorizesignedcontract(market: str, timeframe: str, json_dir: str) -> bool
                 with open(collective_ratio_1_norevisit_path, 'w') as f:
                     json.dump(ratio_1_norevisit_output, f, indent=4)
                 log_and_print(
-                    f"Saved {len(all_ratio_1_norevisit_orders)} 1:1 no revisit orders to {collective_ratio_1_norevisit_path} "
+                    f"Saved {len(collective_ratio_1_norevisit_orders)} 1:1 no revisit orders to {collective_ratio_1_norevisit_path} "
                     f"(5m: {timeframe_counts_ratio_1_norevisit['5minutes']}, 15m: {timeframe_counts_ratio_1_norevisit['15minutes']}, "
                     f"30m: {timeframe_counts_ratio_1_norevisit['30minutes']}, 1h: {timeframe_counts_ratio_1_norevisit['1hour']}, "
                     f"4h: {timeframe_counts_ratio_1_norevisit['4hour']})",
                     "SUCCESS"
                 )
             except Exception as e:
-                log_and_print(f"Error saving signedcollectiveratio1norevisit.json: {str(e)}", "ERROR")
+                log_and_print(f"Error saving collectiveratio1norevisit.json: {str(e)}", "ERROR")
             
             # Prepare and save collective ratio 2 no revisit orders JSON
             ratio_2_norevisit_output = {
-                "allratio2norevisitorders": len(all_ratio_2_norevisit_orders),
+                "collectiveratio2norevisitorders": len(collective_ratio_2_norevisit_orders),
                 "5minutes ratio2 no revisit orders": timeframe_counts_ratio_2_norevisit["5minutes"],
                 "15minutes ratio2 no revisit orders": timeframe_counts_ratio_2_norevisit["15minutes"],
                 "30minutes ratio2 no revisit orders": timeframe_counts_ratio_2_norevisit["30minutes"],
                 "1hour ratio2 no revisit orders": timeframe_counts_ratio_2_norevisit["1hour"],
                 "4hours ratio2 no revisit orders": timeframe_counts_ratio_2_norevisit["4hour"],
-                "orders": all_ratio_2_norevisit_orders
+                "orders": collective_ratio_2_norevisit_orders
             }
             
             try:
@@ -5163,22 +5389,332 @@ def categorizesignedcontract(market: str, timeframe: str, json_dir: str) -> bool
                 with open(collective_ratio_2_norevisit_path, 'w') as f:
                     json.dump(ratio_2_norevisit_output, f, indent=4)
                 log_and_print(
-                    f"Saved {len(all_ratio_2_norevisit_orders)} 1:2 no revisit orders to {collective_ratio_2_norevisit_path} "
+                    f"Saved {len(collective_ratio_2_norevisit_orders)} 1:2 no revisit orders to {collective_ratio_2_norevisit_path} "
                     f"(5m: {timeframe_counts_ratio_2_norevisit['5minutes']}, 15m: {timeframe_counts_ratio_2_norevisit['15minutes']}, "
                     f"30m: {timeframe_counts_ratio_2_norevisit['30minutes']}, 1h: {timeframe_counts_ratio_2_norevisit['1hour']}, "
                     f"4h: {timeframe_counts_ratio_2_norevisit['4hour']})",
                     "SUCCESS"
                 )
             except Exception as e:
-                log_and_print(f"Error saving signedcollectiveratio2norevisit.json: {str(e)}", "ERROR")
+                log_and_print(f"Error saving collectiveratio2norevisit.json: {str(e)}", "ERROR")
         
-        # Call the function to collect and save collective orders
-        collect_all_orders()
+        def recordhistoricalorders():
+            """Collect historical orders from orders_history.json across collective markets and timeframes,
+            align with collectivehistoryorders.json, and save to collectiveordersrecords.json."""
+            collective_historical_orders = []
+            timeframe_counts_records = {
+                "5minutes": 0,
+                "15minutes": 0,
+                "30minutes": 0,
+                "1hour": 0,
+                "4hour": 0
+            }
+            seen_order_keys = set()  # Track unique (pair, entry_price, order_type, order_holder_timestamp) tuples
+            
+            # Iterate through collective markets and timeframes to collect historical orders
+            for mkt in MARKETS:
+                formatted_market = mkt.replace(" ", "_")
+                for tf in TIMEFRAMES:
+                    tf_dir = os.path.join(BASE_OUTPUT_FOLDER, formatted_market, tf.lower())
+                    history_path = os.path.join(tf_dir, "orders_history.json")
+                    db_tf = DB_TIMEFRAME_MAPPING.get(tf, tf)  # Map to database timeframe format
+                    
+                    if os.path.exists(history_path):
+                        try:
+                            with open(history_path, 'r') as f:
+                                history_data = json.load(f)
+                            if isinstance(history_data, list):
+                                for order in history_data:
+                                    # Round entry_price to 5 decimal places for consistency
+                                    entry_price = round(order.get("entry_price", 0.0), 5)
+                                    order_key = (
+                                        order.get("pair", ""),
+                                        entry_price,
+                                        order.get("order_type", "").lower(),
+                                        order.get("order_holder_timestamp", "N/A")
+                                    )
+                                    if order_key not in seen_order_keys:
+                                        collective_historical_orders.append(order)
+                                        seen_order_keys.add(order_key)
+                                        timeframe_counts_records[db_tf] += 1
+                                        log_and_print(
+                                            f"Collected historical order from {history_path}: pair={order.get('pair')}, "
+                                            f"entry_price={entry_price}, order_type={order.get('order_type')}, "
+                                            f"timestamp={order.get('order_holder_timestamp')}",
+                                            "DEBUG"
+                                        )
+                            else:
+                                log_and_print(f"Invalid data format in {history_path}: Expected list, got {type(history_data)}", "WARNING")
+                        except Exception as e:
+                            log_and_print(f"Error reading {history_path}: {str(e)}", "WARNING")
+            
+            # Prepare output for ordersrecords.json
+            records_output = {
+                "collectivehistoricalorders": len(collective_historical_orders),
+                "5minutes historical orders": timeframe_counts_records["5minutes"],
+                "15minutes historical orders": timeframe_counts_records["15minutes"],
+                "30minutes historical orders": timeframe_counts_records["30minutes"],
+                "1hour historical orders": timeframe_counts_records["1hour"],
+                "4hours historical orders": timeframe_counts_records["4hour"],
+                "orders": collective_historical_orders
+            }
+            
+            # Save to ordersrecords.json, overwriting to ensure current data
+            try:
+                if os.path.exists(orders__orders_records_path):
+                    os.remove(orders__orders_records_path)
+                    log_and_print(f"Existing {orders__orders_records_path} deleted", "INFO")
+                with open(orders__orders_records_path, 'w') as f:
+                    json.dump(records_output, f, indent=4)
+                log_and_print(
+                    f"Saved {len(collective_historical_orders)} historical orders to {orders__orders_records_path} "
+                    f"(5m: {timeframe_counts_records['5minutes']}, 15m: {timeframe_counts_records['15minutes']}, "
+                    f"30m: {timeframe_counts_records['30minutes']}, 1h: {timeframe_counts_records['1hour']}, "
+                    f"4h: {timeframe_counts_records['4hour']})",
+                    "SUCCESS"
+                )
+            except Exception as e:
+                log_and_print(f"Error saving collectiveordersrecords.json: {str(e)}", "ERROR")
+                return False
+            
+            return True
+
+        def filterorders() -> bool:
+            """Filter pending orders that match historical orders in ordersrecords.json based on pair, entry_price, order_type, and order_holder_timestamp."""
+            log_and_print(f"Filtering pending orders for {market} {timeframe} against historical orders", "INFO")
+            
+            # Define paths
+            filtered_orders_path = os.path.join(json_dir, "filteredorders.json")
+            collective_filtered_orders_path = os.path.join(BASE_OUTPUT_FOLDER, "collectivefilteredorders.json")
+            
+            # Load ordersrecords.json
+            if not os.path.exists(orders__orders_records_path):
+                log_and_print(f"collectiveordersrecords.json not found at {orders__orders_records_path}", "ERROR")
+                return False
+            
+            try:
+                with open(orders__orders_records_path, 'r') as f:
+                    records_data = json.load(f)
+                historical_orders = records_data.get("orders", [])
+                log_and_print(f"Loaded {len(historical_orders)} historical orders from {orders__orders_records_path}", "DEBUG")
+            except Exception as e:
+                log_and_print(f"Error reading collectiveordersrecords.json: {str(e)}", "ERROR")
+                return False
+            
+            # Load orders_pendingorders.json for the current market and timeframe
+            if not os.path.exists(pending_orders_json_path):
+                log_and_print(f"collectivependingorders.json not found at {pending_orders_json_path} for {market} {timeframe}", "ERROR")
+                return False
+            
+            try:
+                with open(pending_orders_json_path, 'r') as f:
+                    pending_data = json.load(f)
+                if not isinstance(pending_data, list):
+                    log_and_print(f"Invalid data format in {pending_orders_json_path}: Expected list, got {type(pending_data)}", "ERROR")
+                    return False
+                pending_orders = pending_data
+                log_and_print(f"Loaded {len(pending_orders)} pending orders from {pending_orders_json_path}", "DEBUG")
+            except Exception as e:
+                log_and_print(f"Error reading collectivependingorders.json for {market} {timeframe}: {str(e)}", "ERROR")
+                return False
+            
+            # Load collectivependingorders.json
+            if not os.path.exists(collective_pending_path):
+                log_and_print(f"collectivependingorders.json not found at {collective_pending_path}", "ERROR")
+                return False
+            
+            try:
+                with open(collective_pending_path, 'r') as f:
+                    collective_pending_data = json.load(f)
+                collective_pending_orders = collective_pending_data.get("orders", [])
+                timeframe_counts_pending = {
+                    "5minutes": collective_pending_data.get("5minutes pending orders", 0),
+                    "15minutes": collective_pending_data.get("15minutes pending orders", 0),
+                    "30minutes": collective_pending_data.get("30minutes pending orders", 0),
+                    "1hour": collective_pending_data.get("1hour pending orders", 0),
+                    "4hour": collective_pending_data.get("4hours pending orders", 0)
+                }
+                log_and_print(f"Loaded {len(collective_pending_orders)} collective pending orders from {collective_pending_path}", "DEBUG")
+            except Exception as e:
+                log_and_print(f"Error reading collectivependingorders.json: {str(e)}", "ERROR")
+                return False
+            
+            # Create a set of historical order keys for comparison
+            historical_keys = set()
+            for order in historical_orders:
+                entry_price = round(order.get("entry_price", 0.0), 5)  # Round to 5 decimal places for consistency
+                order_key = (
+                    order.get("pair", ""),
+                    entry_price,
+                    order.get("order_type", "").lower(),
+                    order.get("order_holder_timestamp", "N/A")
+                )
+                historical_keys.add(order_key)
+            
+            # Filter individual pending orders
+            filtered_orders = []
+            kept_pending_orders = []
+            for order in pending_orders:
+                entry_price = round(order.get("entry_price", 0.0), 5)
+                order_key = (
+                    order.get("pair", ""),
+                    entry_price,
+                    order.get("order_type", "").lower(),
+                    order.get("order_holder_timestamp", "N/A")
+                )
+                if order_key in historical_keys:
+                    filtered_orders.append(order)
+                    log_and_print(
+                        f"Filtered pending order from {pending_orders_json_path}: pair={order.get('pair')}, "
+                        f"entry_price={entry_price}, order_type={order.get('order_type')}, "
+                        f"timestamp={order.get('order_holder_timestamp')} (matched historical order)",
+                        "INFO"
+                    )
+                else:
+                    kept_pending_orders.append(order)
+            
+            # Save filtered orders for the current market and timeframe
+            filtered_output = {
+                "filtered_orders_count": len(filtered_orders),
+                "market": market,
+                "timeframe": timeframe,
+                "filtered_orders": filtered_orders
+            }
+            try:
+                if os.path.exists(filtered_orders_path):
+                    os.remove(filtered_orders_path)
+                    log_and_print(f"Existing {filtered_orders_path} deleted", "INFO")
+                with open(filtered_orders_path, 'w') as f:
+                    json.dump(filtered_output, f, indent=4)
+                log_and_print(
+                    f"Saved {len(filtered_orders)} filtered orders to {filtered_orders_path} for {market} {timeframe}",
+                    "SUCCESS"
+                )
+            except Exception as e:
+                log_and_print(f"Error saving orders_filteredorders.json for {market} {timeframe}: {str(e)}", "ERROR")
+                return False
+            
+            # Update individual orders_pendingorders.json
+            try:
+                if os.path.exists(pending_orders_json_path):
+                    os.remove(pending_orders_json_path)
+                    log_and_print(f"Existing {pending_orders_json_path} deleted", "INFO")
+                with open(pending_orders_json_path, 'w') as f:
+                    json.dump(kept_pending_orders, f, indent=4)
+                log_and_print(
+                    f"Updated {pending_orders_json_path} with {len(kept_pending_orders)} pending orders after filtering for {market} {timeframe}",
+                    "SUCCESS"
+                )
+            except Exception as e:
+                log_and_print(f"Error updating orders_pendingorders.json for {market} {timeframe}: {str(e)}", "ERROR")
+                return False
+            
+            # Filter collective pending orders
+            collective_filtered_orders = []
+            kept_collective_pending_orders = []
+            db_tf = DB_TIMEFRAME_MAPPING.get(timeframe, timeframe.lower())
+            for order in collective_pending_orders:
+                entry_price = round(order.get("entry_price", 0.0), 5)
+                order_key = (
+                    order.get("pair", ""),
+                    entry_price,
+                    order.get("order_type", "").lower(),
+                    order.get("order_holder_timestamp", "N/A")
+                )
+                if order_key in historical_keys:
+                    collective_filtered_orders.append(order)
+                    log_and_print(
+                        f"Filtered collective pending order: pair={order.get('pair')}, "
+                        f"entry_price={entry_price}, order_type={order.get('order_type')}, "
+                        f"timestamp={order.get('order_holder_timestamp')} (matched historical order)",
+                        "INFO"
+                    )
+                else:
+                    kept_collective_pending_orders.append(order)
+            
+            # Update timeframe counts for collective pending orders
+            if filtered_orders and timeframe.lower() in [tf.lower() for tf in TIMEFRAMES]:
+                timeframe_counts_pending[db_tf] -= len(filtered_orders)
+                if timeframe_counts_pending[db_tf] < 0:
+                    log_and_print(f"Negative timeframe count detected for {db_tf} in collective pending orders", "WARNING")
+                    timeframe_counts_pending[db_tf] = 0
+            
+            # Save collective filtered orders
+            collective_filtered_output = {
+                "collectivefilteredorders": len(collective_filtered_orders),
+                "5minutes filtered orders": sum(1 for order in collective_filtered_orders if order.get("timeframe").lower() == "5minutes"),
+                "15minutes filtered orders": sum(1 for order in collective_filtered_orders if order.get("timeframe").lower() == "15minutes"),
+                "30minutes filtered orders": sum(1 for order in collective_filtered_orders if order.get("timeframe").lower() == "30minutes"),
+                "1hour filtered orders": sum(1 for order in collective_filtered_orders if order.get("timeframe").lower() == "1hour"),
+                "4hours filtered orders": sum(1 for order in collective_filtered_orders if order.get("timeframe").lower() == "4hour"),
+                "filtered_orders": collective_filtered_orders
+            }
+            try:
+                if os.path.exists(collective_filtered_orders_path):
+                    os.remove(collective_filtered_orders_path)
+                    log_and_print(f"Existing {collective_filtered_orders_path} deleted", "INFO")
+                with open(collective_filtered_orders_path, 'w') as f:
+                    json.dump(collective_filtered_output, f, indent=4)
+                log_and_print(
+                    f"Saved {len(collective_filtered_orders)} collective filtered orders to {collective_filtered_orders_path} "
+                    f"(5m: {collective_filtered_output['5minutes filtered orders']}, "
+                    f"15m: {collective_filtered_output['15minutes filtered orders']}, "
+                    f"30m: {collective_filtered_output['30minutes filtered orders']}, "
+                    f"1h: {collective_filtered_output['1hour filtered orders']}, "
+                    f"4h: {collective_filtered_output['4hours filtered orders']})",
+                    "SUCCESS"
+                )
+            except Exception as e:
+                log_and_print(f"Error saving collectivefilteredorders.json: {str(e)}", "ERROR")
+                return False
+            
+            # Update collectivependingorders.json
+            collective_pending_output = {
+                "collectivependingorders": len(kept_collective_pending_orders),
+                "5minutes pending orders": timeframe_counts_pending["5minutes"],
+                "15minutes pending orders": timeframe_counts_pending["15minutes"],
+                "30minutes pending orders": timeframe_counts_pending["30minutes"],
+                "1hour pending orders": timeframe_counts_pending["1hour"],
+                "4hours pending orders": timeframe_counts_pending["4hour"],
+                "orders": kept_collective_pending_orders
+            }
+            try:
+                if os.path.exists(collective_pending_path):
+                    os.remove(collective_pending_path)
+                    log_and_print(f"Existing {collective_pending_path} deleted", "INFO")
+                with open(collective_pending_path, 'w') as f:
+                    json.dump(collective_pending_output, f, indent=4)
+                log_and_print(
+                    f"Updated {collective_pending_path} with {len(kept_collective_pending_orders)} pending orders after filtering "
+                    f"(5m: {timeframe_counts_pending['5minutes']}, 15m: {timeframe_counts_pending['15minutes']}, "
+                    f"30m: {timeframe_counts_pending['30minutes']}, 1h: {timeframe_counts_pending['1hour']}, "
+                    f"4h: {timeframe_counts_pending['4hour']})",
+                    "SUCCESS"
+                )
+            except Exception as e:
+                log_and_print(f"Error updating collectivependingorders.json: {str(e)}", "ERROR")
+                return False
+            
+            log_and_print(f"Completed filtering for {market} {timeframe}: {len(filtered_orders)} orders removed", "SUCCESS")
+            return True
+
+        # Ccollective existing functions
+        collect_collective_orders()
+        
+        # Ccollective the new function to record historical orders
+        if not recordhistoricalorders():
+            log_and_print(f"Failed to record historical orders for {market} {timeframe}", "ERROR")
+            return False
+        
+        # Ccollective the new function to filter pending orders
+        if not filterorders():
+            log_and_print(f"Failed to filter pending orders for {market} {timeframe}", "ERROR")
+            return False
         
         return True
     
     except Exception as e:
-        log_and_print(f"Error processing categorizesignedcontract for {market} {timeframe}: {str(e)}", "ERROR")
+        log_and_print(f"Error processing categorizeorders_ for {market} {timeframe}: {str(e)}", "ERROR")
         return False
 
 def save_status_json(success_data: List[Dict], no_pending_data: List[Dict], failed_data: List[Dict]) -> None:
