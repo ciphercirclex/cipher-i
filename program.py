@@ -55,7 +55,7 @@ def load_markets_and_timeframes(json_path):
 # Load markets, timeframes, and credentials at startup
 MARKETS, TIMEFRAMES = load_markets_and_timeframes(MARKETS_JSON_PATH)
 
-def candletimeleft(market, timeframe, candle_time):
+def candletimeleft(market, timeframe, candle_time, min_time_left=3.2):
     # Initialize MT5
     print(f"[Process-{market}] Initializing MT5 for {market}")
     for attempt in range(3):
@@ -128,22 +128,31 @@ def candletimeleft(market, timeframe, candle_time):
                 time_left = (next_close_time - current_time).total_seconds() / 60.0
             print(f"[Process-{market}] Candle time: {candle_datetime}, Next close: {next_close_time}, Time left: {time_left:.2f} minutes")
             
-            if time_left > 3.8:
+            if time_left > min_time_left:
                 return time_left, next_close_time
             else:
-                print(f"[Process-{market}] Time left ({time_left:.2f} minutes) is <= 3.8 minutes, returning None to restart sequence")
+                print(f"[Process-{market}] Time left ({time_left:.2f} minutes) is <= {min_time_left} minutes, returning None to restart sequence")
                 return None, None
             
     finally:
         mt5.shutdown()
 
-def run_analysechart_m():
+
+def run_analysechart_m1():
     """Run the analysechart_m script."""
     try:
-        analysechart_m.main()
+        analysechart_m.main1()
         print("analysechart_m completed.")
     except Exception as e:
         print(f"Error in analysechart_m: {e}")
+def run_analysechart_m2():
+    """Run the analysechart_m script."""
+    try:
+        analysechart_m.main2()
+        print("analysechart_m completed.")
+    except Exception as e:
+        print(f"Error in analysechart_m: {e}")
+
 
 def run_updateorders():
     """Run the updateorders script."""
@@ -165,69 +174,136 @@ def execute(mode="loop"):
     if not MARKETS:
         print("No markets defined in MARKETS list. Exiting.")
         return
-
-    def run_sequential():
-        """Helper function to run analysechart_m and updateorders sequentially with candle time checks."""
-        default_market = MARKETS[0]  # Use first market from MARKETS list
-        timeframe = "M5"
-        
-        while True:
-            # First candle check before updateorders
-            start_time = datetime.now(pytz.UTC)  # Capture system time at the start
-            time_left, next_close_time = candletimeleft(default_market, timeframe, None)
-            if time_left is None or next_close_time is None:
-                print(f"[Process-{default_market}] candle time_left <= 4 for {default_market} (M5). Restarting sequence.")
-                time.sleep(5)  # Small delay before restarting
-                continue
-            initial_time_left = time_left  # Store initial time left for operation time calculation
-            print(f"[Process-{default_market}] Time left for M5 candle: {time_left:.2f} minutes. Running updateorders.")
-            run_updateorders()  # Run updateorders first
-
-            # Second candle check before analysechart_m
-            time_left, next_close_time = candletimeleft(default_market, timeframe, None)
-            if time_left is None or next_close_time is None:
-                print(f"[Process-{default_market}] candle time_left <= 4 for {default_market} (M5). Restarting sequence.")
-                time.sleep(5)  # Small delay before restarting
-                continue
-            print(f"[Process-{default_market}] Time left for M5 candle: {time_left:.2f} minutes. Running analysechart_m.")
-            run_analysechart_m()  # Run analysechart_m second
-
-            # Third candle check before updateorders
-            time_left, next_close_time = candletimeleft(default_market, timeframe, None)
-            if time_left is None or next_close_time is None:
-                print(f"[Process-{default_market}] candle time_left <= 4 for {default_market} (M5). Restarting sequence.")
-                time.sleep(5)  # Small delay before restarting
-                continue
-            print(f"[Process-{default_market}] Time left for M5 candle: {time_left:.2f} minutes. Running updateorders.")
-            run_updateorders()  # Run updateorders third
-
-            print("Both scripts completed successfully.")
-            return time_left, start_time, initial_time_left  # Return values for final print
-
-    try:
-        if mode == "loop":
+    
+    def execute_orderfree_markets():
+        def run_sequential():
+            """Helper function to run analysechart_m and updateorders sequentially with candle time checks."""
+            default_market = MARKETS[0]  # Use first market from MARKETS list
+            timeframe = "M5"
+            
             while True:
+                # First candle check before updateorders
+                start_time = datetime.now(pytz.UTC)  # Capture system time at the start
+                time_left, next_close_time = candletimeleft(default_market, timeframe, None)
+                if time_left is None or next_close_time is None:
+                    print(f"[Process-{default_market}] Insufficient time left for {default_market} (M5). Restarting sequence.")
+                    time.sleep(5)  # Small delay before restarting
+                    continue
+                initial_time_left = time_left  # Store initial time left for operation time calculation
+                print(f"[Process-{default_market}] Time left for M5 candle: {time_left:.2f} minutes. Running updateorders.")
+                run_updateorders()  # Run updateorders first
+
+                # Second candle check before analysechart_m
+                time_left, next_close_time = candletimeleft(default_market, timeframe, None)
+                if time_left is None or next_close_time is None:
+                    print(f"[Process-{default_market}] Insufficient time left for {default_market} (M5). Restarting sequence.")
+                    time.sleep(5)  # Small delay before restarting
+                    continue
+                print(f"[Process-{default_market}] Time left for M5 candle: {time_left:.2f} minutes. Running analysechart_m.")
+                run_analysechart_m2()  # Run analysechart_m second
+
+                # Third candle check before updateorders
+                time_left, next_close_time = candletimeleft(default_market, timeframe, None)
+                if time_left is None or next_close_time is None:
+                    print(f"[Process-{default_market}] Insufficient time left for {default_market} (M5). Restarting sequence.")
+                    time.sleep(5)  # Small delay before restarting
+                    continue
+                print(f"[Process-{default_market}] Time left for M5 candle: {time_left:.2f} minutes. Running updateorders.")
+                run_updateorders()  # Run updateorders third
+
+                print("Both scripts completed successfully.")
+                return time_left, start_time, initial_time_left  # Return values for final print
+
+        try:
+            if mode == "loop":
+                while True:
+                    result = run_sequential()
+                    if result:
+                        time_left, start_time, initial_time_left = result
+                        operation_time = initial_time_left - time_left
+                        print(f"Started time of candle: {start_time}")
+                        print(f"Time remaining: {time_left:.2f} minutes")
+                        print(f"Operated within time: {operation_time:.2f} minutes")
+                    print("Restarting entire sequence...")
+                    time.sleep(5)  # Small delay before restarting the loop
+            else:  # mode == "once"
                 result = run_sequential()
+                print("Execution completed (once mode).")
                 if result:
                     time_left, start_time, initial_time_left = result
                     operation_time = initial_time_left - time_left
                     print(f"Started time of candle: {start_time}")
-                    print(f"Time remaining: {time_left:.2f} minutes")
+                    print(f"Candle time left: {time_left:.2f} minutes")
                     print(f"Operated within time: {operation_time:.2f} minutes")
-                print("Restarting entire sequence...")
-                time.sleep(5)  # Small delay before restarting the loop
-        else:  # mode == "once"
-            result = run_sequential()
-            print("Execution completed (once mode).")
-            if result:
-                time_left, start_time, initial_time_left = result
-                operation_time = initial_time_left - time_left
-                print(f"Started time of candle: {start_time}")
-                print(f"Candle time left: {time_left:.2f} minutes")
-                print(f"Operated within time: {operation_time:.2f} minutes")
 
-    except Exception as e:
-        print(f"Error in main loop: {e}")
+        except Exception as e:
+            print(f"Error in main loop: {e}")
+    execute_orderfree_markets()
+
+    def execute_charts_identified():
+        def run_sequential():
+            """Helper function to run analysechart_m and updateorders sequentially with candle time checks."""
+            default_market = MARKETS[0]  # Use first market from MARKETS list
+            timeframe = "M5"
+            
+            while True:
+                # First candle check before updateorders
+                start_time = datetime.now(pytz.UTC)  # Capture system time at the start
+                time_left, next_close_time = candletimeleft(default_market, timeframe, None)
+                if time_left is None or next_close_time is None:
+                    print(f"[Process-{default_market}] Insufficient time left for {default_market} (M5). Restarting sequence.")
+                    time.sleep(5)  # Small delay before restarting
+                    continue
+                initial_time_left = time_left  # Store initial time left for operation time calculation
+                print(f"[Process-{default_market}] Time left for M5 candle: {time_left:.2f} minutes. Running updateorders.")
+                run_updateorders()  # Run updateorders first
+
+                # Second candle check before analysechart_m
+                time_left, next_close_time = candletimeleft(default_market, timeframe, None)
+                if time_left is None or next_close_time is None:
+                    print(f"[Process-{default_market}] Insufficient time left for {default_market} (M5). Restarting sequence.")
+                    time.sleep(5)  # Small delay before restarting
+                    continue
+                print(f"[Process-{default_market}] Time left for M5 candle: {time_left:.2f} minutes. Running analysechart_m.")
+                run_analysechart_m1()  # Run analysechart_m second
+
+                # Third candle check before updateorders
+                time_left, next_close_time = candletimeleft(default_market, timeframe, None)
+                if time_left is None or next_close_time is None:
+                    print(f"[Process-{default_market}] Insufficient time left for {default_market} (M5). Restarting sequence.")
+                    time.sleep(5)  # Small delay before restarting
+                    continue
+                print(f"[Process-{default_market}] Time left for M5 candle: {time_left:.2f} minutes. Running updateorders.")
+                run_updateorders()  # Run updateorders third
+
+                print("Both scripts completed successfully.")
+                return time_left, start_time, initial_time_left  # Return values for final print
+
+        try:
+            if mode == "loop":
+                while True:
+                    result = run_sequential()
+                    if result:
+                        time_left, start_time, initial_time_left = result
+                        operation_time = initial_time_left - time_left
+                        print(f"Started time of candle: {start_time}")
+                        print(f"Time remaining: {time_left:.2f} minutes")
+                        print(f"Operated within time: {operation_time:.2f} minutes")
+                    print("Restarting entire sequence...")
+                    time.sleep(5)  # Small delay before restarting the loop
+            else:  # mode == "once"
+                result = run_sequential()
+                print("Execution completed (once mode).")
+                if result:
+                    time_left, start_time, initial_time_left = result
+                    operation_time = initial_time_left - time_left
+                    print(f"Started time of candle: {start_time}")
+                    print(f"Candle time left: {time_left:.2f} minutes")
+                    print(f"Operated within time: {operation_time:.2f} minutes")
+
+        except Exception as e:
+            print(f"Error in main loop: {e}")
+    execute_charts_identified()
 
 if __name__ == "__main__":
     # Example: Change to "once" or "loop" as needed

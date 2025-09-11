@@ -691,7 +691,16 @@ def verify_candlestick_contours(image_path, market, timeframe):
 def save_status(market, timeframe, destination_path, status):
     """Save the status of the process for a market and timeframe to a JSON file."""
     try:
-        market_folder = os.path.join(destination_path, market.replace(" ", "_"), timeframe.lower())
+        # Map timeframe to desired format (e.g., H1 -> 1h, H4 -> 4h)
+        timeframe_mapping = {
+            "H1": "1h",
+            "H4": "4h",
+            "M5": "5m",
+            "M15": "15m",
+            "M30": "30m"
+        }
+        mapped_timeframe = timeframe_mapping.get(timeframe.upper(), timeframe.lower())  # Default to lowercase if not mapped
+        market_folder = os.path.join(destination_path, market.replace(" ", "_"), mapped_timeframe)
         os.makedirs(market_folder, exist_ok=True)
         status_file = os.path.join(market_folder, "status.json")
         # Get current time in WAT (Africa/Lagos, UTC+1)
@@ -742,7 +751,7 @@ def save_status(market, timeframe, destination_path, status):
         logger.debug(f"[Process-{market}] Saved status '{status}' with elligible_status '{elligible_status}' to {status_file}")
     except Exception as e:
         logger.error(f"[Process-{market}] Error saving status for {market} ({timeframe}): {e}")
-        
+
 def create_verification_json(market, destination_path):
     """Create verification.json for a market by collecting statuses from each timeframe's status.json."""
     try:
@@ -1061,6 +1070,64 @@ def marketsstatus(destination_path, markets, timeframes):
         logger.error(f"Error generating market status report: {e}")
         return False
 
+def resetstatus(elligible_status="none", status="none"):
+    """Reset the status.json files for all market-timeframe pairs to specified elligible_status and status."""
+    logger.debug("Starting resetstatus to reset status.json files for all markets and timeframes")
+    try:
+        # Map timeframe to desired format (e.g., H1 -> 1h, H4 -> 4h)
+        timeframe_mapping = {
+            "H1": "1h",
+            "H4": "4h",
+            "M5": "5m",
+            "M15": "15m",
+            "M30": "30m"
+        }
+        
+        for market in MARKETS:
+            for tf in TIMEFRAMES:
+                try:
+                    # Use mapped timeframe for folder path
+                    mapped_timeframe = timeframe_mapping.get(tf.upper(), tf.lower())
+                    market_folder = os.path.join(DESTINATION_PATH, market.replace(" ", "_"), mapped_timeframe)
+                    status_file = os.path.join(market_folder, "status.json")
+                    os.makedirs(market_folder, exist_ok=True)
+                    
+                    # Get current time in WAT (Africa/Lagos, UTC+1)
+                    current_time = datetime.now(pytz.timezone('Africa/Lagos'))
+                    # Format timestamp as "YYYY-MM-DD T HH:MM:SS am/pm .microseconds+HH:MM"
+                    am_pm = "am" if current_time.hour < 12 else "pm"
+                    hour_12 = current_time.hour % 12
+                    if hour_12 == 0:
+                        hour_12 = 12  # Convert 0 to 12 for 12 AM/PM
+                    timestamp = (
+                        f"{current_time.strftime('%Y-%m-%d T %I:%M:%S')} {am_pm} "
+                        f".{current_time.microsecond:06d}+01:00"
+                    )
+                    
+                    # Prepare status data with provided values
+                    status_data = {
+                        "market": market,
+                        "timeframe": tf,
+                        "timestamp": timestamp,
+                        "elligible_status": elligible_status,
+                        "status": status
+                    }
+                    
+                    # Write or overwrite status.json
+                    with open(status_file, 'w') as f:
+                        json.dump(status_data, f, indent=4)
+                    logger.debug(f"[Process-{market}] Reset status.json for {market} ({tf}) to elligible_status: '{elligible_status}', status: '{status}' at {status_file}")
+                
+                except Exception as e:
+                    logger.error(f"[Process-{market}] Error resetting status.json for {market} ({tf}): {e}")
+        
+        logger.debug("Completed resetting status.json files for all markets and timeframes")
+        return True
+    
+    except Exception as e:
+        logger.error(f"Error in resetstatus: {e}")
+        return False
+
 def run_script_for_market(market, eligible_pairs, processed_pairs):
     """Process a single market for eligible timeframes with elligible_status 'order_free'."""
     driver = None
@@ -1143,6 +1210,7 @@ def run_script_for_market(market, eligible_pairs, processed_pairs):
 def main():
     """Main loop to process eligible markets (elligible_status: 'order_free') until all are verified."""
     logger.debug("Starting main loop")
+    #resetstatus(elligible_status="order_free", status="incomplete")
     
     # Check if required lists and credentials are loaded
     if not MARKETS or not TIMEFRAMES or not FOREX_MARKETS or not SYNTHETIC_INDICES or not INDEX_MARKETS or not all([LOGIN_ID, PASSWORD, SERVER, BASE_URL, TERMINAL_PATH]):

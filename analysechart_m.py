@@ -58,12 +58,11 @@ def load_markets_and_timeframes(json_path):
 # Load markets, timeframes, and credentials at startup
 MARKETS, TIMEFRAMES = load_markets_and_timeframes(MARKETS_JSON_PATH)
 
-
-def candletimeleft(market, timeframe, candle_time):
+def candletimeleft(market, timeframe, candle_time, min_time_left):
     # Initialize MT5
     print(f"[Process-{market}] Initializing MT5 for {market}")
     for attempt in range(3):
-        if mt5.initialize(path=r"C:\Program Files\MetaTrader 5\terminal64.exe", timeout=60000):
+        if mt5.initialize(path=TERMINAL_PATH, timeout=60000):
             break
         print(f"[Process-{market}] Attempt {attempt + 1}/3: Failed to initialize MT5 terminal. Error: {mt5.last_error()}")
         time.sleep(5)
@@ -80,7 +79,7 @@ def candletimeleft(market, timeframe, candle_time):
         mt5.shutdown()
         return None, None
     for attempt in range(3):
-        if mt5.login(login=101347351, password="@Techknowdge12#", server="DerivSVG-Server-02", timeout=60000):
+        if mt5.login(login=int(LOGIN_ID), password=PASSWORD, server=SERVER, timeout=60000):
             print(f"[Process-{market}] Successfully logged in to MT5")
             break
         error_code, error_message = mt5.last_error()
@@ -132,13 +131,14 @@ def candletimeleft(market, timeframe, candle_time):
                 time_left = (next_close_time - current_time).total_seconds() / 60.0
             print(f"[Process-{market}] Candle time: {candle_datetime}, Next close: {next_close_time}, Time left: {time_left:.2f} minutes")
             
-            if time_left > 3:
+            if time_left > min_time_left:
                 return time_left, next_close_time
             else:
-                print(f"[Process-{market}] Time left ({time_left:.2f} minutes) is <= 3 minutes, waiting for next candle")
+                print(f"[Process-{market}] Time left ({time_left:.2f} minutes) is <= {min_time_left} minutes, waiting for next candle")
                 time_to_wait = (next_close_time - current_time).total_seconds() + 5  # Wait until next candle starts
                 time.sleep(time_to_wait)
-                
+                continue
+            
     finally:
         mt5.shutdown()
 
@@ -2140,27 +2140,6 @@ def main_trendlinetocandleposition(position):
     
     return str(pos)
 
-def check_status_json(market, timeframe):
-    """Check if the status.json file for a market and timeframe has 'chart identified' or 'chart_identified' status."""
-    try:
-        market_folder_name = market.replace(" ", "_")
-        status_file = os.path.join(BASE_INPUT_FOLDER, market_folder_name, timeframe.lower(), "status.json")
-        if not os.path.exists(status_file):
-            print(f"Status file not found for {market} timeframe {timeframe}: {status_file}")
-            return False
-        with open(status_file, 'r') as f:
-            status_data = json.load(f)
-        status = status_data.get("status", "")
-        if status in ["chart identified", "chart_identified"]:
-            print(f"Status '{status}' found for {market} timeframe {timeframe}")
-            return True
-        else:
-            print(f"Status '{status}' for {market} timeframe {timeframe}, skipping processing")
-            return False
-    except Exception as e:
-        print(f"Error reading status file for {market} timeframe {timeframe}: {e}")
-        return False
-
 def process_market_timeframe(market, timeframe):
     """Process a single market and timeframe combination."""
     try:
@@ -2260,73 +2239,186 @@ def process_market_timeframe(market, timeframe):
         print(f"Error processing market {market} timeframe {timeframe}: {e}")
         return False
 
-def main():
-    """Main function to process markets and timeframes with 'chart identified' or 'chart_identified' status."""
-    try:
-        # Load markets, timeframes, and credentials
-        global MARKETS, TIMEFRAMES
-        MARKETS, TIMEFRAMES = load_markets_and_timeframes(MARKETS_JSON_PATH)
-        
-        # Check M5 candle time left globally (using a default market, e.g., first in MARKETS or a specific one)
-        if not MARKETS or not TIMEFRAMES:
-            print("No markets defined in MARKETS list. Exiting.")
-            return
-        default_market = MARKETS[0]  # Use the first market for candle time check
-        timeframe = "M5"  # Fixed to M5 as per candletimeleft logic
-        print(f"Checking M5 candle time left using market: {default_market}")
-        time_left, next_close_time = candletimeleft(default_market, timeframe, None)
-        
-        if time_left is None or next_close_time is None:
-            print(f"Failed to retrieve candle time for {default_market} (M5). Exiting.")
-            return
-        
-        if time_left <= 3:
-            print(f"Time left for M5 candle is {time_left:.2f} minutes, waiting for next candle")
-            # candletimeleft already waits for the next candle, but we confirm here
-            time_to_wait = (next_close_time - datetime.now(pytz.UTC)).total_seconds() + 5
-            if time_to_wait > 0:
-                print(f"Waiting {time_to_wait:.2f} seconds for the next M5 candle")
-                time.sleep(time_to_wait)
-            # Recheck time left after waiting to ensure it's > 4 minutes
-            time_left, next_close_time = candletimeleft(default_market, timeframe, None)
-            if time_left is None or next_close_time is None:
-                print(f"Failed to retrieve candle time for {default_market} (M5) after waiting. Exiting.")
-                return
-            if time_left <= 3:
-                print(f"Time left for M5 candle is still {time_left:.2f} minutes after waiting. Exiting.")
-                return
-        
-        print(f"M5 candle time left: {time_left:.2f} minutes. Proceeding with execution.")
+def main1():
+    def check_status_json(market, timeframe):
+        """Check if the status.json file for a market and timeframe has 'chart identified' or 'chart_identified' status.
+        Create a default status.json if it doesn't exist."""
+        try:
+            market_folder_name = market.replace(" ", "_")
+            status_file = os.path.join(BASE_INPUT_FOLDER, market_folder_name, timeframe.lower(), "status.json")
+            # Create the directory if it doesn't exist
+            os.makedirs(os.path.dirname(status_file), exist_ok=True)
+            
+            # Check if status file exists, if not create it with default values
+            if not os.path.exists(status_file):
+                print(f"Status file not found for {market} timeframe {timeframe}: {status_file}. Creating default status.json")
+                default_status = {
+                    "market": market,
+                    "timeframe": timeframe,
+                    "timestamp": "",
+                    "status": "order_free",
+                    "elligible_status": "order_free"
+                }
+                with open(status_file, 'w') as f:
+                    json.dump(default_status, f, indent=4)
+            
+            # Read the status file
+            with open(status_file, 'r') as f:
+                status_data = json.load(f)
+            status = status_data.get("status", "")
+            if status in ["chart identified", "chart_identified"]:
+                print(f"Status '{status}' found for {market} timeframe {timeframe}")
+                return True
+            else:
+                print(f"Status '{status}' for {market} timeframe {timeframe}, skipping processing")
+                return False
+        except Exception as e:
+            print(f"Error reading or creating status file for {market} timeframe {timeframe}: {e}")
+            return False
 
-        # Clear the base output folder before processing
-        clear_image_and_json_files()  # Uncomment if you want to clear the output folder
-        
-        # Process markets with 'chart identified' or 'chart_identified' status
-        print(f"Markets to check: {MARKETS}")
-        
-        # Create a list of market and timeframe combinations with valid status
-        tasks = []
-        for market in MARKETS:
-            for timeframe in TIMEFRAMES:
-                if check_status_json(market, timeframe):
-                    tasks.append((market, timeframe))
-        
-        if not tasks:
-            print("No market-timeframe combinations with 'chart identified' or 'chart_identified' status found. Exiting.")
-            return
-        
-        print(f"Processing {len(tasks)} market-timeframe combinations with 'chart identified' or 'chart_identified' status")
-        
-        # Use multiprocessing to process valid market-timeframe combinations in parallel
-        with multiprocessing.Pool(processes=multiprocessing.cpu_count()) as pool:
-            results = pool.starmap(process_market_timeframe, tasks)
-        
-        # Print summary of processing
-        success_count = sum(1 for result in results if result)
-        print(f"Processing completed: {success_count}/{len(tasks)} market-timeframe combinations processed successfully")
-        
-    except Exception as e:
-        print(f"Error in main processing: {e}")
+    def chart_identified_main():
+        """Main function to process markets and timeframes with 'chart identified' or 'chart_identified' status."""
+        try:
+            # Load markets, timeframes, and credentials
+            global MARKETS, TIMEFRAMES
+            MARKETS, TIMEFRAMES = load_markets_and_timeframes(MARKETS_JSON_PATH)
+            
+            # Check M5 candle time left globally (using a default market, e.g., first in MARKETS or a specific one)
+            if not MARKETS or not TIMEFRAMES:
+                print("No markets defined in MARKETS list. Exiting.")
+                return
+            default_market = MARKETS[0]  # Use the first market for candle time check
+            timeframe = "M5"  # Fixed to M5 as per candletimeleft logic
+            print(f"Checking M5 candle time left using market: {default_market}")
+            time_left, next_close_time = candletimeleft(default_market, timeframe, None, min_time_left=3)
+            
+            if time_left is None or next_close_time is None:
+                print(f"Failed to retrieve candle time for {default_market} (M5). Exiting.")
+                return
+            
+            print(f"M5 candle time left: {time_left:.2f} minutes. Proceeding with execution.")
+
+            # Clear the base output folder before processing
+            #clear_image_and_json_files() Unccoment if you want to clear the output folder
+            
+            # Process markets with 'chart identified' or 'chart_identified' status
+            print(f"Markets to check: {MARKETS}")
+            
+            # Create a list of market and timeframe combinations with valid status
+            tasks = []
+            for market in MARKETS:
+                for timeframe in TIMEFRAMES:
+                    if check_status_json(market, timeframe):
+                        tasks.append((market, timeframe))
+            
+            if not tasks:
+                print("No market-timeframe combinations with 'chart identified' or 'chart_identified' status found. Exiting.")
+                return
+            
+            print(f"Processing {len(tasks)} market-timeframe combinations with 'chart identified' or 'chart_identified' status")
+            
+            # Use multiprocessing to process valid market-timeframe combinations in parallel
+            with multiprocessing.Pool(processes=multiprocessing.cpu_count()) as pool:
+                results = pool.starmap(process_market_timeframe, tasks)
+            
+            # Print summary of processing
+            success_count = sum(1 for result in results if result)
+            print(f"Processing completed: {success_count}/{len(tasks)} market-timeframe combinations processed successfully")
+            
+        except Exception as e:
+            print(f"Error in main processing: {e}")
+    chart_identified_main()
+
+def main2():
+    def check_status_json(market, timeframe):
+        """Check if the status.json file for a market and timeframe has 'order_free' status.
+        Create a default status.json if it doesn't exist."""
+        try:
+            market_folder_name = market.replace(" ", "_")
+            status_file = os.path.join(BASE_INPUT_FOLDER, market_folder_name, timeframe.lower(), "status.json")
+            # Create the directory if it doesn't exist
+            os.makedirs(os.path.dirname(status_file), exist_ok=True)
+            
+            # Check if status file exists, if not create it with default values
+            if not os.path.exists(status_file):
+                print(f"Status file not found for {market} timeframe {timeframe}: {status_file}. Creating default status.json")
+                default_status = {
+                    "market": market,
+                    "timeframe": timeframe,
+                    "timestamp": "",
+                    "status": "order_free",
+                    "elligible_status": "order_free"
+                }
+                with open(status_file, 'w') as f:
+                    json.dump(default_status, f, indent=4)
+            
+            # Read the status file
+            with open(status_file, 'r') as f:
+                status_data = json.load(f)
+            status = status_data.get("status", "")
+            if status in ["order_free"]:
+                print(f"Status '{status}' found for {market} timeframe {timeframe}")
+                return True
+            else:
+                print(f"Status '{status}' for {market} timeframe {timeframe}, skipping processing")
+                return False
+        except Exception as e:
+            print(f"Error reading or creating status file for {market} timeframe {timeframe}: {e}")
+            return False
+
+    def chart_identified_main():
+        """Main function to process markets and timeframes with 'order_free' status."""
+        try:
+            # Load markets, timeframes, and credentials
+            global MARKETS, TIMEFRAMES
+            MARKETS, TIMEFRAMES = load_markets_and_timeframes(MARKETS_JSON_PATH)
+            
+            # Check M5 candle time left globally (using a default market, e.g., first in MARKETS or a specific one)
+            if not MARKETS or not TIMEFRAMES:
+                print("No markets defined in MARKETS list. Exiting.")
+                return
+            default_market = MARKETS[0]  # Use the first market for candle time check
+            timeframe = "M5"  # Fixed to M5 as per candletimeleft logic
+            print(f"Checking M5 candle time left using market: {default_market}")
+            time_left, next_close_time = candletimeleft(default_market, timeframe, None, min_time_left=3)
+            
+            if time_left is None or next_close_time is None:
+                print(f"Failed to retrieve candle time for {default_market} (M5). Exiting.")
+                return
+            
+            print(f"M5 candle time left: {time_left:.2f} minutes. Proceeding with execution.")
+
+            # Clear the base output folder before processing
+            #clear_image_and_json_files() Unccoment if you want to clear the output folder
+            
+            # Process markets with 'order_free' status
+            print(f"Markets to check: {MARKETS}")
+            
+            # Create a list of market and timeframe combinations with valid status
+            tasks = []
+            for market in MARKETS:
+                for timeframe in TIMEFRAMES:
+                    if check_status_json(market, timeframe):
+                        tasks.append((market, timeframe))
+            
+            if not tasks:
+                print("No market-timeframe combinations with 'order_free' status found. Exiting.")
+                return
+            
+            print(f"Processing {len(tasks)} market-timeframe combinations with 'order_free' status")
+            
+            # Use multiprocessing to process valid market-timeframe combinations in parallel
+            with multiprocessing.Pool(processes=multiprocessing.cpu_count()) as pool:
+                results = pool.starmap(process_market_timeframe, tasks)
+            
+            # Print summary of processing
+            success_count = sum(1 for result in results if result)
+            print(f"Processing completed: {success_count}/{len(tasks)} market-timeframe combinations processed successfully")
+            
+        except Exception as e:
+            print(f"Error in main processing: {e}")
+    chart_identified_main()
 
 if __name__ == "__main__":
-    main()
+    main2()
+    main1()
