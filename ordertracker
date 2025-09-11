@@ -1,0 +1,763 @@
+def BreakevenStopandProfitTracker(market: str, timeframe: str, json_dir: str) -> bool:
+    log_and_print(f"Tracking breakeven, stoploss, profit, and stoploss_threat for market={market}, timeframe={timeframe}", "INFO")
+    
+    # Define file paths
+    pricecandle_json_path = os.path.join(json_dir, "pricecandle.json")
+    calculatedprices_json_path = os.path.join(json_dir, "calculatedprices.json")
+    candle_data_json_path = os.path.join(json_dir, "candle_data.json")
+    
+    # Check if required JSON files exist
+    if not os.path.exists(pricecandle_json_path):
+        log_and_print(f"pricecandle.json not found at {pricecandle_json_path} for {market} {timeframe}", "ERROR")
+        return False
+    if not os.path.exists(calculatedprices_json_path):
+        log_and_print(f"calculatedprices.json not found at {calculatedprices_json_path} for {market} {timeframe}", "ERROR")
+        return False
+    if not os.path.exists(candle_data_json_path):
+        log_and_print(f"candle_data.json not found at {candle_data_json_path} for {market} {timeframe}", "ERROR")
+        return False
+    
+    try:
+        # Load pricecandle.json
+        with open(pricecandle_json_path, 'r') as f:
+            pricecandle_data = json.load(f)
+        
+        # First deduplication: Remove duplicates based on position numbers
+        seen_positions = {}
+        deduplicated_pricecandle = []
+        
+        for entry in pricecandle_data:
+            # Collect position numbers from sender, receiver, order_holder, and Breakout_parent
+            position_numbers = set()
+            for key in ['sender', 'receiver', 'order_holder', 'Breakout_parent']:
+                if key in entry and isinstance(entry[key], dict) and 'position_number' in entry[key]:
+                    pos = entry[key]['position_number']
+                    if pos is not None:
+                        position_numbers.add(pos)
+            
+            # Skip entries with no position numbers
+            if not position_numbers:
+                deduplicated_pricecandle.append(entry)
+                continue
+            
+            # Create a unique key based on position numbers
+            position_key = tuple(sorted(position_numbers))
+            earliest_position = min(position_numbers)  # Use smallest position number to determine "older"
+            
+            if position_key in seen_positions:
+                # Compare with existing entry
+                existing_earliest = seen_positions[position_key]['earliest_position']
+                if earliest_position < existing_earliest:
+                    # Replace with older entry
+                    seen_positions[position_key] = {
+                        'entry': entry,
+                        'earliest_position': earliest_position
+                    }
+                    log_and_print(f"Duplicate found for positions {position_key} in {market} {timeframe}, keeping older entry with earliest position {earliest_position}", "INFO")
+                else:
+                    log_and_print(f"Duplicate found for positions {position_key} in {market} {timeframe}, skipping newer entry with earliest position {earliest_position}", "INFO")
+            else:
+                seen_positions[position_key] = {
+                    'entry': entry,
+                    'earliest_position': earliest_position
+                }
+        
+        # Collect deduplicated entries
+        deduplicated_pricecandle = [data['entry'] for data in seen_positions.values()]
+        log_and_print(f"Removed duplicates by position numbers, {len(deduplicated_pricecandle)} unique entries remain for {market} {timeframe}", "INFO")
+        
+        # Save deduplicated pricecandle.json
+        try:
+            with open(pricecandle_json_path, 'w') as f:
+                json.dump(deduplicated_pricecandle, f, indent=4)
+            log_and_print(f"Saved deduplicated pricecandle.json (by position numbers) for {market} {timeframe}", "INFO")
+        except Exception as e:
+            log_and_print(f"Error saving deduplicated pricecandle.json (by position numbers) for {market} {timeframe}: {e}", "ERROR")
+            return False
+        
+        # Load calculatedprices.json
+        with open(calculatedprices_json_path, 'r') as f:
+            calculatedprices_data = json.load(f)
+        
+        # Load candle_data.json
+        with open(candle_data_json_path, 'r') as f:
+            candle_data = json.load(f)
+        
+        # Prepare updated pricecandle data
+        updated_pricecandle_data = []
+        
+        # Process each trendline in deduplicated pricecandle
+        for pricecandle_trendline in deduplicated_pricecandle:
+            trendline_type = pricecandle_trendline.get("type")
+            executioner_candle = pricecandle_trendline.get("executioner candle", {})
+            order_holder_position = pricecandle_trendline.get("order_holder", {}).get("position_number")
+            order_type = pricecandle_trendline.get("receiver", {}).get("order_type", "").lower()
+            
+            # Find matching calculatedprices entry
+            matching_calculated = None
+            for calc_entry in calculatedprices_data:
+                if calc_entry.get("trendline_type") == trendline_type and calc_entry.get("order_holder_position") == order_holder_position:
+                    matching_calculated = calc_entry
+                    break
+            
+            # Handle case with no valid executioner candle
+            if executioner_candle.get("status") != "Candle found at order holder entry level":
+                log_and_print(f"No valid executioner candle for trendline {trendline_type} in {market} {timeframe}", "INFO")
+                # Update pending order with order_type and entry_price from calculatedprices.json
+                if matching_calculated:
+                    pricecandle_trendline["pending order"] = {
+                        "status": f"{matching_calculated.get('order_type', 'unknown')} {matching_calculated.get('entry_price', 'N/A')}"
+                    }
+                else:
+                    pricecandle_trendline["pending order"] = {
+                        "status": order_type if order_type in ["long", "short"] else "unknown"
+                    }
+                # Remove other fields if they exist
+                for key in ["executioner candle", "stoploss", "1:0.5 candle", "1:1 candle", "1:2 candle", "profit candle", "contract status summary"]:
+                    pricecandle_trendline.pop(key, None)
+                updated_pricecandle_data.append(pricecandle_trendline)
+                continue
+            
+            if not matching_calculated:
+                log_and_print(f"No matching calculated prices found for trendline {trendline_type} in {market} {timeframe}", "WARNING")
+                pricecandle_trendline["stoploss"] = {
+                    "exit_price": None,
+                    "status": "No calculated prices",
+                    "stoploss_threat": {"status": "No calculated prices"},
+                    "stoploss candle": {"status": "No calculated prices"}
+                }
+                pricecandle_trendline["1:0.5 candle"] = {"status": "No calculated prices"}
+                pricecandle_trendline["1:1 candle"] = {"status": "No calculated prices"}
+                pricecandle_trendline["1:2 candle"] = {"status": "No calculated prices"}
+                pricecandle_trendline["profit candle"] = {"status": "No calculated prices"}
+                pricecandle_trendline["contract status summary"] = {"contract status": "No calculated prices"}
+                updated_pricecandle_data.append(pricecandle_trendline)
+                continue
+            
+            # Get price levels
+            entry_price = matching_calculated.get("entry_price")
+            exit_price = matching_calculated.get("exit_price")
+            price_1_0_5 = matching_calculated.get("1:0.5_price")
+            price_1_1 = matching_calculated.get("1:1_price")
+            price_1_2 = matching_calculated.get("1:2_price")
+            profit_price = matching_calculated.get("profit_price")
+            
+            # Validate price levels
+            if any(price <= 0 for price in [entry_price, exit_price, price_1_0_5, price_1_1, price_1_2, profit_price]):
+                log_and_print(f"Invalid price levels for trendline {trendline_type} in {market} {timeframe}", "ERROR")
+                pricecandle_trendline["stoploss"] = {
+                    "exit_price": exit_price,
+                    "status": "Invalid price levels",
+                    "stoploss_threat": {"status": "Invalid price levels"},
+                    "stoploss candle": {"status": "Invalid price levels"}
+                }
+                pricecandle_trendline["1:0.5 candle"] = {"status": "Invalid price levels"}
+                pricecandle_trendline["1:1 candle"] = {"status": "Invalid price levels"}
+                pricecandle_trendline["1:2 candle"] = {"status": "Invalid price levels"}
+                pricecandle_trendline["profit candle"] = {"status": "Invalid price levels"}
+                pricecandle_trendline["contract status summary"] = {"contract status": "Invalid price levels"}
+                updated_pricecandle_data.append(pricecandle_trendline)
+                continue
+            
+            # Get executioner candle position
+            executioner_pos = executioner_candle.get("position_number")
+            if executioner_pos is None:
+                log_and_print(f"No valid executioner candle position for trendline {trendline_type} in {market} {timeframe}", "WARNING")
+                pricecandle_trendline["stoploss"] = {
+                    "exit_price": exit_price,
+                    "status": "No executioner candle position",
+                    "stoploss_threat": {"status": "No executioner candle position"},
+                    "stoploss candle": {"status": "No executioner candle position"}
+                }
+                pricecandle_trendline["1:0.5 candle"] = {"status": "No executioner candle position"}
+                pricecandle_trendline["1:1 candle"] = {"status": "No executioner candle position"}
+                pricecandle_trendline["1:2 candle"] = {"status": "No executioner candle position"}
+                pricecandle_trendline["profit candle"] = {"status": "No executioner candle position"}
+                pricecandle_trendline["contract status summary"] = {"contract status": "No executioner candle position"}
+                updated_pricecandle_data.append(pricecandle_trendline)
+                continue
+            
+            # Initialize tracking variables
+            stoploss_hit = False
+            price_1_0_5_hit = False
+            price_1_1_hit = False
+            price_1_2_hit = False
+            profit_hit = False
+            contract_status = "running"
+            
+            # Initialize candle data
+            stoploss = {
+                "exit_price": exit_price,
+                "status": "safe",
+                "stoploss candle": {"status": "secured"},
+                "stoploss_threat": {"status": "No threat detected"}
+            }
+            candle_1_0_5 = {"status": "waiting"}
+            candle_1_1 = {"status": "waiting"}
+            candle_1_2 = {"status": "waiting"}
+            profit_candle = {"status": "waiting"}
+            
+            # Initialize independent check data
+            independent_check_1_0_5 = {"status": "waiting"}
+            independent_check_1_1 = {"status": "waiting"}
+            independent_check_1_2 = {"status": "waiting"}
+            
+            # Initialize stoploss_threat data
+            closest_distance_to_stoploss = float('inf')
+            closest_candle_data = None
+            
+            # Track first hit positions for independent checks
+            first_hit_pos_1_0_5 = None
+            first_hit_pos_1_1 = None
+            first_hit_pos_1_2 = None
+            
+            # Check executioner candle for stoploss_threat
+            executioner_high = executioner_candle.get("High")
+            executioner_low = executioner_candle.get("Low")
+            if order_type == "short" and executioner_high is not None:
+                # Check if executioner candle's High is at least 0.01% below entry_price
+                if executioner_high <= entry_price * (1 - 0.0001):  # 0.01% below entry_price
+                    distance = abs(executioner_high - exit_price)
+                    closest_distance_to_stoploss = distance
+                    closest_candle_data = {
+                        "status": "Closest to stoploss",
+                        "position_number": executioner_pos,
+                        "Time": executioner_candle.get("Time"),
+                        "Open": executioner_candle.get("Open"),
+                        "High": executioner_high,
+                        "Low": executioner_low,
+                        "Close": executioner_candle.get("Close")
+                    }
+            elif order_type == "long" and executioner_low is not None:
+                # Check if executioner candle's Low is at least 0.01% above entry_price
+                if executioner_low >= entry_price * (1 + 0.0001):  # 0.01% above entry_price
+                    distance = abs(executioner_low - exit_price)
+                    closest_distance_to_stoploss = distance
+                    closest_candle_data = {
+                        "status": "Closest to stoploss",
+                        "position_number": executioner_pos,
+                        "Time": executioner_candle.get("Time"),
+                        "Open": executioner_candle.get("Open"),
+                        "High": executioner_high,
+                        "Low": executioner_low,
+                        "Close": executioner_candle.get("Close")
+                    }
+            
+            # Search candles after executioner candle in candle_data.json
+            for pos in range(executioner_pos - 1, 0, -1):  # Iterate from executioner_pos - 1 to 1
+                candle_key = f"Candle_{pos}"
+                if candle_key not in candle_data:
+                    log_and_print(f"No candle data for position {pos} in {market} {timeframe}", "WARNING")
+                    continue
+                
+                candle = candle_data[candle_key]
+                high_price = candle.get("High")
+                low_price = candle.get("Low")
+                close_price = candle.get("Close")
+                
+                # Define candle data template
+                candle_data_entry = {
+                    "status": "",
+                    "position_number": pos,
+                    "Time": candle.get("Time"),
+                    "Open": candle.get("Open"),
+                    "High": high_price,
+                    "Low": low_price,
+                    "Close": close_price
+                }
+                
+                # Check stoploss_threat for this candle
+                if order_type == "short" and high_price is not None:
+                    distance = abs(high_price - exit_price)
+                    if distance < closest_distance_to_stoploss and high_price < exit_price - 0.0001:
+                        closest_distance_to_stoploss = distance
+                        closest_candle_data = {
+                            "status": "Closest to stoploss",
+                            "position_number": pos,
+                            "Time": candle.get("Time"),
+                            "Open": candle.get("Open"),
+                            "High": high_price,
+                            "Low": low_price,
+                            "Close": close_price
+                        }
+                elif order_type == "long" and low_price is not None:
+                    distance = abs(low_price - exit_price)
+                    if distance < closest_distance_to_stoploss and low_price > exit_price + 0.0001:
+                        closest_distance_to_stoploss = distance
+                        closest_candle_data = {
+                            "status": "Closest to stoploss",
+                            "position_number": pos,
+                            "Time": candle.get("Time"),
+                            "Open": candle.get("Open"),
+                            "High": high_price,
+                            "Low": low_price,
+                            "Close": close_price
+                        }
+                
+                if order_type == "short":
+                    # Check stoploss (price reaches or exceeds exit_price)
+                    if high_price is not None and high_price >= exit_price - 0.0001 and not (price_1_0_5_hit or price_1_1_hit or price_1_2_hit or profit_hit):
+                        stoploss = {
+                            "exit_price": exit_price,
+                            "status": "hit",
+                            "stoploss candle": {
+                                "status": "Candle hits stoploss first",
+                                "position_number": pos,
+                                "Time": candle.get("Time"),
+                                "Open": candle.get("Open"),
+                                "High": high_price,
+                                "Low": low_price,
+                                "Close": close_price
+                            },
+                            "stoploss_threat": stoploss["stoploss_threat"]  # Preserve existing stoploss_threat
+                        }
+                        stoploss_hit = True
+                        contract_status = "Exit contract at stoploss"
+                        candle_1_0_5 = {"status": "couldn't make it (candle reached stoploss first so ignore its record)"}
+                        candle_1_1 = {"status": "couldn't make it (candle reached stoploss first so ignore its record)"}
+                        candle_1_2 = {"status": "couldn't make it (candle reached stoploss first so ignore its record)"}
+                        profit_candle = {"status": "couldn't make it (candle reached stoploss first so ignore its record)"}
+                        independent_check_1_0_5 = {"status": "couldn't make it (candle reached stoploss first)"}
+                        independent_check_1_1 = {"status": "couldn't make it (candle reached stoploss first)"}
+                        independent_check_1_2 = {"status": "couldn't make it (candle reached stoploss first)"}
+                        break
+                    
+                    # Check breakeven and profit levels (candle must close below the price level)
+                    if close_price is not None:
+                        # 1:0.5
+                        if not stoploss_hit and not price_1_0_5_hit and close_price <= price_1_0_5 + 0.0001:
+                            candle_1_0_5 = {
+                                "status": "candle found at 1:0.5",
+                                "position_number": pos,
+                                "Time": candle.get("Time"),
+                                "Open": candle.get("Open"),
+                                "High": high_price,
+                                "Low": low_price,
+                                "Close": close_price
+                            }
+                            price_1_0_5_hit = True
+                            first_hit_pos_1_0_5 = pos
+                        
+                        # 1:1
+                        if not stoploss_hit and price_1_0_5_hit and not price_1_1_hit and close_price <= price_1_1 + 0.0001:
+                            candle_1_1 = {
+                                "status": "candle found at 1:1",
+                                "position_number": pos,
+                                "Time": candle.get("Time"),
+                                "Open": candle.get("Open"),
+                                "High": high_price,
+                                "Low": low_price,
+                                "Close": close_price
+                            }
+                            price_1_1_hit = True
+                            first_hit_pos_1_1 = pos
+                        
+                        # 1:2
+                        if not stoploss_hit and price_1_1_hit and not price_1_2_hit and close_price <= price_1_2 + 0.0001:
+                            candle_1_2 = {
+                                "status": "candle found at 1:2",
+                                "position_number": pos,
+                                "Time": candle.get("Time"),
+                                "Open": candle.get("Open"),
+                                "High": high_price,
+                                "Low": low_price,
+                                "Close": close_price
+                            }
+                            price_1_2_hit = True
+                            first_hit_pos_1_2 = pos
+                        
+                        # Profit (1:3)
+                        if not stoploss_hit and price_1_2_hit and not profit_hit and close_price <= profit_price + 0.0001:
+                            profit_candle = {
+                                "status": "candle found at 1:3",
+                                "position_number": pos,
+                                "Time": candle.get("Time"),
+                                "Open": candle.get("Open"),
+                                "High": high_price,
+                                "Low": low_price,
+                                "Close": close_price
+                            }
+                            profit_hit = True
+                            contract_status = "profit reached exit contract"
+                            # Set independent check status if not revisited
+                            if independent_check_1_0_5["status"] == "waiting":
+                                independent_check_1_0_5 = {"status": "no revisit before profit"}
+                            if independent_check_1_1["status"] == "waiting":
+                                independent_check_1_1 = {"status": "no revisit before profit"}
+                            if independent_check_1_2["status"] == "waiting":
+                                independent_check_1_2 = {"status": "no revisit before profit"}
+                            break
+                        
+                        # Independent checks for revisits (price moves back above the ratio level after hitting it)
+                        if price_1_0_5_hit and first_hit_pos_1_0_5 is not None and pos < first_hit_pos_1_0_5 and not profit_hit and not stoploss_hit:
+                            if low_price is not None and low_price > price_1_0_5 + 0.0001:
+                                independent_check_1_0_5 = {
+                                    "status": "1:0.5 breakseven",
+                                    "position_number": pos,
+                                    "Time": candle.get("Time"),
+                                    "Open": candle.get("Open"),
+                                    "High": high_price,
+                                    "Low": low_price,
+                                    "Close": close_price
+                                }
+                        
+                        if price_1_1_hit and first_hit_pos_1_1 is not None and pos < first_hit_pos_1_1 and not profit_hit and not stoploss_hit:
+                            if low_price is not None and low_price > price_1_1 + 0.0001:
+                                independent_check_1_1 = {
+                                    "status": "1:1 breakseven",
+                                    "position_number": pos,
+                                    "Time": candle.get("Time"),
+                                    "Open": candle.get("Open"),
+                                    "High": high_price,
+                                    "Low": low_price,
+                                    "Close": close_price
+                                }
+                        
+                        if price_1_2_hit and first_hit_pos_1_2 is not None and pos < first_hit_pos_1_2 and not profit_hit and not stoploss_hit:
+                            if low_price is not None and low_price > price_1_2 + 0.0001:
+                                independent_check_1_2 = {
+                                    "status": "1:2 breakseven",
+                                    "position_number": pos,
+                                    "Time": candle.get("Time"),
+                                    "Open": candle.get("Open"),
+                                    "High": high_price,
+                                    "Low": low_price,
+                                    "Close": close_price
+                                }
+                
+                elif order_type == "long":
+                    # Check stoploss (price reaches or falls below exit_price)
+                    if low_price is not None and low_price <= exit_price + 0.0001 and not (price_1_0_5_hit or price_1_1_hit or price_1_2_hit or profit_hit):
+                        stoploss = {
+                            "exit_price": exit_price,
+                            "status": "hit",
+                            "stoploss candle": {
+                                "status": "Candle hits stoploss first",
+                                "position_number": pos,
+                                "Time": candle.get("Time"),
+                                "Open": candle.get("Open"),
+                                "High": high_price,
+                                "Low": low_price,
+                                "Close": close_price
+                            },
+                            "stoploss_threat": stoploss["stoploss_threat"]  # Preserve existing stoploss_threat
+                        }
+                        stoploss_hit = True
+                        contract_status = "Exit contract at stoploss"
+                        candle_1_0_5 = {"status": "couldn't make it (candle reached stoploss first so ignore its record)"}
+                        candle_1_1 = {"status": "couldn't make it (candle reached stoploss first so ignore its record)"}
+                        candle_1_2 = {"status": "couldn't make it (candle reached stoploss first so ignore its record)"}
+                        profit_candle = {"status": "couldn't make it (candle reached stoploss first so ignore its record)"}
+                        independent_check_1_0_5 = {"status": "couldn't make it (candle reached stoploss first)"}
+                        independent_check_1_1 = {"status": "couldn't make it (candle reached stoploss first)"}
+                        independent_check_1_2 = {"status": "couldn't make it (candle reached stoploss first)"}
+                        break
+                    
+                    # Check breakeven and profit levels (candle must close above the price level)
+                    if close_price is not None:
+                        # 1:0.5
+                        if not stoploss_hit and not price_1_0_5_hit and close_price >= price_1_0_5 - 0.0001:
+                            candle_1_0_5 = {
+                                "status": "candle found at 1:0.5",
+                                "position_number": pos,
+                                "Time": candle.get("Time"),
+                                "Open": candle.get("Open"),
+                                "High": high_price,
+                                "Low": low_price,
+                                "Close": close_price
+                            }
+                            price_1_0_5_hit = True
+                            first_hit_pos_1_0_5 = pos
+                        
+                        # 1:1
+                        if not stoploss_hit and price_1_0_5_hit and not price_1_1_hit and close_price >= price_1_1 - 0.0001:
+                            candle_1_1 = {
+                                "status": "candle found at 1:1",
+                                "position_number": pos,
+                                "Time": candle.get("Time"),
+                                "Open": candle.get("Open"),
+                                "High": high_price,
+                                "Low": low_price,
+                                "Close": close_price
+                            }
+                            price_1_1_hit = True
+                            first_hit_pos_1_1 = pos
+                        
+                        # 1:2
+                        if not stoploss_hit and price_1_1_hit and not price_1_2_hit and close_price >= price_1_2 - 0.0001:
+                            candle_1_2 = {
+                                "status": "candle found at 1:2",
+                                "position_number": pos,
+                                "Time": candle.get("Time"),
+                                "Open": candle.get("Open"),
+                                "High": high_price,
+                                "Low": low_price,
+                                "Close": close_price
+                            }
+                            price_1_2_hit = True
+                            first_hit_pos_1_2 = pos
+                        
+                        # Profit (1:3)
+                        if not stoploss_hit and price_1_2_hit and not profit_hit and close_price >= profit_price - 0.0001:
+                            profit_candle = {
+                                "status": "candle found at 1:3",
+                                "position_number": pos,
+                                "Time": candle.get("Time"),
+                                "Open": candle.get("Open"),
+                                "High": high_price,
+                                "Low": low_price,
+                                "Close": close_price
+                            }
+                            profit_hit = True
+                            contract_status = "profit reached exit contract"
+                            # Set independent check status if not revisited
+                            if independent_check_1_0_5["status"] == "waiting":
+                                independent_check_1_0_5 = {"status": "no revisit before profit"}
+                            if independent_check_1_1["status"] == "waiting":
+                                independent_check_1_1 = {"status": "no revisit before profit"}
+                            if independent_check_1_2["status"] == "waiting":
+                                independent_check_1_2 = {"status": "no revisit before profit"}
+                            break
+                        
+                        # Independent checks for revisits (price moves back below the ratio level after hitting it)
+                        if price_1_0_5_hit and first_hit_pos_1_0_5 is not None and pos < first_hit_pos_1_0_5 and not profit_hit and not stoploss_hit:
+                            if high_price is not None and high_price < price_1_0_5 - 0.0001:
+                                independent_check_1_0_5 = {
+                                    "status": "1:0.5 breakseven",
+                                    "position_number": pos,
+                                    "Time": candle.get("Time"),
+                                    "Open": candle.get("Open"),
+                                    "High": high_price,
+                                    "Low": low_price,
+                                    "Close": close_price
+                                }
+                        
+                        if price_1_1_hit and first_hit_pos_1_1 is not None and pos < first_hit_pos_1_1 and not profit_hit and not stoploss_hit:
+                            if high_price is not None and high_price < price_1_1 - 0.0001:
+                                independent_check_1_1 = {
+                                    "status": "1:1 breakseven",
+                                    "position_number": pos,
+                                    "Time": candle.get("Time"),
+                                    "Open": candle.get("Open"),
+                                    "High": high_price,
+                                    "Low": low_price,
+                                    "Close": close_price
+                                }
+                        
+                        if price_1_2_hit and first_hit_pos_1_2 is not None and pos < first_hit_pos_1_2 and not profit_hit and not stoploss_hit:
+                            if high_price is not None and high_price < price_1_2 - 0.0001:
+                                independent_check_1_2 = {
+                                    "status": "1:2 breakseven",
+                                    "position_number": pos,
+                                    "Time": candle.get("Time"),
+                                    "Open": candle.get("Open"),
+                                    "High": high_price,
+                                    "Low": low_price,
+                                    "Close": close_price
+                                }
+            
+            # Update stoploss_threat if a closest candle was found
+            if closest_candle_data:
+                stoploss["stoploss_threat"] = closest_candle_data
+            
+            # Optionally fetch current candle (position 0) if needed
+            current_candle_data = None
+            try:
+                mt5.shutdown()
+                if mt5.initialize(path=TERMINAL_PATH, timeout=60000):
+                    if mt5.login(login=int(LOGIN_ID), password=PASSWORD, server=SERVER, timeout=60000):
+                        if mt5.symbol_select(market, True):
+                            mt5_timeframe = TIMEFRAME_MAPPING.get(timeframe)
+                            if mt5_timeframe:
+                                current_candle = mt5.copy_rates_from_pos(market, mt5_timeframe, 0, 1)
+                                if current_candle is not None and len(current_candle) > 0:
+                                    candle = current_candle[0]
+                                    current_candle_data = {
+                                        "position_number": 0,
+                                        "Time": str(pd.to_datetime(candle['time'], unit='s')),
+                                        "Open": float(candle['open']),
+                                        "High": float(candle['high']),
+                                        "Low": float(candle['low']),
+                                        "Close": None  # Current candle is incomplete
+                                    }
+            except Exception as e:
+                log_and_print(f"Error fetching current candle for {market} {timeframe}: {e}", "WARNING")
+            finally:
+                mt5.shutdown()
+            
+            # Check current candle if available and no other levels hit
+            if current_candle_data and not (stoploss_hit or price_1_0_5_hit or price_1_1_hit or price_1_2_hit or profit_hit):
+                high_price = current_candle_data.get("High")
+                low_price = current_candle_data.get("Low")
+                
+                if order_type == "short":
+                    if high_price is not None and high_price >= exit_price - 0.0001:
+                        stoploss = {
+                            "exit_price": exit_price,
+                            "status": "hit",
+                            "stoploss candle": {
+                                "status": "Candle hits stoploss first",
+                                "position_number": 0,
+                                "Time": current_candle_data.get("Time"),
+                                "Open": current_candle_data.get("Open"),
+                                "High": high_price,
+                                "Low": low_price,
+                                "Close": None
+                            },
+                            "stoploss_threat": stoploss["stoploss_threat"]  # Preserve existing stoploss_threat
+                        }
+                        stoploss_hit = True
+                        contract_status = "Exit contract at stoploss"
+                        candle_1_0_5 = {"status": "couldn't make it (candle reached stoploss first so ignore its record)"}
+                        candle_1_1 = {"status": "couldn't make it (candle reached stoploss first so ignore its record)"}
+                        candle_1_2 = {"status": "couldn't make it (candle reached stoploss first so ignore its record)"}
+                        profit_candle = {"status": "couldn't make it (candle reached stoploss first so ignore its record)"}
+                        independent_check_1_0_5 = {"status": "couldn't make it (candle reached stoploss first)"}
+                        independent_check_1_1 = {"status": "couldn't make it (candle reached stoploss first)"}
+                        independent_check_1_2 = {"status": "couldn't make it (candle reached stoploss first)"}
+                    # Check stoploss_threat for current candle
+                    elif high_price is not None and not (stoploss_hit or profit_hit):
+                        distance = abs(high_price - exit_price)
+                        if distance < closest_distance_to_stoploss and high_price < exit_price - 0.0001:
+                            closest_distance_to_stoploss = distance
+                            stoploss["stoploss_threat"] = {
+                                "status": "Closest to stoploss",
+                                "position_number": 0,
+                                "Time": current_candle_data.get("Time"),
+                                "Open": current_candle_data.get("Open"),
+                                "High": high_price,
+                                "Low": low_price,
+                                "Close": None
+                            }
+                
+                elif order_type == "long":
+                    if low_price is not None and low_price <= exit_price + 0.0001:
+                        stoploss = {
+                            "exit_price": exit_price,
+                            "status": "hit",
+                            "stoploss candle": {
+                                "status": "Candle hits stoploss first",
+                                "position_number": 0,
+                                "Time": current_candle_data.get("Time"),
+                                "Open": current_candle_data.get("Open"),
+                                "High": high_price,
+                                "Low": low_price,
+                                "Close": None
+                            },
+                            "stoploss_threat": stoploss["stoploss_threat"]  # Preserve existing stoploss_threat
+                        }
+                        stoploss_hit = True
+                        contract_status = "Exit contract at stoploss"
+                        candle_1_0_5 = {"status": "couldn't make it (candle reached stoploss first so ignore its record)"}
+                        candle_1_1 = {"status": "couldn't make it (candle reached stoploss first so ignore its record)"}
+                        candle_1_2 = {"status": "couldn't make it (candle reached stoploss first so ignore its record)"}
+                        profit_candle = {"status": "couldn't make it (candle reached stoploss first so ignore its record)"}
+                        independent_check_1_0_5 = {"status": "couldn't make it (candle reached stoploss first)"}
+                        independent_check_1_1 = {"status": "couldn't make it (candle reached stoploss first)"}
+                        independent_check_1_2 = {"status": "couldn't make it (candle reached stoploss first)"}
+                    # Check stoploss_threat for current candle
+                    elif low_price is not None and not (stoploss_hit or profit_hit):
+                        distance = abs(low_price - exit_price)
+                        if distance < closest_distance_to_stoploss and low_price > exit_price + 0.0001:
+                            closest_distance_to_stoploss = distance
+                            stoploss["stoploss_threat"] = {
+                                "status": "Closest to stoploss",
+                                "position_number": 0,
+                                "Time": current_candle_data.get("Time"),
+                                "Open": current_candle_data.get("Open"),
+                                "High": high_price,
+                                "Low": low_price,
+                                "Close": None
+                            }
+            
+            # Add independent check to ratio candles
+            candle_1_0_5["independent_check"] = independent_check_1_0_5
+            candle_1_1["independent_check"] = independent_check_1_1
+            candle_1_2["independent_check"] = independent_check_1_2
+            
+            # Update pricecandle trendline
+            pricecandle_trendline["stoploss"] = stoploss
+            pricecandle_trendline["1:0.5 candle"] = candle_1_0_5
+            pricecandle_trendline["1:1 candle"] = candle_1_1
+            pricecandle_trendline["1:2 candle"] = candle_1_2
+            pricecandle_trendline["profit candle"] = profit_candle
+            pricecandle_trendline["contract status summary"] = {"contract status": contract_status}
+            
+            log_and_print(
+                f"Tracked for trendline {trendline_type}: contract_status={contract_status}, "
+                f"stoploss_hit={stoploss_hit}, 1:0.5_hit={price_1_0_5_hit}, "
+                f"1:1_hit={price_1_1_hit}, 1:2_hit={price_1_2_hit}, profit_hit={profit_hit}, "
+                f"1:0.5_revisit={independent_check_1_0_5['status']}, "
+                f"1:1_revisit={independent_check_1_1['status']}, "
+                f"1:2_revisit={independent_check_1_2['status']}, "
+                f"stoploss_threat_status={stoploss['stoploss_threat']['status']} in {market} {timeframe}",
+                "DEBUG"
+            )
+            
+            updated_pricecandle_data.append(pricecandle_trendline)
+        
+        # Second deduplication: Remove duplicates based on pending order status
+        seen_pending_orders = {}
+        final_pricecandle_data = []
+        
+        for entry in updated_pricecandle_data:
+            # Get pending order status
+            pending_order_status = None
+            if 'pending order' in entry and isinstance(entry['pending order'], dict):
+                pending_order_status = entry['pending order'].get('status')
+            
+            # Get position number for determining "older" entry (preferably from order_holder)
+            position_number = None
+            if 'order_holder' in entry and isinstance(entry['order_holder'], dict):
+                position_number = entry['order_holder'].get('position_number')
+            elif 'receiver' in entry and isinstance(entry['receiver'], dict):
+                position_number = entry['receiver'].get('position_number')
+            elif 'sender' in entry and isinstance(entry['sender'], dict):
+                position_number = entry['sender'].get('position_number')
+            elif 'Breakout_parent' in entry and isinstance(entry['Breakout_parent'], dict):
+                position_number = entry['Breakout_parent'].get('position_number')
+            
+            # Skip entries with no pending order status or position number
+            if not pending_order_status or position_number is None:
+                final_pricecandle_data.append(entry)
+                continue
+            
+            if pending_order_status in seen_pending_orders:
+                # Compare with existing entry
+                existing_position = seen_pending_orders[pending_order_status]['position_number']
+                if position_number < existing_position:
+                    # Replace with older entry
+                    seen_pending_orders[pending_order_status] = {
+                        'entry': entry,
+                        'position_number': position_number
+                    }
+                    log_and_print(f"Duplicate found for pending order status '{pending_order_status}' in {market} {timeframe}, keeping older entry with position {position_number}", "INFO")
+                else:
+                    log_and_print(f"Duplicate found for pending order status '{pending_order_status}' in {market} {timeframe}, skipping newer entry with position {position_number}", "INFO")
+            else:
+                seen_pending_orders[pending_order_status] = {
+                    'entry': entry,
+                    'position_number': position_number
+                }
+        
+        # Collect final deduplicated entries
+        final_pricecandle_data = [data['entry'] for data in seen_pending_orders.values()]
+        log_and_print(f"Removed duplicates by pending order status, {len(final_pricecandle_data)} unique entries remain for {market} {timeframe}", "INFO")
+        
+        # Save final pricecandle.json
+        if os.path.exists(pricecandle_json_path):
+            os.remove(pricecandle_json_path)
+            log_and_print(f"Existing {pricecandle_json_path} deleted", "INFO")
+        
+        try:
+            with open(pricecandle_json_path, 'w') as f:
+                json.dump(final_pricecandle_data, f, indent=4)
+            log_and_print(f"Updated pricecandle.json with breakeven, stoploss, profit tracking, independent checks, and stoploss_threat for {market} {timeframe}", "SUCCESS")
+            return True
+        except Exception as e:
+            log_and_print(f"Error saving final pricecandle.json for {market} {timeframe}: {e}", "ERROR")
+            return False
+    
+    except Exception as e:
+        log_and_print(f"Error processing breakeven, stoploss, profit tracking, and stoploss_threat for {market} {timeframe}: {e}", "ERROR")
+        return False

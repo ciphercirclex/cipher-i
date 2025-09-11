@@ -82,46 +82,83 @@ DESTINATION_PATH = r"C:\xampp\htdocs\CIPHER\cipher i\bouncestream\chart\fetched"
 network_issue_event = multiprocessing.Event()
 network_resolution_lock = multiprocessing.Lock()
 
-def clear_all_market_files():
-    """Clear all market-related PNG files in Downloads and destination folders once at script start."""
-    logger.debug("Clearing all market-related files in Downloads and destination folders")
-    downloads_path = os.path.join(os.path.expanduser("~"), "Downloads")
-    
-    # Clear market-related files from Downloads folder
-    try:
-        for market in MARKETS:
-            market_files = [f for f in os.listdir(downloads_path) 
-                           if os.path.isfile(os.path.join(downloads_path, f)) and market in f]
-            for file in market_files:
-                file_path = os.path.join(downloads_path, file)
-                try:
-                    os.remove(file_path)
-                    logger.debug(f"Deleted file in Downloads: {file_path}")
-                except Exception as e:
-                    logger.error(f"Error deleting file {file_path}: {e}")
-        logger.debug(f"Cleared {len(market_files)} files from Downloads folder")
-    except Exception as e:
-        logger.error(f"Error clearing Downloads folder: {e}")
 
-    # Clear market-related files from destination folders
+def get_eligible_market_timeframes():
+    """Retrieve market-timeframe pairs with elligible_status 'order_free'."""
+    eligible_pairs = []
     for market in MARKETS:
         market_folder = os.path.join(DESTINATION_PATH, market.replace(" ", "_"))
         for tf in TIMEFRAMES:
-            timeframe_folder = os.path.join(market_folder, tf.lower())
+            status_file = os.path.join(market_folder, tf.lower(), "status.json")
             try:
-                if os.path.exists(timeframe_folder):
-                    files = [f for f in os.listdir(timeframe_folder) 
-                             if os.path.isfile(os.path.join(timeframe_folder, f))]
-                    for file in files:
-                        file_path = os.path.join(timeframe_folder, file)
+                if os.path.exists(status_file):
+                    with open(status_file, 'r') as f:
+                        status_data = json.load(f)
+                        elligible_status = status_data.get("elligible_status", "")
+                        if elligible_status == "order_free":
+                            eligible_pairs.append((market, tf))
+                else:
+                    # If status.json doesn't exist, assume eligible to allow processing
+                    eligible_pairs.append((market, tf))
+            except Exception as e:
+                logger.warning(f"Error reading status.json for {market} ({tf}): {e}")
+                # If status.json is unreadable, assume eligible to allow processing
+                eligible_pairs.append((market, tf))
+    logger.debug(f"Eligible market-timeframe pairs: {eligible_pairs}")
+    return eligible_pairs
+
+def clear_all_market_files():
+    """Clear market-related PNG files in Downloads and destination folders for markets with elligible_status 'order_free'."""
+    logger.debug("Clearing market-related files for eligible markets in Downloads and destination folders")
+    downloads_path = os.path.join(os.path.expanduser("~"), "Downloads")
+
+    # Clear market-related files from Downloads folder for eligible markets
+    try:
+        for market in MARKETS:
+            market_folder = os.path.join(DESTINATION_PATH, market.replace(" ", "_"))
+            for tf in TIMEFRAMES:
+                status_file = os.path.join(market_folder, tf.lower(), "status.json")
+                should_clear = False
+                if os.path.exists(status_file):
+                    try:
+                        with open(status_file, 'r') as f:
+                            status_data = json.load(f)
+                            elligible_status = status_data.get("elligible_status", "")
+                            if elligible_status == "order_free":
+                                should_clear = True
+                    except Exception as e:
+                        logger.warning(f"Error reading status.json for {market} ({tf}): {e}")
+                        should_clear = True  # Clear if status.json is unreadable to ensure processing
+                else:
+                    should_clear = True  # Clear if no status.json exists to allow processing
+
+                if should_clear:
+                    market_files = [f for f in os.listdir(downloads_path)
+                                    if os.path.isfile(os.path.join(downloads_path, f)) and market in f and tf.lower() in f.lower()]
+                    for file in market_files:
+                        file_path = os.path.join(downloads_path, file)
                         try:
                             os.remove(file_path)
-                            logger.debug(f"Deleted file in {timeframe_folder}: {file_path}")
+                            logger.debug(f"Deleted file in Downloads: {file_path}")
                         except Exception as e:
                             logger.error(f"Error deleting file {file_path}: {e}")
-            except Exception as e:
-                logger.error(f"Error clearing timeframe folder {timeframe_folder}: {e}")
-    logger.debug("Completed clearing all market-related files")
+                    timeframe_folder = os.path.join(market_folder, tf.lower())
+                    try:
+                        if os.path.exists(timeframe_folder):
+                            files = [f for f in os.listdir(timeframe_folder)
+                                     if os.path.isfile(os.path.join(timeframe_folder, f)) and f.endswith('.png')]
+                            for file in files:
+                                file_path = os.path.join(timeframe_folder, file)
+                                try:
+                                    os.remove(file_path)
+                                    logger.debug(f"Deleted file in {timeframe_folder}: {file_path}")
+                                except Exception as e:
+                                    logger.error(f"Error deleting file {file_path}: {e}")
+                    except Exception as e:
+                        logger.error(f"Error clearing timeframe folder {timeframe_folder}: {e}")
+        logger.debug("Completed clearing eligible market-related files")
+    except Exception as e:
+        logger.error(f"Error clearing Downloads folder: {e}")
 
 def tradinghoursordays(market):
     """Check if the market is within its trading hours or days."""
@@ -668,18 +705,44 @@ def save_status(market, timeframe, destination_path, status):
             f"{current_time.strftime('%Y-%m-%d T %I:%M:%S')} {am_pm} "
             f".{current_time.microsecond:06d}+01:00"
         )
+        # Prepare status data
         status_data = {
             "market": market,
             "timeframe": timeframe,
-            "status": status,
             "timestamp": timestamp
         }
+        # Set elligible_status to match the logic in marketsliststatus
+        elligible_status = "order_free" if status == "order_free" else "chart_identified" if status == "chart_identified" else ""
+        # Load existing status.json if it exists to preserve other fields
+        existing_status_data = None
+        if os.path.exists(status_file):
+            try:
+                with open(status_file, 'r') as f:
+                    existing_status_data = json.load(f)
+                if "elligible_status" not in existing_status_data:
+                    existing_status_data["elligible_status"] = elligible_status
+                    existing_status_data["timestamp"] = timestamp
+                    existing_status_data["status"] = status
+                    status_data = existing_status_data
+                else:
+                    existing_status_data["elligible_status"] = elligible_status
+                    existing_status_data["timestamp"] = timestamp
+                    existing_status_data["status"] = status
+                    status_data = existing_status_data
+            except Exception as e:
+                logger.warning(f"[Process-{market}] Error reading existing status.json for {market} ({timeframe}): {e}")
+                status_data["status"] = status
+                status_data["elligible_status"] = elligible_status
+        else:
+            status_data["status"] = status
+            status_data["elligible_status"] = elligible_status
+        
         with open(status_file, 'w') as f:
             json.dump(status_data, f, indent=4)
-        logger.debug(f"[Process-{market}] Saved status '{status}' to {status_file}")
+        logger.debug(f"[Process-{market}] Saved status '{status}' with elligible_status '{elligible_status}' to {status_file}")
     except Exception as e:
         logger.error(f"[Process-{market}] Error saving status for {market} ({timeframe}): {e}")
-
+        
 def create_verification_json(market, destination_path):
     """Create verification.json for a market by collecting statuses from each timeframe's status.json."""
     try:
@@ -998,39 +1061,46 @@ def marketsstatus(destination_path, markets, timeframes):
         logger.error(f"Error generating market status report: {e}")
         return False
 
-def run_script_for_market(market):
-    """Process a single market for all timeframes."""
+def run_script_for_market(market, eligible_pairs, processed_pairs):
+    """Process a single market for eligible timeframes with elligible_status 'order_free'."""
     driver = None
     try:
+        # Get eligible timeframes for this market
+        eligible_timeframes = [tf for m, tf in eligible_pairs if m == market]
+        if not eligible_timeframes:
+            logger.debug(f"[Process-{market}] No eligible timeframes for {market}, skipping")
+            create_verification_json(market, DESTINATION_PATH)
+            return True
+
         while True:
-            logger.debug(f"[Process-{market}] Processing market: {market}")
+            logger.debug(f"[Process-{market}] Processing market: {market} with timeframes: {eligible_timeframes}")
             driver = operate("headless")
-            # Save initial status for all timeframes
-            for tf in TIMEFRAMES:
+            # Save initial status for eligible timeframes
+            for tf in eligible_timeframes:
                 save_status(market, tf, DESTINATION_PATH, "starting")
             if not login(driver, LOGIN_ID, PASSWORD, SERVER, market):
                 logger.error(f"[Process-{market}] Login failed for {market}, restarting")
-                for tf in TIMEFRAMES:
+                for tf in eligible_timeframes:
                     save_status(market, tf, DESTINATION_PATH, "login_failed")
                 driver.quit()
-                create_verification_json(market, DESTINATION_PATH)  # Create verification.json on failure
+                create_verification_json(market, DESTINATION_PATH)
                 time.sleep(10)
                 continue
             if not tradewindow(driver, 'close', market):
                 logger.warning(f"[Process-{market}] Failed to close trade window for {market}, proceeding")
             if not search(driver, market):
                 logger.error(f"[Process-{market}] Failed to select market '{market}', restarting")
-                for tf in TIMEFRAMES:
+                for tf in eligible_timeframes:
                     save_status(market, tf, DESTINATION_PATH, "market_selection_failed")
                 driver.quit()
-                create_verification_json(market, DESTINATION_PATH)  # Create verification.json on failure
+                create_verification_json(market, DESTINATION_PATH)
                 time.sleep(10)
                 continue
             if not watchlist(driver, 'close', market):
                 logger.warning(f"[Process-{market}] Failed to close watchlist for {market}, proceeding")
 
             success = True
-            for tf in TIMEFRAMES:
+            for tf in eligible_timeframes:
                 logger.debug(f"[Process-{market}] Processing timeframe {tf} for {market}")
                 if not timeframe(driver, tf, market):
                     logger.error(f"[Process-{market}] Failed to select timeframe {tf} for {market}")
@@ -1040,37 +1110,38 @@ def run_script_for_market(market):
                 result = download_and_verify_chart(driver, market, tf, DESTINATION_PATH)
                 if not result:
                     logger.error(f"[Process-{market}] Failed to process chart for {market} ({tf})")
-                    # Status is already set in download_and_verify_chart
                     success = False
                     break
+                else:
+                    processed_pairs.append((market, tf))  # Track successful market-timeframe pair
             driver.quit()
             driver = None
-            create_verification_json(market, DESTINATION_PATH)  # Create verification.json after processing
+            create_verification_json(market, DESTINATION_PATH)
             if success:
-                logger.debug(f"[Process-{market}] All timeframes processed successfully for {market}")
+                logger.debug(f"[Process-{market}] All eligible timeframes processed successfully for {market}")
                 return True
             logger.error(f"[Process-{market}] Failed to process some timeframes for {market}, restarting")
             time.sleep(10)
     except KeyboardInterrupt:
         logger.error(f"[Process-{market}] Interrupted by user for {market}")
-        for tf in TIMEFRAMES:
+        for tf in eligible_timeframes:
             save_status(market, tf, DESTINATION_PATH, "interrupted")
         if driver:
             driver.quit()
-        create_verification_json(market, DESTINATION_PATH)  # Create verification.json on interruption
+        create_verification_json(market, DESTINATION_PATH)
         return False
     except Exception as e:
         logger.error(f"[Process-{market}] Unexpected error for {market}: {e}")
-        for tf in TIMEFRAMES:
+        for tf in eligible_timeframes:
             save_status(market, tf, DESTINATION_PATH, "unexpected_error")
         if driver:
             driver.quit()
-        create_verification_json(market, DESTINATION_PATH)  # Create verification.json on error
+        create_verification_json(market, DESTINATION_PATH)
         time.sleep(10)
         return False
 
 def main():
-    """Main loop to process all markets until all are verified."""
+    """Main loop to process eligible markets (elligible_status: 'order_free') until all are verified."""
     logger.debug("Starting main loop")
     
     # Check if required lists and credentials are loaded
@@ -1078,7 +1149,16 @@ def main():
         logger.error("One or more required lists (MARKETS, FOREX_MARKETS, SYNTHETIC_INDICES, INDEX_MARKETS, TIMEFRAMES) or credentials (LOGIN_ID, PASSWORD, SERVER, BASE_URL, TERMINAL_PATH) are empty. Check base.json file. Exiting.")
         return False
     
-    markets_to_process = MARKETS.copy()
+    # Get eligible market-timeframe pairs
+    eligible_pairs = get_eligible_market_timeframes()
+    markets_to_process = list(set(pair[0] for pair in eligible_pairs))  # Unique markets
+    processed_pairs = []  # Track successfully processed market-timeframe pairs
+
+    if not markets_to_process:
+        logger.debug("No markets with elligible_status 'order_free' found. Exiting.")
+        marketsstatus(DESTINATION_PATH, MARKETS, TIMEFRAMES)
+        return True
+
     while markets_to_process:
         failed_markets = []
         processes = []
@@ -1086,7 +1166,7 @@ def main():
             logger.debug(f"Processing markets: {markets_to_process}")
             for market in markets_to_process:
                 logger.debug(f"Starting process for {market}")
-                process = multiprocessing.Process(target=run_script_for_market, args=(market,))
+                process = multiprocessing.Process(target=run_script_for_market, args=(market, eligible_pairs, processed_pairs))
                 processes.append((market, process))
                 process.start()
             for market, process in processes:
@@ -1102,6 +1182,9 @@ def main():
             markets_to_process = failed_markets
             if not markets_to_process:
                 logger.debug("All markets processed successfully")
+                # Print eligible processed markets immediately after the debug log
+                formatted_pairs = [f"{market}({tf})" for market, tf in processed_pairs]
+                print(f'Elligible processed markets[{", ".join(formatted_pairs)}]')
                 # Generate market status report after successful processing
                 if not marketsstatus(DESTINATION_PATH, MARKETS, TIMEFRAMES):
                     logger.error("Failed to generate market status report")
@@ -1117,12 +1200,15 @@ def main():
             if len(markets_to_process) >= 5:
                 logger.debug(f"Main loop error with {len(markets_to_process)} markets, calling handle_network_issue")
                 handle_network_issue()
-            markets_to_process = failed_markets if failed_markets else MARKETS.copy()
+            markets_to_process = failed_markets if failed_markets else list(set(pair[0] for pair in get_eligible_market_timeframes()))
             time.sleep(10)
     logger.debug("Main loop completed successfully")
     # Generate market status report in case loop exits unexpectedly
     if not marketsstatus(DESTINATION_PATH, MARKETS, TIMEFRAMES):
         logger.error("Failed to generate market status report")
+    # Print eligible processed markets even if loop exits unexpectedly
+    formatted_pairs = [f"{market}({tf})" for market, tf in processed_pairs]
+    print(f'Elligible processed markets[{", ".join(formatted_pairs)}]')
     return True
 
 if __name__ == "__main__":
