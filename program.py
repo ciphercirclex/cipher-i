@@ -137,7 +137,7 @@ def candletimeleft(market, timeframe, candle_time, min_time_left=3.2):
     finally:
         mt5.shutdown()
 
-
+    
 def run_analysechart_m1():
     """Run the analysechart_m script."""
     try:
@@ -161,6 +161,13 @@ def run_updateorders():
         print("updateorders completed.")
     except Exception as e:
         print(f"Error in updateorders: {e}")
+def fetchlotsizeandrisk():
+    """Run the analysechart_m script."""
+    try:
+        updateorders.executefetchlotsizeandrisk()
+        print("analysechart_m completed.")
+    except Exception as e:
+        print(f"Error in analysechart_m: {e}")
 
 def execute(mode="loop"):
     """Execute the scripts sequentially with the specified mode: 'loop' or 'once'."""
@@ -180,6 +187,7 @@ def execute(mode="loop"):
             """Helper function to run analysechart_m and updateorders sequentially with candle time checks."""
             default_market = MARKETS[0]  # Use first market from MARKETS list
             timeframe = "M5"
+            fetchlotsizeandrisk()
             
             while True:
                 # First candle check before updateorders
@@ -219,26 +227,15 @@ def execute(mode="loop"):
                 while True:
                     result = run_sequential()
                     if result:
-                        time_left, start_time, initial_time_left = result
-                        operation_time = initial_time_left - time_left
-                        print(f"Started time of candle: {start_time}")
-                        print(f"Time remaining: {time_left:.2f} minutes")
-                        print(f"Operated within time: {operation_time:.2f} minutes")
+                        return result  # Return result for aggregation
                     print("Restarting entire sequence...")
                     time.sleep(5)  # Small delay before restarting the loop
             else:  # mode == "once"
-                result = run_sequential()
-                print("Execution completed (once mode).")
-                if result:
-                    time_left, start_time, initial_time_left = result
-                    operation_time = initial_time_left - time_left
-                    print(f"Started time of candle: {start_time}")
-                    print(f"Candle time left: {time_left:.2f} minutes")
-                    print(f"Operated within time: {operation_time:.2f} minutes")
+                return run_sequential()  # Return result for aggregation
 
         except Exception as e:
             print(f"Error in main loop: {e}")
-    execute_orderfree_markets()
+            return None
 
     def execute_charts_identified():
         def run_sequential():
@@ -284,27 +281,89 @@ def execute(mode="loop"):
                 while True:
                     result = run_sequential()
                     if result:
-                        time_left, start_time, initial_time_left = result
-                        operation_time = initial_time_left - time_left
-                        print(f"Started time of candle: {start_time}")
-                        print(f"Time remaining: {time_left:.2f} minutes")
-                        print(f"Operated within time: {operation_time:.2f} minutes")
+                        return result  # Return result for aggregation
                     print("Restarting entire sequence...")
                     time.sleep(5)  # Small delay before restarting the loop
             else:  # mode == "once"
-                result = run_sequential()
-                print("Execution completed (once mode).")
-                if result:
-                    time_left, start_time, initial_time_left = result
-                    operation_time = initial_time_left - time_left
-                    print(f"Started time of candle: {start_time}")
-                    print(f"Candle time left: {time_left:.2f} minutes")
-                    print(f"Operated within time: {operation_time:.2f} minutes")
+                return run_sequential()  # Return result for aggregation
 
         except Exception as e:
             print(f"Error in main loop: {e}")
-    execute_charts_identified()
+            return None
 
+    try:
+        if mode == "loop":
+            while True:
+                # Execute both functions and collect results
+                result_orderfree = execute_orderfree_markets()
+                result_charts = execute_charts_identified()
+                
+                # Process results for timing calculation
+                total_operation_time = 0
+                earliest_start_time = None
+                final_time_left = None
+                
+                if result_orderfree:
+                    time_left_of, start_time_of, initial_time_left_of = result_orderfree
+                    operation_time_of = initial_time_left_of - time_left_of
+                    total_operation_time += operation_time_of
+                    if earliest_start_time is None or start_time_of < earliest_start_time:
+                        earliest_start_time = start_time_of
+                    final_time_left = time_left_of
+                
+                if result_charts:
+                    time_left_ci, start_time_ci, initial_time_left_ci = result_charts
+                    operation_time_ci = initial_time_left_ci - time_left_ci
+                    total_operation_time += operation_time_ci
+                    if earliest_start_time is None or start_time_ci < earliest_start_time:
+                        earliest_start_time = start_time_ci
+                    final_time_left = time_left_ci if final_time_left is None else min(final_time_left, time_left_ci)
+                
+                # Print combined timing information
+                if earliest_start_time and final_time_left is not None:
+                    print(f"Started time of candle: {earliest_start_time}")
+                    print(f"Candle time left: {final_time_left:.2f} minutes")
+                    print(f"Total operated within time: {total_operation_time:.2f} minutes")
+                
+                print("Restarting entire sequence...")
+                time.sleep(5)  # Small delay before restarting the loop
+        else:  # mode == "once"
+            # Execute both functions and collect results
+            result_orderfree = execute_orderfree_markets()
+            result_charts = execute_charts_identified()
+            
+            print("Execution completed (once mode).")
+            
+            # Process results for timing calculation
+            total_operation_time = 0
+            earliest_start_time = None
+            final_time_left = None
+            
+            if result_orderfree:
+                time_left_of, start_time_of, initial_time_left_of = result_orderfree
+                operation_time_of = initial_time_left_of - time_left_of
+                total_operation_time += operation_time_of
+                if earliest_start_time is None or start_time_of < earliest_start_time:
+                    earliest_start_time = start_time_of
+                final_time_left = time_left_of
+            
+            if result_charts:
+                time_left_ci, start_time_ci, initial_time_left_ci = result_charts
+                operation_time_ci = initial_time_left_ci - time_left_ci
+                total_operation_time += operation_time_ci
+                if earliest_start_time is None or start_time_ci < earliest_start_time:
+                    earliest_start_time = start_time_ci
+                final_time_left = time_left_ci if final_time_left is None else min(final_time_left, time_left_ci)
+            
+            # Print combined timing information
+            if earliest_start_time and final_time_left is not None:
+                print(f"Started time of candle: {earliest_start_time}")
+                print(f"Candle time left: {final_time_left:.2f} minutes")
+                print(f"Total operated within time: {total_operation_time:.2f} minutes")
+
+    except Exception as e:
+        print(f"Error in main loop: {e}")
+        
 if __name__ == "__main__":
     # Example: Change to "once" or "loop" as needed
     execute(mode="once")

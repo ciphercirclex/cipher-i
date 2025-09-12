@@ -21,6 +21,35 @@ TERMINAL_PATH = None
 MARKETS = []
 TIMEFRAMES = []
 
+def normalize_timeframe(timeframe):
+    """Normalize timeframe strings to a consistent format."""
+    timeframe = timeframe.lower().strip()
+    timeframe_map = {
+        '5m': 'm5',
+        '5minutes': 'm5',
+        '5 minutes': 'm5',
+        '15m': 'm15',
+        '15minutes': 'm15',
+        '15 minutes': 'm15',
+        '30m': 'm30',
+        '30minutes': 'm30',
+        '30 minutes': 'm30',
+        '1minute': 'm1',
+        '1 minute': 'm1',
+        '1m': 'm1',
+        'h1': 'h1',
+        '1h': 'h1',
+        '1hour': 'h1',
+        '1 hour': 'h1',
+        'h4': 'h4',
+        '4h': 'h4',
+        '4hours': 'h4',
+        '4 hours': 'h4'
+    }
+    normalized = timeframe_map.get(timeframe, timeframe)
+    print(f"Normalized timeframe '{timeframe}' to '{normalized}'")
+    return normalized
+
 # Function to load markets, timeframes, and credentials from JSON
 def load_markets_and_timeframes(json_path):
     """Load MARKETS, TIMEFRAMES, and CREDENTIALS from base.json file."""
@@ -191,16 +220,15 @@ def check_market_verification(market):
         try:
             with open(verification_file, 'r') as f:
                 verification_data = json.load(f)
-            # Access the "verification" key
-            verification = verification_data.get("verification", {})
-            # Check if all timeframes are verified
+            # Access the "verification" key (Note: Adjusting for actual structure in verification.json)
             for timeframe in TIMEFRAMES:
-                timeframe_key = timeframe.lower()
-                if timeframe_key not in verification:
+                normalized_tf = normalize_timeframe(timeframe).lower()  # Normalize timeframe for key
+                timeframe_key = timeframe.lower()  # Use original timeframe for verification data key
+                if timeframe_key not in verification_data:
                     print(f"Timeframe {timeframe} not found in verification data for {market}")
                     return False
-                if verification[timeframe_key] != "chart identified":
-                    print(f"Verification failed for {market} timeframe {timeframe}: value is '{verification[timeframe_key]}', expected 'chart identified'")
+                if verification_data[timeframe_key] != "chart_identified":
+                    print(f"Verification failed for {market} timeframe {timeframe}: value is '{verification_data[timeframe_key]}', expected 'chart_identified'")
                     return False
             print(f"All timeframes verified for market: {market}")
             return True
@@ -217,8 +245,11 @@ def load_latest_chart(input_folder, market_name, timeframe):
         print(f"Input folder does not exist: {input_folder}")
         return None, None
     
+    # Normalize timeframe for folder and filename
+    normalized_tf = normalize_timeframe(timeframe)
+    
     # Construct the exact filename: market_timeframe.png
-    expected_filename = f"{market_name.replace(' ', '_')}_{timeframe.lower()}.png"
+    expected_filename = f"{market_name.replace(' ', '_')}_{normalized_tf}.png"
     chart_path = os.path.join(input_folder, expected_filename)
     
     if os.path.isfile(chart_path):
@@ -230,7 +261,7 @@ def load_latest_chart(input_folder, market_name, timeframe):
         return img, base_name
     
     # Fallback: Search for files containing market_timeframe
-    search_pattern = f"{market_name.replace(' ', '_')}_{timeframe.lower()}"
+    search_pattern = f"{market_name.replace(' ', '_')}_{normalized_tf}"
     files = [
         os.path.join(input_folder, f) for f in os.listdir(input_folder)
         if os.path.isfile(os.path.join(input_folder, f)) and 
@@ -307,6 +338,10 @@ def set_background_black(img_enhanced, mask):
 
 def save_enhanced_image(img_enhanced, base_name, output_folder):
     """Save the enhanced image."""
+    normalized_tf = normalize_timeframe(base_name.split('_')[-1])  # Extract timeframe from base_name
+    market_name = '_'.join(base_name.split('_')[:-1])  # Extract market name
+    output_folder = os.path.join(BASE_OUTPUT_FOLDER, market_name, normalized_tf)
+    os.makedirs(output_folder, exist_ok=True)
     debug_image_path = os.path.join(output_folder, f"{base_name}_enhanced.png")
     cv2.imwrite(debug_image_path, img_enhanced)
     print(f"Debug enhanced image saved to: {debug_image_path}")
@@ -336,16 +371,20 @@ def load_candlesamountinbetween(market, timeframe):
     errors = []  # List to store any errors or issues
     start_number = 1  # Default value if file is missing or invalid
     raw_value = "not found"  # Default raw value if file or field is missing
-    source = f"{market.replace(' ', '_')}_{timeframe.lower()} candlesamountinbetween (new number position for matched candle data: {raw_value})"
+    normalized_tf = normalize_timeframe(timeframe)  # Normalize timeframe for folder path
+    source = f"{market.replace(' ', '_')}_{normalized_tf} candlesamountinbetween (new number position for matched candle data: {raw_value})"
     
     try:
         market_folder_name = market.replace(" ", "_")
         json_path = os.path.join(
             r"C:\xampp\htdocs\CIPHER\cipher i\bouncestream\chart\orders",
             market_folder_name,
-            timeframe.lower(),
+            normalized_tf,
             "candlesamountinbetween.json"
         )
+        output_folder = os.path.join(BASE_OUTPUT_FOLDER, market_folder_name, normalized_tf)
+        os.makedirs(output_folder, exist_ok=True)  # Ensure output folder exists
+        
         if not os.path.exists(json_path):
             errors.append(f"candlesamountinbetween.json not found for {market} timeframe {timeframe}: {json_path}")
             print(f"candlesamountinbetween.json not found for {market} timeframe {timeframe}: {json_path}")
@@ -354,7 +393,7 @@ def load_candlesamountinbetween(market, timeframe):
                 with open(json_path, 'r') as f:
                     data = json.load(f)
                 raw_value = data.get("new number position for matched candle data", "not found")
-                source = f"{market.replace(' ', '_')}_{timeframe.lower()} candlesamountinbetween (new number position for matched candle data: {raw_value})"
+                source = f"{market.replace(' ', '_')}_{normalized_tf} candlesamountinbetween (new number position for matched candle data: {raw_value})"
                 try:
                     start_number = int(raw_value)
                     if start_number < 1:
@@ -378,7 +417,7 @@ def load_candlesamountinbetween(market, timeframe):
             "from": source,
             "errors": errors if errors else ["No errors encountered"]
         }
-        loadednumber_json_path = os.path.join(OUTPUT_FOLDER, "loadednumber.json")
+        loadednumber_json_path = os.path.join(output_folder, "loadednumber.json")
         try:
             with open(loadednumber_json_path, 'w') as f:
                 json.dump(loadednumber_data, f, indent=4)
@@ -398,7 +437,7 @@ def load_candlesamountinbetween(market, timeframe):
             "from": source,
             "errors": errors if errors else ["Critical error occurred"]
         }
-        loadednumber_json_path = os.path.join(OUTPUT_FOLDER, "loadednumber.json")
+        loadednumber_json_path = os.path.join(output_folder, "loadednumber.json")
         try:
             with open(loadednumber_json_path, 'w') as f:
                 json.dump(loadednumber_data, f, indent=4)
@@ -528,6 +567,10 @@ def detect_candlestick_contours(img_enhanced, mask_red, mask_green, start_number
 
 def save_arrow_data_to_json(arrow_data, output_folder):
     """Save the arrow data to a JSON file named after the market in the OUTPUT_FOLDER."""
+    normalized_tf = normalize_timeframe(output_folder.split(os.sep)[-1])  # Extract timeframe from output_folder
+    market_name = output_folder.split(os.sep)[-2]  # Extract market name
+    output_folder = os.path.join(BASE_OUTPUT_FOLDER, market_name, normalized_tf)
+    os.makedirs(output_folder, exist_ok=True)
     json_path = os.path.join(output_folder, "arrows.json")
     try:
         with open(json_path, 'w') as f:
@@ -539,6 +582,10 @@ def save_arrow_data_to_json(arrow_data, output_folder):
 
 def save_contour_image(img_contours, base_name, output_folder):
     """Save the contour image."""
+    normalized_tf = normalize_timeframe(base_name.split('_')[-1])  # Extract timeframe from base_name
+    market_name = '_'.join(base_name.split('_')[:-1])  # Extract market name
+    output_folder = os.path.join(BASE_OUTPUT_FOLDER, market_name, normalized_tf)
+    os.makedirs(output_folder, exist_ok=True)
     contour_image_path = os.path.join(output_folder, f"{base_name}_contours.png")
     cv2.imwrite(contour_image_path, img_contours)
     print(f"Original contour image saved to: {contour_image_path}")
@@ -597,6 +644,10 @@ def connect_contours(img_contours, red_positions, green_positions):
 
 def save_connected_contour_image(img_connected_contours, base_name, output_folder):
     """Save the connected contour image."""
+    normalized_tf = normalize_timeframe(base_name.split('_')[-1])  # Extract timeframe from base_name
+    market_name = '_'.join(base_name.split('_')[:-1])  # Extract market name
+    output_folder = os.path.join(BASE_OUTPUT_FOLDER, market_name, normalized_tf)
+    os.makedirs(output_folder, exist_ok=True)
     connected_contour_image_path = os.path.join(output_folder, f"{base_name}_connected_contours.png")
     cv2.imwrite(connected_contour_image_path, img_connected_contours)
     print(f"Connected contour image saved to: {connected_contour_image_path}")
@@ -604,6 +655,11 @@ def save_connected_contour_image(img_connected_contours, base_name, output_folde
 
 def identify_parent_highs_and_lows(img_enhanced, all_positions, base_name, left_required, right_required, arrow_data, output_folder):
     """Identify and label Parent Highs (PH) and Parent Lows (PL) on the enhanced image using arrow numbers."""
+    normalized_tf = normalize_timeframe(base_name.split('_')[-1])  # Extract timeframe from base_name
+    market_name = '_'.join(base_name.split('_')[:-1])  # Extract market name
+    output_folder = os.path.join(BASE_OUTPUT_FOLDER, market_name, normalized_tf)
+    os.makedirs(output_folder, exist_ok=True)
+    
     img_parent_labeled = img_enhanced.copy()
     low_points = []
     high_points = []
@@ -2033,8 +2089,14 @@ def save_contracts_data_to_json(contracts_data):
     Returns:
         str: Path to the saved contracts.json file.
     """
+    # Extract market and timeframe from OUTPUT_FOLDER
+    normalized_tf = normalize_timeframe(os.path.basename(OUTPUT_FOLDER))  # Get timeframe from OUTPUT_FOLDER
+    market_name = os.path.basename(os.path.dirname(OUTPUT_FOLDER))  # Get market from parent directory
+    output_folder = os.path.join(BASE_OUTPUT_FOLDER, market_name, normalized_tf)
+    os.makedirs(output_folder, exist_ok=True)  # Ensure folder exists
+
     # Save all contracts data
-    json_path = os.path.join(OUTPUT_FOLDER, "contracts.json")
+    json_path = os.path.join(output_folder, "contracts.json")
     try:
         with open(json_path, 'w') as f:
             json.dump(contracts_data, f, indent=4)
@@ -2049,7 +2111,7 @@ def save_contracts_data_to_json(contracts_data):
             entry['receiver']['Breakout_parent'] != "invalid" and
             entry['receiver']['order_parent'] != "invalid")
     ]
-    pending_json_path = os.path.join(OUTPUT_FOLDER, "pendingorder.json")
+    pending_json_path = os.path.join(output_folder, "pendingorder.json")
     try:
         with open(pending_json_path, 'w') as f:
             json.dump(pending_orders, f, indent=4)
@@ -2143,10 +2205,12 @@ def main_trendlinetocandleposition(position):
 def process_market_timeframe(market, timeframe):
     """Process a single market and timeframe combination."""
     try:
+        # Normalize timeframe for folder paths
+        normalized_tf = normalize_timeframe(timeframe)
         # Dynamically construct input and output folders
         market_folder_name = market.replace(" ", "_")
-        input_folder = os.path.join(BASE_INPUT_FOLDER, market_folder_name, timeframe.lower())
-        output_folder = os.path.join(BASE_OUTPUT_FOLDER, market_folder_name, timeframe.lower())
+        input_folder = os.path.join(BASE_INPUT_FOLDER, market_folder_name, normalized_tf)
+        output_folder = os.path.join(BASE_OUTPUT_FOLDER, market_folder_name, normalized_tf)
         
         # Set global OUTPUT_FOLDER for use in draw_parent_main_trendlines and JSON saving functions
         global OUTPUT_FOLDER
@@ -2244,8 +2308,9 @@ def main1():
         """Check if the status.json file for a market and timeframe has 'chart identified' or 'chart_identified' status.
         Create a default status.json if it doesn't exist."""
         try:
+            normalized_tf = normalize_timeframe(timeframe)  # Normalize timeframe for folder path
             market_folder_name = market.replace(" ", "_")
-            status_file = os.path.join(BASE_INPUT_FOLDER, market_folder_name, timeframe.lower(), "status.json")
+            status_file = os.path.join(BASE_INPUT_FOLDER, market_folder_name, normalized_tf, "status.json")
             # Create the directory if it doesn't exist
             os.makedirs(os.path.dirname(status_file), exist_ok=True)
             
@@ -2255,6 +2320,7 @@ def main1():
                 default_status = {
                     "market": market,
                     "timeframe": timeframe,
+                    "normalized_timeframe": normalized_tf,  # Include normalized timeframe
                     "timestamp": "",
                     "status": "order_free",
                     "elligible_status": "order_free"
@@ -2299,7 +2365,7 @@ def main1():
             print(f"M5 candle time left: {time_left:.2f} minutes. Proceeding with execution.")
 
             # Clear the base output folder before processing
-            #clear_image_and_json_files() Unccoment if you want to clear the output folder
+            #clear_image_and_json_files() # Uncomment if you want to clear the output folder
             
             # Process markets with 'chart identified' or 'chart_identified' status
             print(f"Markets to check: {MARKETS}")
@@ -2334,8 +2400,9 @@ def main2():
         """Check if the status.json file for a market and timeframe has 'order_free' status.
         Create a default status.json if it doesn't exist."""
         try:
+            normalized_tf = normalize_timeframe(timeframe)  # Normalize timeframe for folder path
             market_folder_name = market.replace(" ", "_")
-            status_file = os.path.join(BASE_INPUT_FOLDER, market_folder_name, timeframe.lower(), "status.json")
+            status_file = os.path.join(BASE_INPUT_FOLDER, market_folder_name, normalized_tf, "status.json")
             # Create the directory if it doesn't exist
             os.makedirs(os.path.dirname(status_file), exist_ok=True)
             
@@ -2345,6 +2412,7 @@ def main2():
                 default_status = {
                     "market": market,
                     "timeframe": timeframe,
+                    "normalized_timeframe": normalized_tf,  # Include normalized timeframe
                     "timestamp": "",
                     "status": "order_free",
                     "elligible_status": "order_free"
@@ -2389,7 +2457,7 @@ def main2():
             print(f"M5 candle time left: {time_left:.2f} minutes. Proceeding with execution.")
 
             # Clear the base output folder before processing
-            #clear_image_and_json_files() Unccoment if you want to clear the output folder
+            #clear_image_and_json_files() # Uncomment if you want to clear the output folder
             
             # Process markets with 'order_free' status
             print(f"Markets to check: {MARKETS}")

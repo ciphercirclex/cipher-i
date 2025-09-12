@@ -208,11 +208,11 @@ def normalize_timeframe(timeframe: str) -> str:
     """Normalize timeframe input to standard format (e.g., '5m' -> 'M5', '4h' -> 'H4')."""
     timeframe = timeframe.lower().strip()
     timeframe_map = {
-        '5m': 'M5', 'm5': 'M5',
-        '15m': 'M15', 'm15': 'M15',
-        '30m': 'M30', 'm30': 'M30',
-        '1h': 'H1', 'h1': 'H1',
-        '4h': 'H4', 'h4': 'H4'
+        '5m': 'm5', 'm5': 'M5',
+        '15m': 'm15', 'm15': 'M15',
+        '30m': 'm30', 'm30': 'M30',
+        '1h': 'h1', 'h1': 'H1',
+        '4h': 'h4', 'h4': 'H4'
     }
     normalized = timeframe_map.get(timeframe, timeframe.upper())
     if normalized not in TIMEFRAME_MAPPING:
@@ -1361,6 +1361,11 @@ def fetchlotsizeandriskallowed(json_dir: str = BASE_PROCESSING_FOLDER) -> bool:
             return False
     
     return False
+def executefetchlotsizeandrisk():
+    # Fetch lot size and allowed risk data once
+        if not fetchlotsizeandriskallowed():
+            log_and_print("Failed to fetch lot size and allowed risk data. Exiting.", "ERROR")
+            return
 
 def getorderholderpriceswithlotsizeandrisk(market: str, timeframe: str, json_dir: str) -> bool:
     """Fetch order holder prices, calculate exit and profit prices using lot size and allowed risk from centralized lotsizeandrisk.json, and save to calculatedprices.json."""
@@ -2518,11 +2523,6 @@ def main():
         # Verify that credentials were loaded
         if not all([LOGIN_ID, PASSWORD, SERVER, TERMINAL_PATH]):
             log_and_print("Credentials not properly loaded from base.json. Exiting.", "ERROR")
-            return
-        
-        # Fetch lot size and allowed risk data once
-        if not fetchlotsizeandriskallowed():
-            log_and_print("Failed to fetch lot size and allowed risk data. Exiting.", "ERROR")
             return
         
         # Check M5 candle time left globally

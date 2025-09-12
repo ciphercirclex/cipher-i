@@ -83,20 +83,50 @@ network_issue_event = multiprocessing.Event()
 network_resolution_lock = multiprocessing.Lock()
 
 
+def normalize_timeframe(timeframe):
+    """Normalize timeframe strings to a consistent format."""
+    timeframe = timeframe.lower().strip()
+    timeframe_map = {
+        '5m': 'm5',
+        '5minutes': 'm5',
+        '5 minutes': 'm5',
+        '15m': 'm15',
+        '15minutes': 'm15',
+        '15 minutes': 'm15',
+        '30m': 'm30',
+        '30minutes': 'm30',
+        '30 minutes': 'm30',
+        '1minute': 'm1',
+        '1 minute': 'm1',
+        '1m': 'm1',
+        'h1': 'h1',
+        '1h': 'h1',
+        '1hour': 'h1',
+        '1 hour': 'h1',
+        'h4': 'h4',
+        '4h': 'h4',
+        '4hours': 'h4',
+        '4 hours': 'h4'
+    }
+    normalized = timeframe_map.get(timeframe, timeframe)
+    logger.debug(f"Normalized timeframe '{timeframe}' to '{normalized}'")
+    return normalized
+
 def get_eligible_market_timeframes():
     """Retrieve market-timeframe pairs with elligible_status 'order_free'."""
     eligible_pairs = []
     for market in MARKETS:
         market_folder = os.path.join(DESTINATION_PATH, market.replace(" ", "_"))
         for tf in TIMEFRAMES:
-            status_file = os.path.join(market_folder, tf.lower(), "status.json")
+            normalized_tf = normalize_timeframe(tf)  # Normalize timeframe for folder path
+            status_file = os.path.join(market_folder, normalized_tf, "status.json")
             try:
                 if os.path.exists(status_file):
                     with open(status_file, 'r') as f:
                         status_data = json.load(f)
                         elligible_status = status_data.get("elligible_status", "")
                         if elligible_status == "order_free":
-                            eligible_pairs.append((market, tf))
+                            eligible_pairs.append((market, tf))  # Use original timeframe in pair
                 else:
                     # If status.json doesn't exist, assume eligible to allow processing
                     eligible_pairs.append((market, tf))
@@ -571,14 +601,15 @@ def copy_chart_to_destination(driver, market, timeframe, destination_path):
     try:
         logger.debug(f"[Process-{market}] Copying chart for {market} ({timeframe})")
         downloads_path = os.path.join(os.path.expanduser("~"), "Downloads")
-        market_folder = os.path.join(destination_path, market.replace(" ", "_"), timeframe.lower())
+        normalized_tf = normalize_timeframe(timeframe)  # Normalize timeframe for folder path
+        market_folder = os.path.join(destination_path, market.replace(" ", "_"), normalized_tf)
         os.makedirs(market_folder, exist_ok=True)
         latest_file = wait_for_download(downloads_path, market, timeframe)
         if not latest_file:
             logger.error(f"[Process-{market}] No chart file found for {market} ({timeframe})")
             return False
         # Create new filename in the format market_timeframe.png
-        new_filename = f"{market.replace(' ', '_')}_{timeframe.lower()}.png"
+        new_filename = f"{market.replace(' ', '_')}_{normalized_tf}.png"
         destination_file = os.path.join(market_folder, new_filename)
         shutil.copy2(latest_file, destination_file)
         logger.debug(f"[Process-{market}] Copied chart to {destination_file}")
@@ -590,7 +621,8 @@ def copy_chart_to_destination(driver, market, timeframe, destination_path):
 def verify_candlestick_contours(image_path, market, timeframe):
     """Verify candlesticks in the chart image."""
     logger.debug(f"[Process-{market}] Verifying candlesticks in {image_path}")
-    market_folder = os.path.join(DESTINATION_PATH, market.replace(" ", "_"), timeframe.lower())
+    normalized_tf = normalize_timeframe(timeframe)  # Normalize timeframe for folder path
+    market_folder = os.path.join(DESTINATION_PATH, market.replace(" ", "_"), normalized_tf)
     os.makedirs(market_folder, exist_ok=True)
 
     try:
@@ -687,19 +719,12 @@ def verify_candlestick_contours(image_path, market, timeframe):
     except Exception as e:
         logger.error(f"[Process-{market}] Error verifying candlesticks in {image_path}: {e}")
         return False, False
-    
+
 def save_status(market, timeframe, destination_path, status):
     """Save the status of the process for a market and timeframe to a JSON file."""
     try:
-        # Map timeframe to desired format (e.g., H1 -> 1h, H4 -> 4h)
-        timeframe_mapping = {
-            "H1": "1h",
-            "H4": "4h",
-            "M5": "5m",
-            "M15": "15m",
-            "M30": "30m"
-        }
-        mapped_timeframe = timeframe_mapping.get(timeframe.upper(), timeframe.lower())  # Default to lowercase if not mapped
+        # Normalize timeframe to desired format (e.g., 5m -> m5, 15m -> m15, H1 -> h1)
+        mapped_timeframe = normalize_timeframe(timeframe)
         market_folder = os.path.join(destination_path, market.replace(" ", "_"), mapped_timeframe)
         os.makedirs(market_folder, exist_ok=True)
         status_file = os.path.join(market_folder, "status.json")
@@ -717,7 +742,8 @@ def save_status(market, timeframe, destination_path, status):
         # Prepare status data
         status_data = {
             "market": market,
-            "timeframe": timeframe,
+            "timeframe": timeframe,  # Store original timeframe for reference
+            "normalized_timeframe": mapped_timeframe,  # Store normalized timeframe
             "timestamp": timestamp
         }
         # Set elligible_status to match the logic in marketsliststatus
@@ -732,11 +758,13 @@ def save_status(market, timeframe, destination_path, status):
                     existing_status_data["elligible_status"] = elligible_status
                     existing_status_data["timestamp"] = timestamp
                     existing_status_data["status"] = status
+                    existing_status_data["normalized_timeframe"] = mapped_timeframe
                     status_data = existing_status_data
                 else:
                     existing_status_data["elligible_status"] = elligible_status
                     existing_status_data["timestamp"] = timestamp
                     existing_status_data["status"] = status
+                    existing_status_data["normalized_timeframe"] = mapped_timeframe
                     status_data = existing_status_data
             except Exception as e:
                 logger.warning(f"[Process-{market}] Error reading existing status.json for {market} ({timeframe}): {e}")
@@ -760,7 +788,8 @@ def create_verification_json(market, destination_path):
         all_identified = True
 
         for tf in TIMEFRAMES:
-            status_file = os.path.join(market_folder, tf.lower(), "status.json")
+            normalized_tf = normalize_timeframe(tf)  # Normalize timeframe for folder path
+            status_file = os.path.join(market_folder, normalized_tf, "status.json")
             if os.path.exists(status_file):
                 try:
                     with open(status_file, 'r') as f:
@@ -789,7 +818,8 @@ def create_verification_json(market, destination_path):
 
 def download_and_verify_chart(driver, market, timeframe, destination_path, max_timeout=30):
     """Download and verify chart, retrying up to 2 times within session, and save candle data and status."""
-    market_folder = os.path.join(destination_path, market.replace(" ", "_"), timeframe.lower())
+    normalized_tf = normalize_timeframe(timeframe)  # Normalize timeframe for folder path
+    market_folder = os.path.join(destination_path, market.replace(" ", "_"), normalized_tf)
     os.makedirs(market_folder, exist_ok=True)
 
     # Initialize status
@@ -819,7 +849,7 @@ def download_and_verify_chart(driver, market, timeframe, destination_path, max_t
             logger.debug(f"[Process-{market}] Time left until candle close for {market} ({timeframe}): {time_left:.2f} minutes")
             if time_left < 3:
                 logger.debug(f"[Process-{market}] Waiting for next candle for {market} ({timeframe})")
-                wait_time = (next_close_time - datetime.now(pytz.UTC)).total_seconds() + 10  # Wait until after candle closes
+                wait_time = (next_close_time - datetime.now(pytz.UTC)).total_seconds() + 10
                 logger.debug(f"[Process-{market}] Waiting {wait_time:.2f} seconds for next candle")
                 time.sleep(max(wait_time, 0))
                 candle = fetch_current_price_candle(market, timeframe)
@@ -838,7 +868,7 @@ def download_and_verify_chart(driver, market, timeframe, destination_path, max_t
         logger.debug(f"[Process-{market}] Market {market} is outside trading hours, skipping MT5 candle fetch")
         save_status(market, timeframe, destination_path, "market_closed")
 
-    max_retries = 3  # Initial attempt + 2 retries
+    max_retries = 3
     timeout = 1
     reload_attempted = False
     for attempt in range(max_retries):
@@ -1074,31 +1104,20 @@ def resetstatus(elligible_status="none", status="none"):
     """Reset the status.json files for all market-timeframe pairs to specified elligible_status and status."""
     logger.debug("Starting resetstatus to reset status.json files for all markets and timeframes")
     try:
-        # Map timeframe to desired format (e.g., H1 -> 1h, H4 -> 4h)
-        timeframe_mapping = {
-            "H1": "1h",
-            "H4": "4h",
-            "M5": "5m",
-            "M15": "15m",
-            "M30": "30m"
-        }
-        
         for market in MARKETS:
             for tf in TIMEFRAMES:
                 try:
-                    # Use mapped timeframe for folder path
-                    mapped_timeframe = timeframe_mapping.get(tf.upper(), tf.lower())
-                    market_folder = os.path.join(DESTINATION_PATH, market.replace(" ", "_"), mapped_timeframe)
+                    normalized_tf = normalize_timeframe(tf)  # Normalize timeframe for folder path
+                    market_folder = os.path.join(DESTINATION_PATH, market.replace(" ", "_"), normalized_tf)
                     status_file = os.path.join(market_folder, "status.json")
                     os.makedirs(market_folder, exist_ok=True)
                     
                     # Get current time in WAT (Africa/Lagos, UTC+1)
                     current_time = datetime.now(pytz.timezone('Africa/Lagos'))
-                    # Format timestamp as "YYYY-MM-DD T HH:MM:SS am/pm .microseconds+HH:MM"
                     am_pm = "am" if current_time.hour < 12 else "pm"
                     hour_12 = current_time.hour % 12
                     if hour_12 == 0:
-                        hour_12 = 12  # Convert 0 to 12 for 12 AM/PM
+                        hour_12 = 12
                     timestamp = (
                         f"{current_time.strftime('%Y-%m-%d T %I:%M:%S')} {am_pm} "
                         f".{current_time.microsecond:06d}+01:00"
@@ -1108,6 +1127,7 @@ def resetstatus(elligible_status="none", status="none"):
                     status_data = {
                         "market": market,
                         "timeframe": tf,
+                        "normalized_timeframe": normalized_tf,
                         "timestamp": timestamp,
                         "elligible_status": elligible_status,
                         "status": status
