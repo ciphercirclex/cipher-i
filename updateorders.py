@@ -2273,7 +2273,7 @@ def collect_all_executionercandle_orders(market: str, timeframe: str, json_dir: 
         return False
 def ExecutedOrderUpdater(market: str, timeframe: str, json_dir: str) -> bool:
     """Update executedorders.json to include profit, loss, ratios, stoploss, and reward-to-risk levels for executed orders.
-    Also save running orders to runningorders.json and collective orders to allorder_records.json and allrunningorders.json."""
+    Prepare data for saving running orders and collective orders."""
     log_and_print(f"Updating executed orders with profit, loss, ratios, stoploss, and reward-to-risk levels for market={market}, timeframe={timeframe}", "INFO")
     
     # Define file paths
@@ -2750,37 +2750,6 @@ def ExecutedOrderUpdater(market: str, timeframe: str, json_dir: str) -> bool:
             
             updated_executed_orders.append(order)
         
-        # Save updated executedorders.json
-        try:
-            with open(executed_orders_json_path, 'w') as f:
-                json.dump(updated_executed_orders, f, indent=4)
-            log_and_print(
-                f"Updated {len(updated_executed_orders)} executed orders with profit, loss, ratios, stoploss, and reward-to-risk levels "
-                f"in {executed_orders_json_path} for {market} {timeframe}",
-                "SUCCESS"
-            )
-        except Exception as e:
-            log_and_print(
-                f"Error saving updated executedorders.json for {market} {timeframe}: {str(e)}",
-                "ERROR"
-            )
-            return False
-        
-        # Save running orders to runningorders.json
-        try:
-            with open(running_orders_json_path, 'w') as f:
-                json.dump(running_orders, f, indent=4)
-            log_and_print(
-                f"Saved {len(running_orders)} running orders to {running_orders_json_path} for {market} {timeframe}",
-                "SUCCESS"
-            )
-        except Exception as e:
-            log_and_print(
-                f"Error saving runningorders.json for {market} {timeframe}: {str(e)}",
-                "ERROR"
-            )
-            return False
-        
         # Aggregate all executed orders and running orders across markets and timeframes
         all_executed_orders = []
         all_running_orders = []
@@ -2961,7 +2930,7 @@ def ExecutedOrderUpdater(market: str, timeframe: str, json_dir: str) -> bool:
                     except Exception as e:
                         log_and_print(f"Error reading {running_path}: {str(e)}", "WARNING")
         
-        # Prepare and save collective allorder_records.json
+        # Prepare data for allorder_records.json
         records_output = {
             "allexitedorders": len(all_executed_orders),  # Total executed orders
             "Exited orders": {
@@ -3063,24 +3032,7 @@ def ExecutedOrderUpdater(market: str, timeframe: str, json_dir: str) -> bool:
             "orders": all_executed_orders
         }
         
-        try:
-            with open(collective_records_path, 'w') as f:
-                json.dump(records_output, f, indent=4)
-            log_and_print(
-                f"Saved {len(all_executed_orders)} executed orders to {collective_records_path} "
-                f"(Exited: {records_output['Exited orders']['total']}, "
-                f"Profit: {records_output['Exited orders']['Profit exited orders']['total']}, "
-                f"Stoploss: {records_output['Exited orders']['Stoploss exited orders']['total']}, "
-                f"1:0.5: {records_output['1:0.5 orders']['total']}, "
-                f"1:1: {records_output['1:1 orders']['total']}, "
-                f"1:2: {records_output['1:2 orders']['total']})",
-                "SUCCESS"
-            )
-        except Exception as e:
-            log_and_print(f"Error saving allorder_records.json: {str(e)}", "ERROR")
-            return False
-        
-        # Prepare and save collective allrunningorders.json
+        # Prepare data for allrunningorders.json
         running_output = {
             "allrunningorders": len(all_running_orders),
             "5minutes running orders": timeframe_counts_running["5minutes"],
@@ -3091,23 +3043,21 @@ def ExecutedOrderUpdater(market: str, timeframe: str, json_dir: str) -> bool:
             "orders": all_running_orders
         }
         
-        try:
-            with open(collective_running_path, 'w') as f:
-                json.dump(running_output, f, indent=4)
-            log_and_print(
-                f"Saved {len(all_running_orders)} running orders to {collective_running_path} "
-                f"(5m: {timeframe_counts_running['5minutes']}, "
-                f"15m: {timeframe_counts_running['15minutes']}, "
-                f"30m: {timeframe_counts_running['30minutes']}, "
-                f"1H: {timeframe_counts_running['1Hour']}, "
-                f"4H: {timeframe_counts_running['4Hour']})",
-                "SUCCESS"
-            )
-        except Exception as e:
-            log_and_print(f"Error saving allrunningorders.json: {str(e)}", "ERROR")
-            return False
+        # Save all JSON files
+        success = save_executedorders_jsons(
+            updated_executed_orders=updated_executed_orders,
+            running_orders=running_orders,
+            records_output=records_output,
+            running_output=running_output,
+            executed_orders_json_path=executed_orders_json_path,
+            running_orders_json_path=running_orders_json_path,
+            collective_records_path=collective_records_path,
+            collective_running_path=collective_running_path,
+            market=market,
+            timeframe=timeframe
+        )
         
-        return True
+        return success
     
     except Exception as e:
         log_and_print(
@@ -3115,6 +3065,87 @@ def ExecutedOrderUpdater(market: str, timeframe: str, json_dir: str) -> bool:
             "ERROR"
         )
         return False
+def save_executedorders_jsons(
+    updated_executed_orders: list,
+    running_orders: list,
+    records_output: dict,
+    running_output: dict,
+    executed_orders_json_path: str,
+    running_orders_json_path: str,
+    collective_records_path: str,
+    collective_running_path: str,
+    market: str,
+    timeframe: str
+) -> bool:
+    """Save executed and running orders to their respective JSON files."""
+    
+    # Save updated executedorders.json
+    try:
+        with open(executed_orders_json_path, 'w') as f:
+            json.dump(updated_executed_orders, f, indent=4)
+        log_and_print(
+            f"Updated {len(updated_executed_orders)} executed orders with profit, loss, ratios, stoploss, and reward-to-risk levels "
+            f"in {executed_orders_json_path} for {market} {timeframe}",
+            "SUCCESS"
+        )
+    except Exception as e:
+        log_and_print(
+            f"Error saving updated executedorders.json for {market} {timeframe}: {str(e)}",
+            "ERROR"
+        )
+        return False
+    
+    # Save running orders to runningorders.json
+    try:
+        with open(running_orders_json_path, 'w') as f:
+            json.dump(running_orders, f, indent=4)
+        log_and_print(
+            f"Saved {len(running_orders)} running orders to {running_orders_json_path} for {market} {timeframe}",
+            "SUCCESS"
+        )
+    except Exception as e:
+        log_and_print(
+            f"Error saving runningorders.json for {market} {timeframe}: {str(e)}",
+            "ERROR"
+        )
+        return False
+    
+    # Save collective allorder_records.json
+    try:
+        with open(collective_records_path, 'w') as f:
+            json.dump(records_output, f, indent=4)
+        log_and_print(
+            f"Saved {len(records_output['orders'])} executed orders to {collective_records_path} "
+            f"(Exited: {records_output['Exited orders']['total']}, "
+            f"Profit: {records_output['Exited orders']['Profit exited orders']['total']}, "
+            f"Stoploss: {records_output['Exited orders']['Stoploss exited orders']['total']}, "
+            f"1:0.5: {records_output['1:0.5 orders']['total']}, "
+            f"1:1: {records_output['1:1 orders']['total']}, "
+            f"1:2: {records_output['1:2 orders']['total']})",
+            "SUCCESS"
+        )
+    except Exception as e:
+        log_and_print(f"Error saving allorder_records.json: {str(e)}", "ERROR")
+        return False
+    
+    # Save collective allrunningorders.json
+    try:
+        with open(collective_running_path, 'w') as f:
+            json.dump(running_output, f, indent=4)
+        log_and_print(
+            f"Saved {len(running_output['orders'])} running orders to {collective_running_path} "
+            f"(5m: {running_output['5minutes running orders']}, "
+            f"15m: {running_output['15minutes running orders']}, "
+            f"30m: {running_output['30minutes running orders']}, "
+            f"1H: {running_output['1Hour running orders']}, "
+            f"4H: {running_output['4Hours running orders']})",
+            "SUCCESS"
+        )
+    except Exception as e:
+        log_and_print(f"Error saving allrunningorders.json: {str(e)}", "ERROR")
+        return False
+    
+    return True
 
 def save_status_json(success_data: List[Dict], no_pending_data: List[Dict], failed_data: List[Dict]) -> None:
     """Save all status data (success, no pending, failed) to marketsstatus.json with detailed process status messages."""
