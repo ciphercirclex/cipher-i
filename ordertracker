@@ -1,14 +1,14 @@
-def BreakevenStopandProfitTracker(market: str, timeframe: str, json_dir: str) -> bool:
+def orderupdater(market: str, timeframe: str, json_dir: str) -> bool:
     log_and_print(f"Tracking breakeven, stoploss, profit, and stoploss_threat for market={market}, timeframe={timeframe}", "INFO")
     
     # Define file paths
-    pricecandle_json_path = os.path.join(json_dir, "pricecandle.json")
+    executedorders_json_path = os.path.join(json_dir, "executedorders.json")
     calculatedprices_json_path = os.path.join(json_dir, "calculatedprices.json")
     candle_data_json_path = os.path.join(json_dir, "candle_data.json")
     
     # Check if required JSON files exist
-    if not os.path.exists(pricecandle_json_path):
-        log_and_print(f"pricecandle.json not found at {pricecandle_json_path} for {market} {timeframe}", "ERROR")
+    if not os.path.exists(executedorders_json_path):
+        log_and_print(f"executedorders.json not found at {executedorders_json_path} for {market} {timeframe}", "ERROR")
         return False
     if not os.path.exists(calculatedprices_json_path):
         log_and_print(f"calculatedprices.json not found at {calculatedprices_json_path} for {market} {timeframe}", "ERROR")
@@ -18,15 +18,15 @@ def BreakevenStopandProfitTracker(market: str, timeframe: str, json_dir: str) ->
         return False
     
     try:
-        # Load pricecandle.json
-        with open(pricecandle_json_path, 'r') as f:
-            pricecandle_data = json.load(f)
+        # Load executedorders.json
+        with open(executedorders_json_path, 'r') as f:
+            executedorders_data = json.load(f)
         
         # First deduplication: Remove duplicates based on position numbers
         seen_positions = {}
-        deduplicated_pricecandle = []
+        deduplicated_executedorders = []
         
-        for entry in pricecandle_data:
+        for entry in executedorders_data:
             # Collect position numbers from sender, receiver, order_holder, and Breakout_parent
             position_numbers = set()
             for key in ['sender', 'receiver', 'order_holder', 'Breakout_parent']:
@@ -37,7 +37,7 @@ def BreakevenStopandProfitTracker(market: str, timeframe: str, json_dir: str) ->
             
             # Skip entries with no position numbers
             if not position_numbers:
-                deduplicated_pricecandle.append(entry)
+                deduplicated_executedorders.append(entry)
                 continue
             
             # Create a unique key based on position numbers
@@ -63,16 +63,16 @@ def BreakevenStopandProfitTracker(market: str, timeframe: str, json_dir: str) ->
                 }
         
         # Collect deduplicated entries
-        deduplicated_pricecandle = [data['entry'] for data in seen_positions.values()]
-        log_and_print(f"Removed duplicates by position numbers, {len(deduplicated_pricecandle)} unique entries remain for {market} {timeframe}", "INFO")
+        deduplicated_executedorders = [data['entry'] for data in seen_positions.values()]
+        log_and_print(f"Removed duplicates by position numbers, {len(deduplicated_executedorders)} unique entries remain for {market} {timeframe}", "INFO")
         
-        # Save deduplicated pricecandle.json
+        # Save deduplicated executedorders.json
         try:
-            with open(pricecandle_json_path, 'w') as f:
-                json.dump(deduplicated_pricecandle, f, indent=4)
-            log_and_print(f"Saved deduplicated pricecandle.json (by position numbers) for {market} {timeframe}", "INFO")
+            with open(executedorders_json_path, 'w') as f:
+                json.dump(deduplicated_executedorders, f, indent=4)
+            log_and_print(f"Saved deduplicated executedorders.json (by position numbers) for {market} {timeframe}", "INFO")
         except Exception as e:
-            log_and_print(f"Error saving deduplicated pricecandle.json (by position numbers) for {market} {timeframe}: {e}", "ERROR")
+            log_and_print(f"Error saving deduplicated executedorders.json (by position numbers) for {market} {timeframe}: {e}", "ERROR")
             return False
         
         # Load calculatedprices.json
@@ -83,15 +83,15 @@ def BreakevenStopandProfitTracker(market: str, timeframe: str, json_dir: str) ->
         with open(candle_data_json_path, 'r') as f:
             candle_data = json.load(f)
         
-        # Prepare updated pricecandle data
-        updated_pricecandle_data = []
+        # Prepare updated executedorders data
+        updated_executedorders_data = []
         
-        # Process each trendline in deduplicated pricecandle
-        for pricecandle_trendline in deduplicated_pricecandle:
-            trendline_type = pricecandle_trendline.get("type")
-            executioner_candle = pricecandle_trendline.get("executioner candle", {})
-            order_holder_position = pricecandle_trendline.get("order_holder", {}).get("position_number")
-            order_type = pricecandle_trendline.get("receiver", {}).get("order_type", "").lower()
+        # Process each trendline in deduplicated executedorders
+        for executedorders_trendline in deduplicated_executedorders:
+            trendline_type = executedorders_trendline.get("type")
+            executioner_candle = executedorders_trendline.get("executioner candle", {})
+            order_holder_position = executedorders_trendline.get("order_holder", {}).get("position_number")
+            order_type = executedorders_trendline.get("receiver", {}).get("order_type", "").lower()
             
             # Find matching calculatedprices entry
             matching_calculated = None
@@ -105,33 +105,33 @@ def BreakevenStopandProfitTracker(market: str, timeframe: str, json_dir: str) ->
                 log_and_print(f"No valid executioner candle for trendline {trendline_type} in {market} {timeframe}", "INFO")
                 # Update pending order with order_type and entry_price from calculatedprices.json
                 if matching_calculated:
-                    pricecandle_trendline["pending order"] = {
+                    executedorders_trendline["pending order"] = {
                         "status": f"{matching_calculated.get('order_type', 'unknown')} {matching_calculated.get('entry_price', 'N/A')}"
                     }
                 else:
-                    pricecandle_trendline["pending order"] = {
+                    executedorders_trendline["pending order"] = {
                         "status": order_type if order_type in ["long", "short"] else "unknown"
                     }
                 # Remove other fields if they exist
                 for key in ["executioner candle", "stoploss", "1:0.5 candle", "1:1 candle", "1:2 candle", "profit candle", "contract status summary"]:
-                    pricecandle_trendline.pop(key, None)
-                updated_pricecandle_data.append(pricecandle_trendline)
+                    executedorders_trendline.pop(key, None)
+                updated_executedorders_data.append(executedorders_trendline)
                 continue
             
             if not matching_calculated:
                 log_and_print(f"No matching calculated prices found for trendline {trendline_type} in {market} {timeframe}", "WARNING")
-                pricecandle_trendline["stoploss"] = {
+                executedorders_trendline["stoploss"] = {
                     "exit_price": None,
                     "status": "No calculated prices",
                     "stoploss_threat": {"status": "No calculated prices"},
                     "stoploss candle": {"status": "No calculated prices"}
                 }
-                pricecandle_trendline["1:0.5 candle"] = {"status": "No calculated prices"}
-                pricecandle_trendline["1:1 candle"] = {"status": "No calculated prices"}
-                pricecandle_trendline["1:2 candle"] = {"status": "No calculated prices"}
-                pricecandle_trendline["profit candle"] = {"status": "No calculated prices"}
-                pricecandle_trendline["contract status summary"] = {"contract status": "No calculated prices"}
-                updated_pricecandle_data.append(pricecandle_trendline)
+                executedorders_trendline["1:0.5 candle"] = {"status": "No calculated prices"}
+                executedorders_trendline["1:1 candle"] = {"status": "No calculated prices"}
+                executedorders_trendline["1:2 candle"] = {"status": "No calculated prices"}
+                executedorders_trendline["profit candle"] = {"status": "No calculated prices"}
+                executedorders_trendline["contract status summary"] = {"contract status": "No calculated prices"}
+                updated_executedorders_data.append(executedorders_trendline)
                 continue
             
             # Get price levels
@@ -145,36 +145,36 @@ def BreakevenStopandProfitTracker(market: str, timeframe: str, json_dir: str) ->
             # Validate price levels
             if any(price <= 0 for price in [entry_price, exit_price, price_1_0_5, price_1_1, price_1_2, profit_price]):
                 log_and_print(f"Invalid price levels for trendline {trendline_type} in {market} {timeframe}", "ERROR")
-                pricecandle_trendline["stoploss"] = {
+                executedorders_trendline["stoploss"] = {
                     "exit_price": exit_price,
                     "status": "Invalid price levels",
                     "stoploss_threat": {"status": "Invalid price levels"},
                     "stoploss candle": {"status": "Invalid price levels"}
                 }
-                pricecandle_trendline["1:0.5 candle"] = {"status": "Invalid price levels"}
-                pricecandle_trendline["1:1 candle"] = {"status": "Invalid price levels"}
-                pricecandle_trendline["1:2 candle"] = {"status": "Invalid price levels"}
-                pricecandle_trendline["profit candle"] = {"status": "Invalid price levels"}
-                pricecandle_trendline["contract status summary"] = {"contract status": "Invalid price levels"}
-                updated_pricecandle_data.append(pricecandle_trendline)
+                executedorders_trendline["1:0.5 candle"] = {"status": "Invalid price levels"}
+                executedorders_trendline["1:1 candle"] = {"status": "Invalid price levels"}
+                executedorders_trendline["1:2 candle"] = {"status": "Invalid price levels"}
+                executedorders_trendline["profit candle"] = {"status": "Invalid price levels"}
+                executedorders_trendline["contract status summary"] = {"contract status": "Invalid price levels"}
+                updated_executedorders_data.append(executedorders_trendline)
                 continue
             
             # Get executioner candle position
             executioner_pos = executioner_candle.get("position_number")
             if executioner_pos is None:
                 log_and_print(f"No valid executioner candle position for trendline {trendline_type} in {market} {timeframe}", "WARNING")
-                pricecandle_trendline["stoploss"] = {
+                executedorders_trendline["stoploss"] = {
                     "exit_price": exit_price,
                     "status": "No executioner candle position",
                     "stoploss_threat": {"status": "No executioner candle position"},
                     "stoploss candle": {"status": "No executioner candle position"}
                 }
-                pricecandle_trendline["1:0.5 candle"] = {"status": "No executioner candle position"}
-                pricecandle_trendline["1:1 candle"] = {"status": "No executioner candle position"}
-                pricecandle_trendline["1:2 candle"] = {"status": "No executioner candle position"}
-                pricecandle_trendline["profit candle"] = {"status": "No executioner candle position"}
-                pricecandle_trendline["contract status summary"] = {"contract status": "No executioner candle position"}
-                updated_pricecandle_data.append(pricecandle_trendline)
+                executedorders_trendline["1:0.5 candle"] = {"status": "No executioner candle position"}
+                executedorders_trendline["1:1 candle"] = {"status": "No executioner candle position"}
+                executedorders_trendline["1:2 candle"] = {"status": "No executioner candle position"}
+                executedorders_trendline["profit candle"] = {"status": "No executioner candle position"}
+                executedorders_trendline["contract status summary"] = {"contract status": "No executioner candle position"}
+                updated_executedorders_data.append(executedorders_trendline)
                 continue
             
             # Initialize tracking variables
@@ -675,13 +675,13 @@ def BreakevenStopandProfitTracker(market: str, timeframe: str, json_dir: str) ->
             candle_1_1["independent_check"] = independent_check_1_1
             candle_1_2["independent_check"] = independent_check_1_2
             
-            # Update pricecandle trendline
-            pricecandle_trendline["stoploss"] = stoploss
-            pricecandle_trendline["1:0.5 candle"] = candle_1_0_5
-            pricecandle_trendline["1:1 candle"] = candle_1_1
-            pricecandle_trendline["1:2 candle"] = candle_1_2
-            pricecandle_trendline["profit candle"] = profit_candle
-            pricecandle_trendline["contract status summary"] = {"contract status": contract_status}
+            # Update executedorders trendline
+            executedorders_trendline["stoploss"] = stoploss
+            executedorders_trendline["1:0.5 candle"] = candle_1_0_5
+            executedorders_trendline["1:1 candle"] = candle_1_1
+            executedorders_trendline["1:2 candle"] = candle_1_2
+            executedorders_trendline["profit candle"] = profit_candle
+            executedorders_trendline["contract status summary"] = {"contract status": contract_status}
             
             log_and_print(
                 f"Tracked for trendline {trendline_type}: contract_status={contract_status}, "
@@ -694,13 +694,13 @@ def BreakevenStopandProfitTracker(market: str, timeframe: str, json_dir: str) ->
                 "DEBUG"
             )
             
-            updated_pricecandle_data.append(pricecandle_trendline)
+            updated_executedorders_data.append(executedorders_trendline)
         
         # Second deduplication: Remove duplicates based on pending order status
         seen_pending_orders = {}
-        final_pricecandle_data = []
+        final_executedorders_data = []
         
-        for entry in updated_pricecandle_data:
+        for entry in updated_executedorders_data:
             # Get pending order status
             pending_order_status = None
             if 'pending order' in entry and isinstance(entry['pending order'], dict):
@@ -719,7 +719,7 @@ def BreakevenStopandProfitTracker(market: str, timeframe: str, json_dir: str) ->
             
             # Skip entries with no pending order status or position number
             if not pending_order_status or position_number is None:
-                final_pricecandle_data.append(entry)
+                final_executedorders_data.append(entry)
                 continue
             
             if pending_order_status in seen_pending_orders:
@@ -741,21 +741,21 @@ def BreakevenStopandProfitTracker(market: str, timeframe: str, json_dir: str) ->
                 }
         
         # Collect final deduplicated entries
-        final_pricecandle_data = [data['entry'] for data in seen_pending_orders.values()]
-        log_and_print(f"Removed duplicates by pending order status, {len(final_pricecandle_data)} unique entries remain for {market} {timeframe}", "INFO")
+        final_executedorders_data = [data['entry'] for data in seen_pending_orders.values()]
+        log_and_print(f"Removed duplicates by pending order status, {len(final_executedorders_data)} unique entries remain for {market} {timeframe}", "INFO")
         
-        # Save final pricecandle.json
-        if os.path.exists(pricecandle_json_path):
-            os.remove(pricecandle_json_path)
-            log_and_print(f"Existing {pricecandle_json_path} deleted", "INFO")
+        # Save final executedorders.json
+        if os.path.exists(executedorders_json_path):
+            os.remove(executedorders_json_path)
+            log_and_print(f"Existing {executedorders_json_path} deleted", "INFO")
         
         try:
-            with open(pricecandle_json_path, 'w') as f:
-                json.dump(final_pricecandle_data, f, indent=4)
-            log_and_print(f"Updated pricecandle.json with breakeven, stoploss, profit tracking, independent checks, and stoploss_threat for {market} {timeframe}", "SUCCESS")
+            with open(executedorders_json_path, 'w') as f:
+                json.dump(final_executedorders_data, f, indent=4)
+            log_and_print(f"Updated executedorders.json with breakeven, stoploss, profit tracking, independent checks, and stoploss_threat for {market} {timeframe}", "SUCCESS")
             return True
         except Exception as e:
-            log_and_print(f"Error saving final pricecandle.json for {market} {timeframe}: {e}", "ERROR")
+            log_and_print(f"Error saving final executedorders.json for {market} {timeframe}: {e}", "ERROR")
             return False
     
     except Exception as e:

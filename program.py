@@ -55,7 +55,7 @@ def load_markets_and_timeframes(json_path):
 # Load markets, timeframes, and credentials at startup
 MARKETS, TIMEFRAMES = load_markets_and_timeframes(MARKETS_JSON_PATH)
 
-def candletimeleft(market, timeframe, candle_time, min_time_left=3.2):
+def candletimeleft(market, timeframe, candle_time, min_time_left=3.1):
     # Initialize MT5
     print(f"[Process-{market}] Initializing MT5 for {market}")
     for attempt in range(3):
@@ -136,7 +136,6 @@ def candletimeleft(market, timeframe, candle_time, min_time_left=3.2):
             
     finally:
         mt5.shutdown()
-
     
 def run_analysechart_m1():
     """Run the analysechart_m script."""
