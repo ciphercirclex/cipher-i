@@ -2078,13 +2078,14 @@ def collect_all_pending_orders(market: str, timeframe: str, json_dir: str) -> bo
         return False
 
 def collect_all_executionercandle_orders(market: str, timeframe: str, json_dir: str) -> bool:
-    """Collect executioner candle orders from pricecandle.json for a specific market and timeframe
-    and save to executedorders.json."""
+    """Collect executioner candle orders from pricecandle.json for a specific market and timeframe,
+    save to executedorders.json, and aggregate across all markets and timeframes to allexecutedorders.json."""
     log_and_print(f"Collecting executioner candle orders for market={market}, timeframe={timeframe}", "INFO")
     
     # Define file paths
     pricecandle_json_path = os.path.join(json_dir, "pricecandle.json")
     executed_orders_json_path = os.path.join(json_dir, "executedorders.json")
+    collective_executed_path = os.path.join(BASE_OUTPUT_FOLDER, "allexecutedorders.json")
     
     # Check if pricecandle.json exists
     if not os.path.exists(pricecandle_json_path):
@@ -2099,6 +2100,7 @@ def collect_all_executionercandle_orders(market: str, timeframe: str, json_dir: 
         # Extract executioner candle orders from pricecandle.json
         executed_orders = []
         seen_entry_prices = {}  # Track unique entry prices to keep oldest order
+        skipped_reasons = {}  # Track why trendlines are skipped
         
         for trendline in pricecandle_data:
             executioner_candle = trendline.get("executioner candle", {})
@@ -2111,12 +2113,14 @@ def collect_all_executionercandle_orders(market: str, timeframe: str, json_dir: 
             
             # Skip if there is no valid executioner candle or it wasn't triggered
             if not executioner_candle or executioner_candle.get("status") != "Candle found at order holder entry level":
+                skipped_reasons[trendline_type] = f"No valid executioner candle or status not triggered: {executioner_candle.get('status', 'N/A')}"
                 log_and_print(f"No valid executioner candle for trendline {trendline_type} in {market} {timeframe}", "INFO")
                 continue
             
             # Extract entry_price from order_holder
             actual_price = order_holder.get("High" if order_type == "long" else "Low", 0)
             if actual_price == 0:
+                skipped_reasons[trendline_type] = "Invalid order_holder price"
                 log_and_print(f"Invalid order_holder price for trendline {trendline_type} in {market} {timeframe}", "WARNING")
                 continue
             
@@ -2134,6 +2138,7 @@ def collect_all_executionercandle_orders(market: str, timeframe: str, json_dir: 
                         "INFO"
                     )
                 else:
+                    skipped_reasons[trendline_type] = f"Duplicate entry_price {actual_price}, newer timestamp {order_holder_timestamp}"
                     log_and_print(
                         f"Duplicate executioner order detected for trendline {trendline_type} with entry_price {actual_price} in {market} {timeframe}. "
                         f"Discarding newer entry at {order_holder_timestamp}.",
@@ -2161,6 +2166,8 @@ def collect_all_executionercandle_orders(market: str, timeframe: str, json_dir: 
             
             # Create executed order entry using the pricecandle.json format
             executed_order = {
+                "market": market,
+                "timeframe": timeframe,
                 "type": trendline_type,
                 "sender": {
                     "candle_color": sender.get("candle_color", ""),
@@ -2241,6 +2248,7 @@ def collect_all_executionercandle_orders(market: str, timeframe: str, json_dir: 
                 executed_order["executioner candle"]["Low"],
                 executed_order["executioner candle"]["Close"]
             ]):
+                skipped_reasons[trendline_type] = f"Invalid price values: {executed_order}"
                 log_and_print(f"Invalid price values for trendline {trendline_type} in {market} {timeframe}: {executed_order}", "WARNING")
                 continue
             
@@ -2254,6 +2262,12 @@ def collect_all_executionercandle_orders(market: str, timeframe: str, json_dir: 
                 "DEBUG"
             )
         
+        # Log skipped reasons
+        if skipped_reasons:
+            log_and_print(f"Skipped trendlines in {market} {timeframe}: {skipped_reasons}", "INFO")
+        if not executed_orders:
+            log_and_print(f"No executioner orders collected for {market} {timeframe}. Skipped reasons: {skipped_reasons}", "WARNING")
+        
         # Save executioner orders to executedorders.json
         try:
             with open(executed_orders_json_path, 'w') as f:
@@ -2266,578 +2280,9 @@ def collect_all_executionercandle_orders(market: str, timeframe: str, json_dir: 
             log_and_print(f"Error saving executedorders.json for {market} {timeframe}: {str(e)}", "ERROR")
             return False
         
-        return True
-    
-    except Exception as e:
-        log_and_print(f"Error collecting executioner orders for {market} {timeframe}: {str(e)}", "ERROR")
-        return False
-def ExecutedOrderUpdater(market: str, timeframe: str, json_dir: str) -> bool:
-    """Update executedorders.json to include profit, loss, ratios, stoploss, and reward-to-risk levels for executed orders.
-    Prepare data for saving running orders and collective orders."""
-    log_and_print(f"Updating executed orders with profit, loss, ratios, stoploss, and reward-to-risk levels for market={market}, timeframe={timeframe}", "INFO")
-    
-    # Define file paths
-    executed_orders_json_path = os.path.join(json_dir, "executedorders.json")
-    calculatedprices_json_path = os.path.join(json_dir, "calculatedprices.json")
-    candlesafterbreakoutparent_json_path = os.path.join(json_dir, "candlesafterbreakoutparent.json")
-    running_orders_json_path = os.path.join(json_dir, "runningorders.json")
-    collective_records_path = os.path.join(BASE_OUTPUT_FOLDER, "allorder_records.json")
-    collective_running_path = os.path.join(BASE_OUTPUT_FOLDER, "allrunningorders.json")
-    
-    # Check if required JSON files exist
-    if not os.path.exists(executed_orders_json_path):
-        log_and_print(f"executedorders.json not found at {executed_orders_json_path} for {market} {timeframe}", "ERROR")
-        return False
-    if not os.path.exists(calculatedprices_json_path):
-        log_and_print(f"calculatedprices.json not found at {calculatedprices_json_path} for {market} {timeframe}", "ERROR")
-        return False
-    if not os.path.exists(candlesafterbreakoutparent_json_path):
-        log_and_print(f"candlesafterbreakoutparent.json not found at {candlesafterbreakoutparent_json_path} for {market} {timeframe}", "ERROR")
-        return False
-    
-    try:
-        # Load executedorders.json
-        with open(executed_orders_json_path, 'r') as f:
-            executed_orders = json.load(f)
-        
-        # Load calculatedprices.json
-        with open(calculatedprices_json_path, 'r') as f:
-            calculatedprices_data = json.load(f)
-        
-        # Load candlesafterbreakoutparent.json
-        with open(candlesafterbreakoutparent_json_path, 'r') as f:
-            candlesafterbreakoutparent_data = json.load(f)
-        
-        # Update each executed order with profit, loss, ratios, stoploss, and reward-to-risk levels
-        updated_executed_orders = []
-        running_orders = []
-        price_tolerance = 1e-3  # Match tolerance consistent with other functions
-        
-        for order in executed_orders:
-            order_type = order.get("receiver", {}).get("order_type", "").lower()
-            order_holder = order.get("order_holder", {})
-            actual_price = order_holder.get("High" if order_type == "long" else "Low", 0)
-            trendline_type = order.get("type")
-            breakout_parent_pos = order.get("Breakout_parent", {}).get("position_number")
-            
-            # Find matching calculatedprices entry
-            matching_calculated = None
-            for calc_entry in calculatedprices_data:
-                calc_order_type = calc_entry.get("order_type", "").lower()
-                calc_entry_price = calc_entry.get("entry_price", 0)
-                if (calc_order_type == ("buy_limit" if order_type == "long" else "sell_limit") and 
-                    abs(calc_entry_price - actual_price) < price_tolerance):
-                    matching_calculated = calc_entry
-                    log_and_print(
-                        f"Matched executed order for trendline {trendline_type}: "
-                        f"executed_entry={actual_price}, calc_entry={calc_entry_price}, "
-                        f"price_diff={abs(calc_entry_price - actual_price)}, order_type={order_type}",
-                        "DEBUG"
-                    )
-                    break
-            
-            # Initialize profit,loss,ratios field
-            if not matching_calculated:
-                log_and_print(
-                    f"No matching calculated prices found for executed order {trendline_type} "
-                    f"with entry_price {actual_price} in {market} {timeframe}",
-                    "WARNING"
-                )
-                order["profit,loss,ratios"] = {
-                    "status": "No matching calculated prices found",
-                    "order_type": "unknown",
-                    "entry_price": actual_price,
-                    "exit_price": 0.0,
-                    "1:0.5_price": 0.0,
-                    "1:1_price": 0.0,
-                    "1:2_price": 0.0,
-                    "profit_price": 0.0,
-                    "lot_size": 0.0
-                }
-                order["stoploss"] = {"status": "No matching calculated prices"}
-                order["stoploss_threat"] = {"status": "No matching calculated prices"}
-                order["ratio_0.5"] = {"status_1": "No matching calculated prices"}
-                order["ratio_0.5_revisit"] = {"status_2": "No matching calculated prices"}
-                order["ratio_1"] = {"status_1": "No matching calculated prices"}
-                order["ratio_1_revisit"] = {"status_2": "No matching calculated prices"}
-                order["ratio_2"] = {"status_1": "No matching calculated prices"}
-                order["ratio_2_revisit"] = {"status_2": "No matching calculated prices"}
-                order["profit"] = {"status": "No matching calculated prices"}
-            else:
-                # Add profit,loss,ratios field with data from calculatedprices
-                calc_order_type = matching_calculated.get("order_type", "").lower()
-                order["profit,loss,ratios"] = {
-                    "status": "Updated with calculated prices",
-                    "order_type": calc_order_type if calc_order_type in ["buy_limit", "sell_limit"] else "unknown",
-                    "entry_price": matching_calculated.get("entry_price", 0.0),
-                    "exit_price": matching_calculated.get("exit_price", 0.0),
-                    "1:0.5_price": matching_calculated.get("1:0.5_price", 0.0),
-                    "1:1_price": matching_calculated.get("1:1_price", 0.0),
-                    "1:2_price": matching_calculated.get("1:2_price", 0.0),
-                    "profit_price": matching_calculated.get("profit_price", 0.0),
-                    "lot_size": matching_calculated.get("lot_size", 0.0)
-                }
-                # Validate prices
-                prices = [
-                    order["profit,loss,ratios"]["entry_price"],
-                    order["profit,loss,ratios"]["exit_price"],
-                    order["profit,loss,ratios"]["1:0.5_price"],
-                    order["profit,loss,ratios"]["1:1_price"],
-                    order["profit,loss,ratios"]["1:2_price"],
-                    order["profit,loss,ratios"]["profit_price"]
-                ]
-                if any(price <= 0 for price in prices):
-                    log_and_print(
-                        f"Invalid price values for executed order {trendline_type} in {market} {timeframe}: "
-                        f"{order['profit,loss,ratios']}",
-                        "WARNING"
-                    )
-                    order["profit,loss,ratios"]["status"] = "Invalid price values"
-                    order["stoploss"] = {"status": "Invalid price values"}
-                    order["stoploss_threat"] = {"status": "Invalid price values"}
-                    order["ratio_0.5"] = {"status_1": "Invalid price values"}
-                    order["ratio_0.5_revisit"] = {"status_2": "Invalid price values"}
-                    order["ratio_1"] = {"status_1": "Invalid price values"}
-                    order["ratio_1_revisit"] = {"status_2": "Invalid price values"}
-                    order["ratio_2"] = {"status_1": "Invalid price values"}
-                    order["ratio_2_revisit"] = {"status_2": "Invalid price values"}
-                    order["profit"] = {"status": "Invalid price values"}
-                elif order["profit,loss,ratios"]["lot_size"] <= 0:
-                    log_and_print(
-                        f"Invalid lot_size {order['profit,loss,ratios']['lot_size']} for executed order "
-                        f"{trendline_type} in {market} {timeframe}",
-                        "WARNING"
-                    )
-                    order["profit,loss,ratios"]["status"] = "Invalid lot_size"
-                    order["stoploss"] = {"status": "Invalid lot_size"}
-                    order["stoploss_threat"] = {"status": "Invalid lot_size"}
-                    order["ratio_0.5"] = {"status_1": "Invalid lot_size"}
-                    order["ratio_0.5_revisit"] = {"status_2": "Invalid lot_size"}
-                    order["ratio_1"] = {"status_1": "Invalid lot_size"}
-                    order["ratio_1_revisit"] = {"status_2": "Invalid lot_size"}
-                    order["ratio_2"] = {"status_1": "Invalid lot_size"}
-                    order["ratio_2_revisit"] = {"status_2": "Invalid lot_size"}
-                    order["profit"] = {"status": "Invalid lot_size"}
-                else:
-                    # Find matching candlesafterbreakoutparent entry
-                    matching_cabp_trendline = None
-                    for cabp_trendline in candlesafterbreakoutparent_data:
-                        cabp_trendline_info = cabp_trendline.get("trendline", {})
-                        if (cabp_trendline_info.get("type") == trendline_type and 
-                            cabp_trendline_info.get("Breakout_parent_position") == breakout_parent_pos):
-                            matching_cabp_trendline = cabp_trendline
-                            break
-                    
-                    if not matching_cabp_trendline:
-                        log_and_print(
-                            f"No matching trendline found in candlesafterbreakoutparent.json for {trendline_type} "
-                            f"with Breakout_parent_position {breakout_parent_pos} in {market} {timeframe}", "WARNING"
-                        )
-                        order["stoploss"] = {"status": "No matching candlesafterbreakoutparent"}
-                        order["stoploss_threat"] = {"status": "No matching candlesafterbreakoutparent"}
-                        order["ratio_0.5"] = {"status_1": "No matching candlesafterbreakoutparent"}
-                        order["ratio_0.5_revisit"] = {"status_2": "No matching candlesafterbreakoutparent"}
-                        order["ratio_1"] = {"status_1": "No matching candlesafterbreakoutparent"}
-                        order["ratio_1_revisit"] = {"status_2": "No matching candlesafterbreakoutparent"}
-                        order["ratio_2"] = {"status_1": "No matching candlesafterbreakoutparent"}
-                        order["ratio_2_revisit"] = {"status_2": "No matching candlesafterbreakoutparent"}
-                        order["profit"] = {"status": "No matching candlesafterbreakoutparent"}
-                    else:
-                        # Initialize fields
-                        stoploss = {"status": "safe"}
-                        stoploss_threat = {"status": "none"}
-                        ratio_0_5 = {"status_1": "waiting"}
-                        ratio_0_5_revisit = {"status_2": "none"}
-                        ratio_1 = {"status_1": "waiting"}
-                        ratio_1_revisit = {"status_2": "none"}
-                        ratio_2 = {"status_1": "waiting"}
-                        ratio_2_revisit = {"status_2": "none"}
-                        profit = {"status": "waiting"}
-                        
-                        entry_price = matching_calculated.get("entry_price", 0.0)
-                        exit_price = matching_calculated.get("exit_price", 0.0)
-                        price_0_5 = matching_calculated.get("1:0.5_price", 0.0)
-                        price_1 = matching_calculated.get("1:1_price", 0.0)
-                        price_2 = matching_calculated.get("1:2_price", 0.0)
-                        profit_price = matching_calculated.get("profit_price", 0.0)
-                        
-                        # Track highest ratio reached and profit status
-                        highest_ratio_reached = None  # Will be "0.5", "1", "2", or None
-                        profit_reached = False
-                        stoploss_candle = None
-                        
-                        # Check candles after executioner candle
-                        executioner_pos = order.get("executioner candle", {}).get("position_number")
-                        candles = matching_cabp_trendline.get("candles", [])
-                        for candle in candles:
-                            if candle.get("position_number") >= executioner_pos:
-                                continue  # Skip candles before or at executioner candle
-                            close_price = candle.get("Close")
-                            if close_price is None:
-                                continue  # Skip incomplete candles
-                            
-                            # Check profit (takes precedence)
-                            if order_type == "long" and close_price >= profit_price - price_tolerance:
-                                profit = {
-                                    "status": "profit reached",
-                                    "position_number": candle.get("position_number"),
-                                    "Time": candle.get("Time"),
-                                    "Open": candle.get("Open"),
-                                    "High": candle.get("High"),
-                                    "Low": candle.get("Low"),
-                                    "Close": close_price
-                                }
-                                profit_reached = True
-                                break  # Profit reached, no need to check further
-                            elif order_type == "short" and close_price <= profit_price + price_tolerance:
-                                profit = {
-                                    "status": "profit reached",
-                                    "position_number": candle.get("position_number"),
-                                    "Time": candle.get("Time"),
-                                    "Open": candle.get("Open"),
-                                    "High": candle.get("High"),
-                                    "Low": candle.get("Low"),
-                                    "Close": close_price
-                                }
-                                profit_reached = True
-                                break  # Profit reached, no need to check further
-                            
-                            # Check ratio levels (based on close price)
-                            if order_type == "long":
-                                if close_price >= price_0_5 - price_tolerance and ratio_0_5["status_1"] == "waiting":
-                                    ratio_0_5 = {
-                                        "status_1": "reached",
-                                        "position_number": candle.get("position_number"),
-                                        "Time": candle.get("Time"),
-                                        "Open": candle.get("Open"),
-                                        "High": candle.get("High"),
-                                        "Low": candle.get("Low"),
-                                        "Close": close_price
-                                    }
-                                    highest_ratio_reached = "0.5"
-                                if close_price >= price_1 - price_tolerance and ratio_1["status_1"] == "waiting":
-                                    ratio_1 = {
-                                        "status_1": "reached",
-                                        "position_number": candle.get("position_number"),
-                                        "Time": candle.get("Time"),
-                                        "Open": candle.get("Open"),
-                                        "High": candle.get("High"),
-                                        "Low": candle.get("Low"),
-                                        "Close": close_price
-                                    }
-                                    highest_ratio_reached = "1"
-                                if close_price >= price_2 - price_tolerance and ratio_2["status_1"] == "waiting":
-                                    ratio_2 = {
-                                        "status_1": "reached",
-                                        "position_number": candle.get("position_number"),
-                                        "Time": candle.get("Time"),
-                                        "Open": candle.get("Open"),
-                                        "High": candle.get("High"),
-                                        "Low": candle.get("Low"),
-                                        "Close": close_price
-                                    }
-                                    highest_ratio_reached = "2"
-                            elif order_type == "short":
-                                if close_price <= price_0_5 + price_tolerance and ratio_0_5["status_1"] == "waiting":
-                                    ratio_0_5 = {
-                                        "status_1": "reached",
-                                        "position_number": candle.get("position_number"),
-                                        "Time": candle.get("Time"),
-                                        "Open": candle.get("Open"),
-                                        "High": candle.get("High"),
-                                        "Low": candle.get("Low"),
-                                        "Close": close_price
-                                    }
-                                    highest_ratio_reached = "0.5"
-                                if close_price <= price_1 + price_tolerance and ratio_1["status_1"] == "waiting":
-                                    ratio_1 = {
-                                        "status_1": "reached",
-                                        "position_number": candle.get("position_number"),
-                                        "Time": candle.get("Time"),
-                                        "Open": candle.get("Open"),
-                                        "High": candle.get("High"),
-                                        "Low": candle.get("Low"),
-                                        "Close": close_price
-                                    }
-                                    highest_ratio_reached = "1"
-                                if close_price <= price_2 + price_tolerance and ratio_2["status_1"] == "waiting":
-                                    ratio_2 = {
-                                        "status_1": "reached",
-                                        "position_number": candle.get("position_number"),
-                                        "Time": candle.get("Time"),
-                                        "Open": candle.get("Open"),
-                                        "High": candle.get("High"),
-                                        "Low": candle.get("Low"),
-                                        "Close": close_price
-                                    }
-                                    highest_ratio_reached = "2"
-                            
-                            # Check stoploss (exit_price)
-                            if order_type == "long" and close_price <= exit_price + price_tolerance:
-                                stoploss_candle = {
-                                    "position_number": candle.get("position_number"),
-                                    "Time": candle.get("Time"),
-                                    "Open": candle.get("Open"),
-                                    "High": candle.get("High"),
-                                    "Low": candle.get("Low"),
-                                    "Close": close_price
-                                }
-                                break  # Stoploss hit, stop checking further
-                            elif order_type == "short" and close_price >= exit_price - price_tolerance:
-                                stoploss_candle = {
-                                    "position_number": candle.get("position_number"),
-                                    "Time": candle.get("Time"),
-                                    "Open": candle.get("Open"),
-                                    "High": candle.get("High"),
-                                    "Low": candle.get("Low"),
-                                    "Close": close_price
-                                }
-                                break  # Stoploss hit, stop checking further
-                            
-                            # Check stoploss threat (closes beyond entry_price but not stoploss)
-                            if highest_ratio_reached or profit_reached:
-                                if order_type == "long" and close_price < entry_price and close_price > exit_price + price_tolerance:
-                                    stoploss_threat = {
-                                        "status": "threat to the stoploss",
-                                        "position_number": candle.get("position_number"),
-                                        "Time": candle.get("Time"),
-                                        "Open": candle.get("Open"),
-                                        "High": candle.get("High"),
-                                        "Low": candle.get("Low"),
-                                        "Close": close_price
-                                    }
-                                elif order_type == "short" and close_price > entry_price and close_price < exit_price - price_tolerance:
-                                    stoploss_threat = {
-                                        "status": "threat to the stoploss",
-                                        "position_number": candle.get("position_number"),
-                                        "Time": candle.get("Time"),
-                                        "Open": candle.get("Open"),
-                                        "High": candle.get("High"),
-                                        "Low": candle.get("Low"),
-                                        "Close": close_price
-                                    }
-                        
-                        # Set stoploss status based on highest ratio reached
-                        if stoploss_candle:
-                            if highest_ratio_reached:
-                                stoploss = {
-                                    "status": f"stoploss exited at {highest_ratio_reached} be",
-                                    "position_number": stoploss_candle["position_number"],
-                                    "Time": stoploss_candle["Time"],
-                                    "Open": stoploss_candle["Open"],
-                                    "High": stoploss_candle["High"],
-                                    "Low": stoploss_candle["Low"],
-                                    "Close": stoploss_candle["Close"]
-                                }
-                            else:
-                                stoploss = {
-                                    "status": "stoploss hit",
-                                    "position_number": stoploss_candle["position_number"],
-                                    "Time": stoploss_candle["Time"],
-                                    "Open": stoploss_candle["Open"],
-                                    "High": stoploss_candle["High"],
-                                    "Low": stoploss_candle["Low"],
-                                    "Close": stoploss_candle["Close"]
-                                }
-                        
-                        # Check revisits only if profit is not reached
-                        if not profit_reached:
-                            for candle in candles:
-                                if candle.get("position_number") >= executioner_pos:
-                                    continue  # Skip candles before or at executioner candle
-                                close_price = candle.get("Close")
-                                if close_price is None:
-                                    continue  # Skip incomplete candles
-                                
-                                # Check revisits after reaching ratio levels
-                                if ratio_0_5["status_1"] == "reached" and ratio_0_5_revisit["status_2"] == "none":
-                                    if order_type == "long" and close_price <= price_0_5 + price_tolerance:
-                                        ratio_0_5_revisit = {
-                                            "status_2": "reversed",
-                                            "position_number": candle.get("position_number"),
-                                            "Time": candle.get("Time"),
-                                            "Open": candle.get("Open"),
-                                            "High": candle.get("High"),
-                                            "Low": candle.get("Low"),
-                                            "Close": close_price
-                                        }
-                                    elif order_type == "short" and close_price >= price_0_5 - price_tolerance:
-                                        ratio_0_5_revisit = {
-                                            "status_2": "reversed",
-                                            "position_number": candle.get("position_number"),
-                                            "Time": candle.get("Time"),
-                                            "Open": candle.get("Open"),
-                                            "High": candle.get("High"),
-                                            "Low": candle.get("Low"),
-                                            "Close": close_price
-                                        }
-                                if ratio_1["status_1"] == "reached" and ratio_1_revisit["status_2"] == "none":
-                                    if order_type == "long" and close_price <= price_1 + price_tolerance:
-                                        ratio_1_revisit = {
-                                            "status_2": "reversed",
-                                            "position_number": candle.get("position_number"),
-                                            "Time": candle.get("Time"),
-                                            "Open": candle.get("Open"),
-                                            "High": candle.get("High"),
-                                            "Low": candle.get("Low"),
-                                            "Close": close_price
-                                        }
-                                    elif order_type == "short" and close_price >= price_1 - price_tolerance:
-                                        ratio_1_revisit = {
-                                            "status_2": "reversed",
-                                            "position_number": candle.get("position_number"),
-                                            "Time": candle.get("Time"),
-                                            "Open": candle.get("Open"),
-                                            "High": candle.get("High"),
-                                            "Low": candle.get("Low"),
-                                            "Close": close_price
-                                        }
-                                if ratio_2["status_1"] == "reached" and ratio_2_revisit["status_2"] == "none":
-                                    if order_type == "long" and close_price <= price_2 + price_tolerance:
-                                        ratio_2_revisit = {
-                                            "status_2": "reversed",
-                                            "position_number": candle.get("position_number"),
-                                            "Time": candle.get("Time"),
-                                            "Open": candle.get("Open"),
-                                            "High": candle.get("High"),
-                                            "Low": candle.get("Low"),
-                                            "Close": close_price
-                                        }
-                                    elif order_type == "short" and close_price >= price_2 - price_tolerance:
-                                        ratio_2_revisit = {
-                                            "status_2": "reversed",
-                                            "position_number": candle.get("position_number"),
-                                            "Time": candle.get("Time"),
-                                            "Open": candle.get("Open"),
-                                            "High": candle.get("High"),
-                                            "Low": candle.get("Low"),
-                                            "Close": close_price
-                                        }
-                        
-                        # Set revisit status to "reached profit" if profit was reached and no reversal
-                        if profit["status"] == "profit reached":
-                            if ratio_0_5["status_1"] == "reached" and ratio_0_5_revisit["status_2"] == "none":
-                                ratio_0_5_revisit["status_2"] = "reached profit"
-                            if ratio_1["status_1"] == "reached" and ratio_1_revisit["status_2"] == "none":
-                                ratio_1_revisit["status_2"] = "reached profit"
-                            if ratio_2["status_1"] == "reached" and ratio_2_revisit["status_2"] == "none":
-                                ratio_2_revisit["status_2"] = "reached profit"
-                        
-                        # Assign fields to order
-                        order["stoploss"] = stoploss
-                        order["stoploss_threat"] = stoploss_threat
-                        order["ratio_0.5"] = ratio_0_5
-                        order["ratio_0.5_revisit"] = ratio_0_5_revisit
-                        order["ratio_1"] = ratio_1
-                        order["ratio_1_revisit"] = ratio_1_revisit
-                        order["ratio_2"] = ratio_2
-                        order["ratio_2_revisit"] = ratio_2_revisit
-                        order["profit"] = profit
-                        
-                        # Check if order is a running order (stoploss: safe, profit: waiting)
-                        if stoploss["status"] == "safe" and profit["status"] == "waiting":
-                            running_orders.append(order)
-                        
-                        log_and_print(
-                            f"Updated trendline {trendline_type}: stoploss={stoploss['status']}, "
-                            f"stoploss_threat={stoploss_threat['status']}, "
-                            f"ratio_0.5={ratio_0_5['status_1']}, ratio_0.5_revisit={ratio_0_5_revisit['status_2']}, "
-                            f"ratio_1={ratio_1['status_1']}, ratio_1_revisit={ratio_1_revisit['status_2']}, "
-                            f"ratio_2={ratio_2['status_1']}, ratio_2_revisit={ratio_2_revisit['status_2']}, "
-                            f"profit={profit['status']} in {market} {timeframe}",
-                            "DEBUG"
-                        )
-            
-            updated_executed_orders.append(order)
-        
-        # Aggregate all executed orders and running orders across markets and timeframes
+        # Aggregate all executed orders across markets and timeframes
         all_executed_orders = []
-        all_running_orders = []
-        timeframe_counts_exited = {
-            "5minutes": 0,
-            "15minutes": 0,
-            "30minutes": 0,
-            "1Hour": 0,
-            "4Hour": 0
-        }
-        timeframe_counts_profit = {
-            "5minutes": 0,
-            "15minutes": 0,
-            "30minutes": 0,
-            "1Hour": 0,
-            "4Hour": 0
-        }
-        timeframe_counts_stoploss = {
-            "5minutes": 0,
-            "15minutes": 0,
-            "30minutes": 0,
-            "1Hour": 0,
-            "4Hour": 0
-        }
-        timeframe_counts_0_5 = {
-            "5minutes": 0,
-            "15minutes": 0,
-            "30minutes": 0,
-            "1Hour": 0,
-            "4Hour": 0
-        }
-        timeframe_counts_0_5_profit = {
-            "5minutes": 0,
-            "15minutes": 0,
-            "30minutes": 0,
-            "1Hour": 0,
-            "4Hour": 0
-        }
-        timeframe_counts_0_5_be = {
-            "5minutes": 0,
-            "15minutes": 0,
-            "30minutes": 0,
-            "1Hour": 0,
-            "4Hour": 0
-        }
-        timeframe_counts_1 = {
-            "5minutes": 0,
-            "15minutes": 0,
-            "30minutes": 0,
-            "1Hour": 0,
-            "4Hour": 0
-        }
-        timeframe_counts_1_profit = {
-            "5minutes": 0,
-            "15minutes": 0,
-            "30minutes": 0,
-            "1Hour": 0,
-            "4Hour": 0
-        }
-        timeframe_counts_1_be = {
-            "5minutes": 0,
-            "15minutes": 0,
-            "30minutes": 0,
-            "1Hour": 0,
-            "4Hour": 0
-        }
-        timeframe_counts_2 = {
-            "5minutes": 0,
-            "15minutes": 0,
-            "30minutes": 0,
-            "1Hour": 0,
-            "4Hour": 0
-        }
-        timeframe_counts_2_profit = {
-            "5minutes": 0,
-            "15minutes": 0,
-            "30minutes": 0,
-            "1Hour": 0,
-            "4Hour": 0
-        }
-        timeframe_counts_2_be = {
-            "5minutes": 0,
-            "15minutes": 0,
-            "30minutes": 0,
-            "1Hour": 0,
-            "4Hour": 0
-        }
-        timeframe_counts_running = {
+        timeframe_counts_executed = {
             "5minutes": 0,
             "15minutes": 0,
             "30minutes": 0,
@@ -2851,56 +2296,15 @@ def ExecutedOrderUpdater(market: str, timeframe: str, json_dir: str) -> bool:
             for tf in TIMEFRAMES:
                 tf_dir = os.path.join(BASE_OUTPUT_FOLDER, formatted_market, tf.lower())
                 executed_path = os.path.join(tf_dir, "executedorders.json")
-                running_path = os.path.join(tf_dir, "runningorders.json")
                 db_tf = DB_TIMEFRAME_MAPPING.get(tf, tf)
                 
-                # Collect executed orders
                 if os.path.exists(executed_path):
                     try:
                         with open(executed_path, 'r') as f:
                             executed_data = json.load(f)
                         if isinstance(executed_data, list):
-                            for order in executed_data:
-                                order["market"] = mkt
-                                order["timeframe"] = tf
-                                all_executed_orders.append(order)
-                                
-                                # Count exited orders (profit or stoploss)
-                                stoploss_status = order.get("stoploss", {}).get("status", "")
-                                profit_status = order.get("profit", {}).get("status", "")
-                                if profit_status == "profit reached" or stoploss_status != "safe":
-                                    timeframe_counts_exited[db_tf] += 1
-                                
-                                # Count profit orders
-                                if profit_status == "profit reached":
-                                    timeframe_counts_profit[db_tf] += 1
-                                
-                                # Count stoploss orders
-                                if stoploss_status != "safe":
-                                    timeframe_counts_stoploss[db_tf] += 1
-                                
-                                # Count ratio orders
-                                if order.get("ratio_0.5", {}).get("status_1", "") == "reached":
-                                    timeframe_counts_0_5[db_tf] += 1
-                                    if profit_status == "profit reached" and order.get("ratio_0.5_revisit", {}).get("status_2", "") == "reached profit":
-                                        timeframe_counts_0_5_profit[db_tf] += 1
-                                    elif stoploss_status.startswith("stoploss exited at"):
-                                        timeframe_counts_0_5_be[db_tf] += 1
-                                
-                                if order.get("ratio_1", {}).get("status_1", "") == "reached":
-                                    timeframe_counts_1[db_tf] += 1
-                                    if profit_status == "profit reached" and order.get("ratio_1_revisit", {}).get("status_2", "") == "reached profit":
-                                        timeframe_counts_1_profit[db_tf] += 1
-                                    elif stoploss_status.startswith("stoploss exited at"):
-                                        timeframe_counts_1_be[db_tf] += 1
-                                
-                                if order.get("ratio_2", {}).get("status_1", "") == "reached":
-                                    timeframe_counts_2[db_tf] += 1
-                                    if profit_status == "profit reached" and order.get("ratio_2_revisit", {}).get("status_2", "") == "reached profit":
-                                        timeframe_counts_2_profit[db_tf] += 1
-                                    elif stoploss_status.startswith("stoploss exited at"):
-                                        timeframe_counts_2_be[db_tf] += 1
-                            
+                            all_executed_orders.extend(executed_data)
+                            timeframe_counts_executed[db_tf] += len(executed_data)
                             log_and_print(
                                 f"Collected {len(executed_data)} executed orders from {executed_path}",
                                 "DEBUG"
@@ -2909,243 +2313,37 @@ def ExecutedOrderUpdater(market: str, timeframe: str, json_dir: str) -> bool:
                             log_and_print(f"Invalid data format in {executed_path}: Expected list, got {type(executed_data)}", "WARNING")
                     except Exception as e:
                         log_and_print(f"Error reading {executed_path}: {str(e)}", "WARNING")
-                
-                # Collect running orders
-                if os.path.exists(running_path):
-                    try:
-                        with open(running_path, 'r') as f:
-                            running_data = json.load(f)
-                        if isinstance(running_data, list):
-                            for order in running_data:
-                                order["market"] = mkt
-                                order["timeframe"] = tf
-                                all_running_orders.append(order)
-                                timeframe_counts_running[db_tf] += 1
-                            log_and_print(
-                                f"Collected {len(running_data)} running orders from {running_path}",
-                                "DEBUG"
-                            )
-                        else:
-                            log_and_print(f"Invalid data format in {running_path}: Expected list, got {type(running_data)}", "WARNING")
-                    except Exception as e:
-                        log_and_print(f"Error reading {running_path}: {str(e)}", "WARNING")
         
-        # Prepare data for allorder_records.json
-        records_output = {
-            "allexitedorders": len(all_executed_orders),  # Total executed orders
-            "Exited orders": {
-                "total": sum(timeframe_counts_exited.values()),
-                "5minutes exited orders": timeframe_counts_exited["5minutes"],
-                "15minutes exited orders": timeframe_counts_exited["15minutes"],
-                "30minutes exited orders": timeframe_counts_exited["30minutes"],
-                "1Hour exited orders": timeframe_counts_exited["1Hour"],
-                "4Hour exited orders": timeframe_counts_exited["4Hour"],
-                "Profit exited orders": {
-                    "total": sum(timeframe_counts_profit.values()),
-                    "5minutes profit orders": timeframe_counts_profit["5minutes"],
-                    "15minutes profit orders": timeframe_counts_profit["15minutes"],
-                    "30minutes profit orders": timeframe_counts_profit["30minutes"],
-                    "1Hour profit orders": timeframe_counts_profit["1Hour"],
-                    "4Hour profit orders": timeframe_counts_profit["4Hour"]
-                },
-                "Stoploss exited orders": {
-                    "total": sum(timeframe_counts_stoploss.values()),
-                    "5minutes loss orders": timeframe_counts_stoploss["5minutes"],
-                    "15minutes loss orders": timeframe_counts_stoploss["15minutes"],
-                    "30minutes loss orders": timeframe_counts_stoploss["30minutes"],
-                    "1Hour loss orders": timeframe_counts_stoploss["1Hour"],
-                    "4Hour loss orders": timeframe_counts_stoploss["4Hour"]
-                }
-            },
-            "1:0.5 orders": {
-                "total": sum(timeframe_counts_0_5.values()),
-                "5minutes exited orders": timeframe_counts_0_5["5minutes"],
-                "15minutes exited orders": timeframe_counts_0_5["15minutes"],
-                "30minutes exited orders": timeframe_counts_0_5["30minutes"],
-                "1Hour exited orders": timeframe_counts_0_5["1Hour"],
-                "4Hour exited orders": timeframe_counts_0_5["4Hour"],
-                "1:0.5 Profit orders": {
-                    "total": sum(timeframe_counts_0_5_profit.values()),
-                    "5minutes 1:0.5 profit orders": timeframe_counts_0_5_profit["5minutes"],
-                    "15minutes 1:0.5 profit orders": timeframe_counts_0_5_profit["15minutes"],
-                    "30minutes 1:0.5 profit orders": timeframe_counts_0_5_profit["30minutes"],
-                    "1Hour 1:0.5 profit orders": timeframe_counts_0_5_profit["1Hour"],
-                    "4Hour 1:0.5 profit orders": timeframe_counts_0_5_profit["4Hour"]
-                },
-                "1:0.5 Breakevens": {
-                    "total": sum(timeframe_counts_0_5_be.values()),
-                    "5minutes BE orders": timeframe_counts_0_5_be["5minutes"],
-                    "15minutes BE orders": timeframe_counts_0_5_be["15minutes"],
-                    "30minutes BE orders": timeframe_counts_0_5_be["30minutes"],
-                    "1Hour BE orders": timeframe_counts_0_5_be["1Hour"],
-                    "4Hour BE orders": timeframe_counts_0_5_be["4Hour"]
-                }
-            },
-            "1:1 orders": {
-                "total": sum(timeframe_counts_1.values()),
-                "5minutes exited orders": timeframe_counts_1["5minutes"],
-                "15minutes exited orders": timeframe_counts_1["15minutes"],
-                "30minutes exited orders": timeframe_counts_1["30minutes"],
-                "1Hour exited orders": timeframe_counts_1["1Hour"],
-                "4Hour exited orders": timeframe_counts_1["4Hour"],
-                "1:1 Profit orders": {
-                    "total": sum(timeframe_counts_1_profit.values()),
-                    "5minutes 1:1 profit orders": timeframe_counts_1_profit["5minutes"],
-                    "15minutes 1:1 profit orders": timeframe_counts_1_profit["15minutes"],
-                    "30minutes 1:1 profit orders": timeframe_counts_1_profit["30minutes"],
-                    "1Hour 1:1 profit orders": timeframe_counts_1_profit["1Hour"],
-                    "4Hour 1:1 profit orders": timeframe_counts_1_profit["4Hour"]
-                },
-                "1:1 Breakevens": {
-                    "total": sum(timeframe_counts_1_be.values()),
-                    "5minutes BE orders": timeframe_counts_1_be["5minutes"],
-                    "15minutes BE orders": timeframe_counts_1_be["15minutes"],
-                    "30minutes BE orders": timeframe_counts_1_be["30minutes"],
-                    "1Hour BE orders": timeframe_counts_1_be["1Hour"],
-                    "4Hour BE orders": timeframe_counts_1_be["4Hour"]
-                }
-            },
-            "1:2 orders": {
-                "total": sum(timeframe_counts_2.values()),
-                "5minutes exited orders": timeframe_counts_2["5minutes"],
-                "15minutes exited orders": timeframe_counts_2["15minutes"],
-                "30minutes exited orders": timeframe_counts_2["30minutes"],
-                "1Hour exited orders": timeframe_counts_2["1Hour"],
-                "4Hour exited orders": timeframe_counts_2["4Hour"],
-                "1:2 Profit orders": {
-                    "total": sum(timeframe_counts_2_profit.values()),
-                    "5minutes 1:2 profit orders": timeframe_counts_2_profit["5minutes"],
-                    "15minutes 1:2 profit orders": timeframe_counts_2_profit["15minutes"],
-                    "30minutes 1:2 profit orders": timeframe_counts_2_profit["30minutes"],
-                    "1Hour 1:2 profit orders": timeframe_counts_2_profit["1Hour"],
-                    "4Hour 1:2 profit orders": timeframe_counts_2_profit["4Hour"]
-                },
-                "1:2 Breakevens": {
-                    "total": sum(timeframe_counts_2_be.values()),
-                    "5minutes BE orders": timeframe_counts_2_be["5minutes"],
-                    "15minutes BE orders": timeframe_counts_2_be["15minutes"],
-                    "30minutes BE orders": timeframe_counts_2_be["30minutes"],
-                    "1Hour BE orders": timeframe_counts_2_be["1Hour"],
-                    "4Hour BE orders": timeframe_counts_2_be["4Hour"]
-                }
-            },
+        # Prepare and save collective executed orders JSON
+        executed_output = {
+            "allexecutedorders": len(all_executed_orders),
+            "5minutes executed orders": timeframe_counts_executed["5minutes"],
+            "15minutes executed orders": timeframe_counts_executed["15minutes"],
+            "30minutes executed orders": timeframe_counts_executed["30minutes"],
+            "1Hour executed orders": timeframe_counts_executed["1Hour"],
+            "4Hours executed orders": timeframe_counts_executed["4Hour"],
             "orders": all_executed_orders
         }
         
-        # Prepare data for allrunningorders.json
-        running_output = {
-            "allrunningorders": len(all_running_orders),
-            "5minutes running orders": timeframe_counts_running["5minutes"],
-            "15minutes running orders": timeframe_counts_running["15minutes"],
-            "30minutes running orders": timeframe_counts_running["30minutes"],
-            "1Hour running orders": timeframe_counts_running["1Hour"],
-            "4Hours running orders": timeframe_counts_running["4Hour"],
-            "orders": all_running_orders
-        }
+        try:
+            with open(collective_executed_path, 'w') as f:
+                json.dump(executed_output, f, indent=4)
+            log_and_print(
+                f"Saved {len(all_executed_orders)} executed orders to {collective_executed_path} "
+                f"(5m: {timeframe_counts_executed['5minutes']}, 15m: {timeframe_counts_executed['15minutes']}, "
+                f"30m: {timeframe_counts_executed['30minutes']}, 1H: {timeframe_counts_executed['1Hour']}, "
+                f"4H: {timeframe_counts_executed['4Hour']})",
+                "SUCCESS"
+            )
+        except Exception as e:
+            log_and_print(f"Error saving allexecutedorders.json: {str(e)}", "ERROR")
+            return False
         
-        # Save all JSON files
-        success = save_executedorders_jsons(
-            updated_executed_orders=updated_executed_orders,
-            running_orders=running_orders,
-            records_output=records_output,
-            running_output=running_output,
-            executed_orders_json_path=executed_orders_json_path,
-            running_orders_json_path=running_orders_json_path,
-            collective_records_path=collective_records_path,
-            collective_running_path=collective_running_path,
-            market=market,
-            timeframe=timeframe
-        )
-        
-        return success
+        return True
     
     except Exception as e:
-        log_and_print(
-            f"Error updating executed orders for {market} {timeframe}: {str(e)}",
-            "ERROR"
-        )
+        log_and_print(f"Error collecting executioner orders for {market} {timeframe}: {str(e)}", "ERROR")
         return False
-def save_executedorders_jsons(
-    updated_executed_orders: list,
-    running_orders: list,
-    records_output: dict,
-    running_output: dict,
-    executed_orders_json_path: str,
-    running_orders_json_path: str,
-    collective_records_path: str,
-    collective_running_path: str,
-    market: str,
-    timeframe: str
-) -> bool:
-    """Save executed and running orders to their respective JSON files."""
-    
-    # Save updated executedorders.json
-    try:
-        with open(executed_orders_json_path, 'w') as f:
-            json.dump(updated_executed_orders, f, indent=4)
-        log_and_print(
-            f"Updated {len(updated_executed_orders)} executed orders with profit, loss, ratios, stoploss, and reward-to-risk levels "
-            f"in {executed_orders_json_path} for {market} {timeframe}",
-            "SUCCESS"
-        )
-    except Exception as e:
-        log_and_print(
-            f"Error saving updated executedorders.json for {market} {timeframe}: {str(e)}",
-            "ERROR"
-        )
-        return False
-    
-    # Save running orders to runningorders.json
-    try:
-        with open(running_orders_json_path, 'w') as f:
-            json.dump(running_orders, f, indent=4)
-        log_and_print(
-            f"Saved {len(running_orders)} running orders to {running_orders_json_path} for {market} {timeframe}",
-            "SUCCESS"
-        )
-    except Exception as e:
-        log_and_print(
-            f"Error saving runningorders.json for {market} {timeframe}: {str(e)}",
-            "ERROR"
-        )
-        return False
-    
-    # Save collective allorder_records.json
-    try:
-        with open(collective_records_path, 'w') as f:
-            json.dump(records_output, f, indent=4)
-        log_and_print(
-            f"Saved {len(records_output['orders'])} executed orders to {collective_records_path} "
-            f"(Exited: {records_output['Exited orders']['total']}, "
-            f"Profit: {records_output['Exited orders']['Profit exited orders']['total']}, "
-            f"Stoploss: {records_output['Exited orders']['Stoploss exited orders']['total']}, "
-            f"1:0.5: {records_output['1:0.5 orders']['total']}, "
-            f"1:1: {records_output['1:1 orders']['total']}, "
-            f"1:2: {records_output['1:2 orders']['total']})",
-            "SUCCESS"
-        )
-    except Exception as e:
-        log_and_print(f"Error saving allorder_records.json: {str(e)}", "ERROR")
-        return False
-    
-    # Save collective allrunningorders.json
-    try:
-        with open(collective_running_path, 'w') as f:
-            json.dump(running_output, f, indent=4)
-        log_and_print(
-            f"Saved {len(running_output['orders'])} running orders to {collective_running_path} "
-            f"(5m: {running_output['5minutes running orders']}, "
-            f"15m: {running_output['15minutes running orders']}, "
-            f"30m: {running_output['30minutes running orders']}, "
-            f"1H: {running_output['1Hour running orders']}, "
-            f"4H: {running_output['4Hours running orders']})",
-            "SUCCESS"
-        )
-    except Exception as e:
-        log_and_print(f"Error saving allrunningorders.json: {str(e)}", "ERROR")
-        return False
-    
-    return True
 
 def save_status_json(success_data: List[Dict], no_pending_data: List[Dict], failed_data: List[Dict]) -> None:
     """Save all status data (success, no pending, failed) to marketsstatus.json with detailed process status messages."""
@@ -3256,7 +2454,7 @@ def save_status_json(success_data: List[Dict], no_pending_data: List[Dict], fail
 
 def marketsliststatus() -> bool:
     """Generate marketsorderlist.json with pending orders, order-free markets, and new number position for matched candle data by timeframe.
-    Updates status.json for order-free market-timeframe pairs to 'order_free' and pending order pairs to 'chart_identified'."""
+    Updates status.json for order-free market-timeframe pairs to 'order_free' and pending order pairs to 'chart_identified' based on new rules."""
     log_and_print("Generating markets order list status", "INFO")
     
     markets_order_list_path = os.path.join(BASE_OUTPUT_FOLDER, "marketsorderlist.json")
@@ -3331,7 +2529,44 @@ def marketsliststatus() -> bool:
                 elif order_type == "sell_limit":
                     markets_pending[market][tf_key]["sell_limit"] += 1
         
-        # Determine order-free markets and update status.json for both order-free and pending markets
+        # Collect new number position for matched candle data for each timeframe
+        for tf in TIMEFRAMES:
+            tf_key = timeframe_mapping.get(tf, tf.lower())
+            new_number_position = None
+            for market in MARKETS:
+                formatted_market = market.replace(" ", "_")
+                json_dir = os.path.join(BASE_OUTPUT_FOLDER, formatted_market, tf.lower())
+                candles_inbetween_path = os.path.join(json_dir, "candlesamountinbetween.json")
+                
+                if os.path.exists(candles_inbetween_path):
+                    try:
+                        with open(candles_inbetween_path, 'r') as f:
+                            candles_data = json.load(f)
+                        new_number_position_value = candles_data.get("new number position for matched candle data")
+                        if new_number_position_value is not None:
+                            new_number_position = str(new_number_position_value)
+                            log_and_print(
+                                f"Found new number position {new_number_position} for timeframe {tf_key} from {market}",
+                                "DEBUG"
+                            )
+                            # Take the first valid value
+                            break
+                    except Exception as e:
+                        log_and_print(
+                            f"Error reading candlesamountinbetween.json for {market} {tf}: {str(e)}",
+                            "WARNING"
+                        )
+                        continue
+                else:
+                    log_and_print(
+                        f"candlesamountinbetween.json not found for {market} {tf} at {candles_inbetween_path}",
+                        "WARNING"
+                    )
+            
+            # Assign the new number position to the timeframe, default to "0" if not found
+            markets_pending["candlesamountinbetween"][tf_key] = new_number_position if new_number_position is not None else "0"
+        
+        # Determine order-free markets and update status.json based on new rules
         for market in MARKETS:
             formatted_market = market.replace(" ", "_")
             for tf in TIMEFRAMES:
@@ -3356,16 +2591,57 @@ def marketsliststatus() -> bool:
                     "timestamp": timestamp
                 }
                 
-                # Check if the market has no pending orders for this timeframe (order-free)
+                # Get order counts and candles amount
                 buy_limit_count = markets_pending.get(formatted_market, {}).get(tf_key, {}).get("buy_limit", 0)
                 sell_limit_count = markets_pending.get(formatted_market, {}).get(tf_key, {}).get("sell_limit", 0)
+                candles_count = int(markets_pending["candlesamountinbetween"].get(tf_key, "0"))
+                
+                # Apply new rules to determine order-free status
+                is_order_free = False
                 
                 if buy_limit_count == 0 and sell_limit_count == 0:
+                    # No orders
+                    if tf_key == "m5" and candles_count >= 100:
+                        is_order_free = True
+                    elif tf_key == "m15" and candles_count >= 100:
+                        is_order_free = True
+                    elif tf_key == "m30" and candles_count >= 50:
+                        is_order_free = True
+                    elif tf_key == "1H" and candles_count >= 20:
+                        is_order_free = True
+                    elif tf_key == "4H" and candles_count >= 10:
+                        is_order_free = True
+                elif (buy_limit_count == 0 and sell_limit_count > 0) or (buy_limit_count > 0 and sell_limit_count == 0):
+                    # One order type exists
+                    if tf_key == "m5" and candles_count >= 200:
+                        is_order_free = True
+                    elif tf_key == "m15" and candles_count >= 100:
+                        is_order_free = True
+                    elif tf_key == "m30" and candles_count >= 50:
+                        is_order_free = True
+                    elif tf_key == "1H" and candles_count >= 20:
+                        is_order_free = True
+                    elif tf_key == "4H" and candles_count >= 20:
+                        is_order_free = True
+                elif buy_limit_count > 0 and sell_limit_count > 0:
+                    # Both order types exist
+                    if tf_key == "m5" and candles_count >= 500:
+                        is_order_free = True
+                    elif tf_key == "m15" and candles_count >= 300:
+                        is_order_free = True
+                    elif tf_key == "m30" and candles_count >= 200:
+                        is_order_free = True
+                    elif tf_key == "1H" and candles_count >= 100:
+                        is_order_free = True
+                    elif tf_key == "4H" and candles_count >= 50:
+                        is_order_free = True
+                
+                # Set status based on rules
+                if is_order_free:
                     order_free_markets[tf_key].append(market)
                     status_data["status"] = "order_free"
                     status_data["elligible_status"] = "order_free"
                 else:
-                    # Market has pending orders
                     status_data["status"] = "chart_identified"
                     status_data["elligible_status"] = "chart_identified"
                 
@@ -3374,46 +2650,13 @@ def marketsliststatus() -> bool:
                     os.makedirs(os.path.dirname(status_file), exist_ok=True)
                     with open(status_file, 'w') as f:
                         json.dump(status_data, f, indent=4)
-                    log_and_print(f"Updated {status_file} to status '{status_data['status']}' and eligible_status '{status_data['elligible_status']}' for {market} ({tf})", "DEBUG")
+                    log_and_print(
+                        f"Updated {status_file} to status '{status_data['status']}' and eligible_status "
+                        f"'{status_data['elligible_status']}' for {market} ({tf})",
+                        "DEBUG"
+                    )
                 except Exception as e:
                     log_and_print(f"Error updating status.json for {market} ({tf}) at {status_file}: {str(e)}", "ERROR")
-        
-        # Collect new number position for matched candle data for each timeframe
-        for tf in TIMEFRAMES:
-            tf_key = timeframe_mapping.get(tf, tf.lower())
-            new_number_position = None
-            for market in MARKETS:
-                formatted_market = market.replace(" ", "_")
-                json_dir = os.path.join(BASE_OUTPUT_FOLDER, formatted_market, tf.lower())
-                candles_inbetween_path = os.path.join(json_dir, "candlesamountinbetween.json")
-                
-                if os.path.exists(candles_inbetween_path):
-                    try:
-                        with open(candles_inbetween_path, 'r') as f:
-                            candles_data = json.load(f)
-                        new_number_position_value = candles_data.get("new number position for matched candle data")
-                        if new_number_position_value is not None:
-                            new_number_position = str(new_number_position_value)
-                            log_and_print(
-                                f"Found new number position {new_number_position} for timeframe {tf_key} from {market}",
-                                "DEBUG"
-                            )
-                            # Since new number position is assumed to be the same for all markets in a timeframe, take the first valid value
-                            break
-                    except Exception as e:
-                        log_and_print(
-                            f"Error reading candlesamountinbetween.json for {market} {tf}: {str(e)}",
-                            "WARNING"
-                        )
-                        continue
-                else:
-                    log_and_print(
-                        f"candlesamountinbetween.json not found for {market} {tf} at {candles_inbetween_path}",
-                        "WARNING"
-                    )
-            
-            # Assign the new number position to the timeframe, default to "0" if not found
-            markets_pending["candlesamountinbetween"][tf_key] = new_number_position if new_number_position is not None else "0"
         
         # Prepare output structure
         output = {
@@ -3449,7 +2692,6 @@ def marketsliststatus() -> bool:
     except Exception as e:
         log_and_print(f"Error processing marketsliststatus: {str(e)}", "ERROR")
         return False
-
 def process_market_timeframe(market: str, timeframe: str) -> Tuple[bool, Optional[str], str, Dict]:
     """Process a single market and timeframe combination, returning success status, error message, status, and process messages."""
     error_message = None
@@ -3631,41 +2873,6 @@ def process_market_timeframe(market: str, timeframe: str) -> Tuple[bool, Optiona
             process_messages["collect_all_executionercandle_orders"] = (
                 f"Collected {executed_count} executioner candle orders for {market} {timeframe}"
             )
-
-        # Update executed orders with profit, loss, ratios, stoploss, and reward-to-risk levels
-        if not ExecutedOrderUpdater(market, timeframe, json_dir):
-            error_message = f"Failed to update executed orders with profit, loss, ratios, stoploss, and reward-to-risk levels for {market} {timeframe}"
-            log_and_print(error_message, "ERROR")
-            process_messages["ExecutedOrderUpdater"] = error_message
-        else:
-            executed_orders_json_path = os.path.join(json_dir, 'executedorders.json')
-            executed_count = 0
-            valid_updates = 0
-            stoploss_hits = 0
-            profit_reached = 0
-            ratio_0_5_reached = 0
-            ratio_1_reached = 0
-            ratio_2_reached = 0
-            if os.path.exists(executed_orders_json_path):
-                with open(executed_orders_json_path, 'r') as f:
-                    executed_data = json.load(f)
-                executed_count = len(executed_data)
-                valid_updates = sum(1 for order in executed_data if order.get("profit,loss,ratios", {}).get("status") == "Updated with calculated prices")
-                stoploss_hits = sum(1 for order in executed_data if order.get("stoploss", {}).get("status") == "stoploss hit")
-                profit_reached = sum(1 for order in executed_data if order.get("profit", {}).get("status") == "profit reached")
-                ratio_0_5_reached = sum(1 for order in executed_data if order.get("ratio_0.5", {}).get("status_1") == "reached")
-                ratio_1_reached = sum(1 for order in executed_data if order.get("ratio_1", {}).get("status_1") == "reached")
-                ratio_2_reached = sum(1 for order in executed_data if order.get("ratio_2", {}).get("status_1") == "reached")
-                process_messages["ExecutedOrderUpdater"] = (
-                    f"Updated {valid_updates} of {executed_count} executed orders with profit, loss, ratios, stoploss, and reward-to-risk levels "
-                    f"(Stoploss hits: {stoploss_hits}, Profit reached: {profit_reached}, "
-                    f"Ratio 0.5 reached: {ratio_0_5_reached}, Ratio 1 reached: {ratio_1_reached}, Ratio 2 reached: {ratio_2_reached}) "
-                    f"for {market} {timeframe}"
-                )
-            else:
-                process_messages["ExecutedOrderUpdater"] = (
-                    f"No executed orders updated for {market} {timeframe}"
-                )
 
         # Generate markets order list status
         if not marketsliststatus():
