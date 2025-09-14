@@ -1100,52 +1100,103 @@ def marketsstatus(destination_path, markets, timeframes):
         logger.error(f"Error generating market status report: {e}")
         return False
 
-def resetstatus(elligible_status="none", status="none"):
-    """Reset the status.json files for all market-timeframe pairs to specified elligible_status and status."""
-    logger.debug("Starting resetstatus to reset status.json files for all markets and timeframes")
+def timeframeselligibilityupdater(*, timeframe, elligible_status):
+    """
+    Update the elligible_status in status.json for specified timeframes across all markets.
+    
+    Args:
+        timeframe (str): Comma-separated list of timeframes (e.g., "m5,m15,m30,1hour,4hours").
+        elligible_status (str): Status to set ("order_free" or "chart_identified").
+    
+    Returns:
+        bool: True if successful, False otherwise.
+    """
+    logger.debug(f"Starting timeframeselligibilityupdater with timeframe: {timeframe}, elligible_status: {elligible_status}")
     try:
+        # Validate inputs
+        if not timeframe:
+            logger.error("Timeframe parameter is empty")
+            return False
+        
+        if not elligible_status:
+            logger.error("Elligible_status parameter is empty")
+            return False
+        
+        # Validate status
+        if elligible_status not in ["order_free", "chart_identified"]:
+            logger.error(f"Invalid elligible_status: {elligible_status}. Must be 'order_free' or 'chart_identified'")
+            return False
+        
+        # Parse timeframes and normalize
+        input_timeframes = [tf.strip() for tf in timeframe.split(",")]
+        valid_timeframes = []
+        for tf in input_timeframes:
+            normalized_tf = normalize_timeframe(tf)
+            if normalized_tf in [normalize_timeframe(t) for t in TIMEFRAMES]:
+                valid_timeframes.append(normalized_tf)
+            else:
+                logger.warning(f"Ignoring invalid timeframe: {tf}")
+        
+        if not valid_timeframes:
+            logger.error("No valid timeframes provided")
+            return False
+        
+        logger.debug(f"Valid timeframes to update: {valid_timeframes}, new status: {elligible_status}")
+        
+        # Update status.json for each market and specified timeframe
         for market in MARKETS:
             for tf in TIMEFRAMES:
-                try:
-                    normalized_tf = normalize_timeframe(tf)  # Normalize timeframe for folder path
-                    market_folder = os.path.join(DESTINATION_PATH, market.replace(" ", "_"), normalized_tf)
-                    status_file = os.path.join(market_folder, "status.json")
-                    os.makedirs(market_folder, exist_ok=True)
-                    
-                    # Get current time in WAT (Africa/Lagos, UTC+1)
-                    current_time = datetime.now(pytz.timezone('Africa/Lagos'))
-                    am_pm = "am" if current_time.hour < 12 else "pm"
-                    hour_12 = current_time.hour % 12
-                    if hour_12 == 0:
-                        hour_12 = 12
-                    timestamp = (
-                        f"{current_time.strftime('%Y-%m-%d T %I:%M:%S')} {am_pm} "
-                        f".{current_time.microsecond:06d}+01:00"
-                    )
-                    
-                    # Prepare status data with provided values
-                    status_data = {
-                        "market": market,
-                        "timeframe": tf,
-                        "normalized_timeframe": normalized_tf,
-                        "timestamp": timestamp,
-                        "elligible_status": elligible_status,
-                        "status": status
-                    }
-                    
-                    # Write or overwrite status.json
-                    with open(status_file, 'w') as f:
-                        json.dump(status_data, f, indent=4)
-                    logger.debug(f"[Process-{market}] Reset status.json for {market} ({tf}) to elligible_status: '{elligible_status}', status: '{status}' at {status_file}")
-                
-                except Exception as e:
-                    logger.error(f"[Process-{market}] Error resetting status.json for {market} ({tf}): {e}")
+                normalized_tf = normalize_timeframe(tf)
+                if normalized_tf in valid_timeframes:
+                    try:
+                        market_folder = os.path.join(DESTINATION_PATH, market.replace(" ", "_"), normalized_tf)
+                        status_file = os.path.join(market_folder, "status.json")
+                        os.makedirs(market_folder, exist_ok=True)
+                        
+                        # Get current time in WAT (Africa/Lagos, UTC+1)
+                        current_time = datetime.now(pytz.timezone('Africa/Lagos'))
+                        am_pm = "am" if current_time.hour < 12 else "pm"
+                        hour_12 = current_time.hour % 12
+                        if hour_12 == 0:
+                            hour_12 = 12
+                        timestamp = (
+                            f"{current_time.strftime('%Y-%m-%d T %I:%M:%S')} {am_pm} "
+                            f".{current_time.microsecond:06d}+01:00"
+                        )
+                        
+                        # Load existing status.json or create new
+                        status_data = {
+                            "market": market,
+                            "timeframe": tf,
+                            "normalized_timeframe": normalized_tf,
+                            "timestamp": timestamp,
+                            "elligible_status": elligible_status,
+                            "status": "updated"
+                        }
+                        
+                        if os.path.exists(status_file):
+                            try:
+                                with open(status_file, 'r') as f:
+                                    existing_data = json.load(f)
+                                existing_data["elligible_status"] = elligible_status
+                                existing_data["timestamp"] = timestamp
+                                existing_data["status"] = "updated"
+                                status_data = existing_data
+                            except Exception as e:
+                                logger.warning(f"[Process-{market}] Error reading existing status.json for {market} ({tf}): {e}")
+                        
+                        # Write updated status.json
+                        with open(status_file, 'w') as f:
+                            json.dump(status_data, f, indent=4)
+                        logger.debug(f"[Process-{market}] Updated status.json for {market} ({tf}) to elligible_status: {elligible_status}")
+                    except Exception as e:
+                        logger.error(f"[Process-{market}] Error updating status.json for {market} ({tf}): {e}")
         
-        logger.debug("Completed resetting status.json files for all markets and timeframes")
+        logger.debug("Completed updating eligible statuses for specified timeframes")
         return True
     
     except Exception as e:
-        logger.error(f"Error in resetstatus: {e}")
+        logger.error(f"Error in timeframeselligibilityupdater: {e}")
         return False
 
 def run_script_for_market(market, eligible_pairs, processed_pairs):
@@ -1230,7 +1281,11 @@ def run_script_for_market(market, eligible_pairs, processed_pairs):
 def main():
     """Main loop to process eligible markets (elligible_status: 'order_free') until all are verified."""
     logger.debug("Starting main loop")
-    #resetstatus(elligible_status="order_free", status="incomplete")
+    
+    # Call timeframeselligibilityupdater with specific timeframes and status
+    if not timeframeselligibilityupdater(timeframe="m5", elligible_status="chart_identified"):
+        logger.error("Failed to update timeframe eligibility statuses. Exiting.")
+        return False
     
     # Check if required lists and credentials are loaded
     if not MARKETS or not TIMEFRAMES or not FOREX_MARKETS or not SYNTHETIC_INDICES or not INDEX_MARKETS or not all([LOGIN_ID, PASSWORD, SERVER, BASE_URL, TERMINAL_PATH]):
@@ -1272,7 +1327,7 @@ def main():
                 logger.debug("All markets processed successfully")
                 # Print eligible processed markets immediately after the debug log
                 formatted_pairs = [f"{market}({tf})" for market, tf in processed_pairs]
-                print(f'Elligible processed markets[{", ".join(formatted_pairs)}]')
+                print(f'Eligible processed markets[{", ".join(formatted_pairs)}]')
                 # Generate market status report after successful processing
                 if not marketsstatus(DESTINATION_PATH, MARKETS, TIMEFRAMES):
                     logger.error("Failed to generate market status report")
@@ -1296,7 +1351,7 @@ def main():
         logger.error("Failed to generate market status report")
     # Print eligible processed markets even if loop exits unexpectedly
     formatted_pairs = [f"{market}({tf})" for market, tf in processed_pairs]
-    print(f'Elligible processed markets[{", ".join(formatted_pairs)}]')
+    print(f'Eligible processed markets[{", ".join(formatted_pairs)}]')
     return True
 
 if __name__ == "__main__":
