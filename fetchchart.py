@@ -36,38 +36,76 @@ MARKETS_JSON_PATH = r"C:\xampp\htdocs\CIPHER\cipher i\bouncestream\chart\base.js
 
 # Function to load markets, timeframes, and credentials from JSON
 def load_markets_and_credentials(json_path):
-    """Load MARKETS, FOREX_MARKETS, SYNTHETIC_INDICES, INDEX_MARKETS, TIMEFRAMES, and CREDENTIALS from base.json file."""
+    """Load markets, timeframes, credentials, and additional subjects from base.json file."""
     try:
         if not os.path.exists(json_path):
             raise FileNotFoundError(f"Markets JSON file not found at: {json_path}")
         with open(json_path, 'r') as f:
             data = json.load(f)
+        
+        # Load all subjects from JSON
         markets = data.get("MARKETS", [])
         forex_markets = data.get("FOREX_MARKETS", [])
+        forex_majors = data.get("FOREX_MAJORS", [])
+        forex_minors = data.get("FOREX_MINORS", [])
         synthetic_indices = data.get("SYNTHETIC_INDICES", [])
+        drift_switching_indices = data.get("DRIFT_SWITCHING_INDICES", [])
+        multi_step_indices = data.get("MULTI_STEP_INDICES", [])
+        skewed_step_indices = data.get("SKEWED_STEP_INDICES", [])
+        trek_indices = data.get("TREK_INDICES", [])
+        tactical_indices = data.get("TACTICAL_INDICES", [])
+        basket_indices = data.get("BASKET_INDICES", [])
+        crypto = data.get("CRYPTO", [])
         index_markets = data.get("INDEX_MARKETS", [])
+        commodities = data.get("COMMODITIES", [])
         timeframes = data.get("TIMEFRAMES", [])
         credentials = data.get("CREDENTIALS", {})
+        
+        # Extract credentials
         login_id = credentials.get("LOGIN_ID", "")
         password = credentials.get("PASSWORD", "")
         server = credentials.get("SERVER", "")
         base_url = credentials.get("BASE_URL", "")
         terminal_path = credentials.get("TERMINAL_PATH", "")
-        if not markets or not timeframes or not all([login_id, password, server, base_url, terminal_path]):
+        
+        # Validate required fields
+        if not all([markets, timeframes, login_id, password, server, base_url, terminal_path]):
             raise ValueError("MARKETS, TIMEFRAMES, or CREDENTIALS not found in base.json or are empty")
+        
+        # Log loaded data (excluding sensitive credentials)
         logger.debug(f"Loaded MARKETS: {markets}")
         logger.debug(f"Loaded FOREX_MARKETS: {forex_markets}")
+        logger.debug(f"Loaded FOREX_MAJORS: {forex_majors}")
+        logger.debug(f"Loaded FOREX_MINORS: {forex_minors}")
         logger.debug(f"Loaded SYNTHETIC_INDICES: {synthetic_indices}")
+        logger.debug(f"Loaded DRIFT_SWITCHING_INDICES: {drift_switching_indices}")
+        logger.debug(f"Loaded MULTI_STEP_INDICES: {multi_step_indices}")
+        logger.debug(f"Loaded SKEWED_STEP_INDICES: {skewed_step_indices}")
+        logger.debug(f"Loaded TREK_INDICES: {trek_indices}")
+        logger.debug(f"Loaded TACTICAL_INDICES: {tactical_indices}")
+        logger.debug(f"Loaded BASKET_INDICES: {basket_indices}")
+        logger.debug(f"Loaded CRYPTO: {crypto}")
         logger.debug(f"Loaded INDEX_MARKETS: {index_markets}")
+        logger.debug(f"Loaded COMMODITIES: {commodities}")
         logger.debug(f"Loaded TIMEFRAMES: {timeframes}")
         logger.debug("Loaded CREDENTIALS: [Sensitive data not logged]")
-        return markets, forex_markets, synthetic_indices, index_markets, timeframes, login_id, password, server, base_url, terminal_path
+        
+        # Return all loaded data
+        return (markets, forex_markets, forex_majors, forex_minors, synthetic_indices,
+                drift_switching_indices, multi_step_indices, skewed_step_indices,
+                trek_indices, tactical_indices, basket_indices, crypto, index_markets,
+                commodities, timeframes, login_id, password, server, base_url, terminal_path)
+    
     except Exception as e:
         logger.error(f"Error loading base.json: {e}")
-        return [], [], [], [], [], "", "", "", "", ""
+        # Return empty/default values for all fields in case of error
+        return [], [], [], [], [], [], [], [], [], [], [], [], [], [], [], "", "", "", "", ""
 
-# Load MARKETS, FOREX_MARKETS, SYNTHETIC_INDICES, INDEX_MARKETS, TIMEFRAMES, and credentials from JSON
-MARKETS, FOREX_MARKETS, SYNTHETIC_INDICES, INDEX_MARKETS, TIMEFRAMES, LOGIN_ID, PASSWORD, SERVER, BASE_URL, TERMINAL_PATH = load_markets_and_credentials(MARKETS_JSON_PATH)
+# Load all subjects and credentials from JSON
+(MARKETS, FOREX_MARKETS, FOREX_MAJORS, FOREX_MINORS, SYNTHETIC_INDICES,
+ DRIFT_SWITCHING_INDICES, MULTI_STEP_INDICES, SKEWED_STEP_INDICES, TREK_INDICES,
+ TACTICAL_INDICES, BASKET_INDICES, CRYPTO, INDEX_MARKETS, COMMODITIES, TIMEFRAMES,
+ LOGIN_ID, PASSWORD, SERVER, BASE_URL, TERMINAL_PATH) = load_markets_and_credentials(MARKETS_JSON_PATH)
 
 MT5_TIMEFRAMES = {
     "M5": mt5.TIMEFRAME_M5,
