@@ -1250,7 +1250,7 @@ def run_script_for_market(market, eligible_pairs, processed_pairs):
 
         while True:
             logger.debug(f"[Process-{market}] Processing market: {market} with timeframes: {eligible_timeframes}")
-            driver = operate("headless")
+            driver = operate("headed")
             # Save initial status for eligible timeframes
             for tf in eligible_timeframes:
                 save_status(market, tf, DESTINATION_PATH, "starting")
@@ -1317,7 +1317,7 @@ def run_script_for_market(market, eligible_pairs, processed_pairs):
         return False
 
 def main():
-    """Main loop to process eligible markets (elligible_status: 'order_free') until all are verified."""
+    """Main loop to process eligible markets (elligible_status: 'order_free') in batches of 10 until all are verified."""
     logger.debug("Starting main loop")
     
     # Call timeframeselligibilityupdater with specific timeframes and status
@@ -1340,12 +1340,15 @@ def main():
         marketsstatus(DESTINATION_PATH, MARKETS, TIMEFRAMES)
         return True
 
+    batch_size = 10  # Limit to 10 markets per batch
     while markets_to_process:
+        # Select up to 10 markets for the current batch
+        current_batch = markets_to_process[:batch_size]
         failed_markets = []
         processes = []
         try:
-            logger.debug(f"Processing markets: {markets_to_process}")
-            for market in markets_to_process:
+            logger.debug(f"Processing batch of markets: {current_batch}")
+            for market in current_batch:
                 logger.debug(f"Starting process for {market}")
                 process = multiprocessing.Process(target=run_script_for_market, args=(market, eligible_pairs, processed_pairs))
                 processes.append((market, process))
@@ -1360,7 +1363,8 @@ def main():
             if len(failed_markets) >= 5:
                 logger.debug(f"Detected {len(failed_markets)} market failures, calling handle_network_issue")
                 handle_network_issue()
-            markets_to_process = failed_markets
+            # Remove successfully processed markets from markets_to_process
+            markets_to_process = [m for m in markets_to_process if m in failed_markets]
             if not markets_to_process:
                 logger.debug("All markets processed successfully")
                 # Print eligible processed markets immediately after the debug log
@@ -1370,7 +1374,10 @@ def main():
                 if not marketsstatus(DESTINATION_PATH, MARKETS, TIMEFRAMES):
                     logger.error("Failed to generate market status report")
                 return True
-            logger.debug(f"Markets failed: {failed_markets}. Retrying...")
+            logger.debug(f"Markets failed in batch: {failed_markets}. Moving to next batch...")
+            # Refresh eligible pairs for the next batch
+            eligible_pairs = get_eligible_market_timeframes()
+            markets_to_process = list(set(pair[0] for pair in eligible_pairs if pair[0] in failed_markets or pair[0] not in [m for m, _ in processed_pairs]))
             time.sleep(10)
         except Exception as e:
             logger.error(f"Main loop error: {e}")
@@ -1381,7 +1388,9 @@ def main():
             if len(markets_to_process) >= 5:
                 logger.debug(f"Main loop error with {len(markets_to_process)} markets, calling handle_network_issue")
                 handle_network_issue()
-            markets_to_process = failed_markets if failed_markets else list(set(pair[0] for pair in get_eligible_market_timeframes()))
+            # Refresh eligible pairs in case of error
+            eligible_pairs = get_eligible_market_timeframes()
+            markets_to_process = list(set(pair[0] for pair in eligible_pairs if pair[0] in failed_markets or pair[0] not in [m for m, _ in processed_pairs]))
             time.sleep(10)
     logger.debug("Main loop completed successfully")
     # Generate market status report in case loop exits unexpectedly
@@ -1391,7 +1400,7 @@ def main():
     formatted_pairs = [f"{market}({tf})" for market, tf in processed_pairs]
     print(f'Eligible processed markets[{", ".join(formatted_pairs)}]')
     return True
-
+    
 if __name__ == "__main__":
     try:
         clear_all_market_files()
