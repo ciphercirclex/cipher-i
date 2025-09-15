@@ -147,7 +147,7 @@ def normalize_timeframe(timeframe):
         '4 hours': 'h4'
     }
     normalized = timeframe_map.get(timeframe, timeframe)
-    logger.debug(f"Normalized timeframe '{timeframe}' to '{normalized}'")
+    #logger.debug(f"Normalized timeframe '{timeframe}' to '{normalized}'")
     return normalized
 
 def get_eligible_market_timeframes():
@@ -236,33 +236,73 @@ def tradinghoursordays(market):
     logger.debug(f"[Process-{market}] Checking trading hours for {market}. Current UTC time: {current_time}, Day: {current_day}, Hour: {current_hour}")
 
     if market in SYNTHETIC_INDICES:
-        return True
+        return True  # Synthetic indices trade 24/7
     elif market in FOREX_MARKETS:
         start_time = datetime.now(pytz.UTC).replace(hour=22, minute=0, second=0, microsecond=0)
-        if current_day == 6:
+        if current_day == 6:  # Sunday
             if current_time < start_time:
                 return False
             return True
-        elif current_day == 4:
+        elif current_day == 4:  # Friday
             if current_time >= start_time:
                 return False
             return True
-        elif current_day == 5:
+        elif current_day == 5:  # Saturday
             return False
-        else:
-            return True
+        return True
     elif market in INDEX_MARKETS:
-        if current_day in [5, 6]:
+        if current_day in [5, 6]:  # Closed on weekends
             return False
-        elif current_hour < 1 or current_hour >= 22:
+        if current_hour < 1 or current_hour >= 22:  # Typical index hours (e.g., 1:00 AM–10:00 PM UTC)
             return False
         return True
+    elif market in COMMODITIES:
+        if current_day in [5, 6]:  # Closed on weekends
+            return False
+        if market in ["CoffeeRobu", "CoffeeArab"]:  # ICE Robusta/Arabica Coffee: ~4:00 AM–12:30 PM UTC
+            if current_hour < 4 or current_hour >= 13:
+                return False
+        elif market in ["Cocoa"]:  # ICE Cocoa: ~4:45 AM–1:20 PM UTC
+            if current_hour < 4 or current_hour >= 14:
+                return False
+        elif market in ["Sugar"]:  # ICE Sugar: ~3:30 AM–1:00 PM UTC
+            if current_hour < 3 or current_hour >= 13:
+                return False
+        elif market in ["Cotton"]:  # ICE Cotton: ~2:00 AM–2:20 PM UTC
+            if current_hour < 2 or current_hour >= 15:
+                return False
+        elif market in ["NGAS", "UK Brent Oil", "US Oil"]:  # Energies: ~1:00 AM–10:00 PM UTC
+            if current_hour < 1 or current_hour >= 22:
+                return False
+        elif market == "XAUUSD":  # Gold: ~1:00 AM–10:00 PM UTC
+            if current_hour < 1 or current_hour >= 22:
+                return False
+        return True
+    elif market in CRYPTO:
+        # Crypto often trades 24/7, but some brokers pause on weekends or specific hours
+        if current_day in [5, 6]:  # Conservative check for broker-specific pauses
+            return False
+        return True
+    elif market in BASKET_INDICES:
+        if current_day in [5, 6]:  # Assume similar to indices
+            return False
+        if current_hour < 1 or current_hour >= 22:
+            return False
+        return True
+    elif market in DRIFT_SWITCHING_INDICES or market in MULTI_STEP_INDICES or \
+         market in SKEWED_STEP_INDICES or market in TREK_INDICES or \
+         market in TACTICAL_INDICES or market in ["DEX 900 DOWN Index", "DEX 900 UP Index",
+                                                 "DEX 600 UP Index", "DEX 600 DOWN Index",
+                                                 "DEX 1500 UP Index", "DEX 1500 DOWN Index",
+                                                 "VolSwitch Low Vol Index", "VolSwitch Medium Vol Index",
+                                                 "VolSwitch High Vol Index"]:
+        return True  # Assume 24/7 for specialized indices, adjust if broker specifies otherwise
     else:
-        logger.warning(f"[Process-{market}] Unknown market type for {market}, assuming 24/7 trading")
-        return True
-
+        logger.warning(f"[Process-{market}] Unknown market type for {market}, assuming closed")
+        return False  # Conservative default to avoid fetching during closed hours
+    
 def initialize_mt5(market):
-    """Initialize MT5 connection with retries."""
+    """Initialize MT5 connection with retries and symbol verification."""
     logger.debug(f"[Process-{market}] Initializing MT5 for {market}")
     for attempt in range(3):
         if mt5.initialize(path=TERMINAL_PATH, timeout=60000):
@@ -272,6 +312,16 @@ def initialize_mt5(market):
     else:
         logger.error(f"[Process-{market}] Failed to initialize MT5 terminal after 3 attempts")
         return False
+    
+    # Verify symbol availability
+    if not mt5.symbol_select(market, True):
+        logger.error(f"[Process-{market}] Symbol {market} not available, error: {mt5.last_error()}")
+        return False
+    symbol_info = mt5.symbol_info(market)
+    if symbol_info is None or not symbol_info.visible:
+        logger.error(f"[Process-{market}] Symbol {market} not visible or invalid")
+        return False
+    
     for _ in range(5):
         if mt5.terminal_info() is not None:
             break
@@ -317,21 +367,28 @@ def fetch_current_price_candle(market, timeframe):
     if not mt5.symbol_select(market, True):
         logger.error(f"[Process-{market}] Failed to select market: {market}, error: {mt5.last_error()}")
         return None
-    for attempt in range(3):
+    timeframe_minutes = {"M5": 6, "M15": 16, "M30": 31, "H1": 61, "H4": 241}
+    max_age = timeframe_minutes.get(timeframe.upper(), 5) * 60
+    for attempt in range(5):
+        start_time = time.time()
         candles = mt5.copy_rates_from_pos(market, MT5_TIMEFRAMES[timeframe.upper()], 0, 1)
+        logger.debug(f"[Process-{market}] Fetch attempt {attempt + 1}/5 took {time.time() - start_time:.2f} seconds")
         if candles is None or len(candles) == 0:
-            logger.error(f"[Process-{market}] Attempt {attempt + 1}/3: Failed to fetch candle data for {market} ({timeframe}), error: {mt5.last_error()}")
-            time.sleep(2)
+            logger.error(f"[Process-{market}] Attempt {attempt + 1}/5: No candle data, error: {mt5.last_error()}")
+            time.sleep(3)
             continue
         current_time = datetime.now(pytz.UTC)
         candle_time = datetime.fromtimestamp(candles[0]['time'], tz=pytz.UTC)
-        timeframe_minutes = {"M5": 6, "M15": 16, "M30": 31, "H1": 61, "H4": 241}
-        if (current_time - candle_time).total_seconds() > timeframe_minutes[timeframe.upper()] * 60:
-            logger.error(f"[Process-{market}] Attempt {attempt + 1}/3: Candle for {market} ({timeframe}) is too old (time: {candle_time})")
-            time.sleep(2)
+        if (current_time - candle_time).total_seconds() > max_age:
+            logger.warning(f"[Process-{market}] Attempt {attempt + 1}/5: Candle time {candle_time} too old for {market} ({timeframe})")
+            if market in COMMODITIES or market in CRYPTO:
+                logger.debug(f"[Process-{market}] Allowing older candle for {market} ({timeframe})")
+                return candles[0]  # Allow older candles for commodities/crypto
+            time.sleep(5)
             continue
+        logger.debug(f"[Process-{market}] Fetched candle: time={candle_time}, open={candles[0]['open']}")
         return candles[0]
-    logger.error(f"[Process-{market}] Failed to fetch recent candle data for {market} ({timeframe}) after 3 attempts")
+    logger.error(f"[Process-{market}] Failed to fetch recent candle for {market} ({timeframe}) after 5 attempts")
     return None
 
 def operate(mode="headless"):
@@ -514,10 +571,31 @@ def timeframe(driver, tf, market):
         return False
 
 def search(driver, market):
-    """Search for a market and confirm selection by chart canvas presence."""
+    """Search for a market, retry with a random market on failure, then retry the original market."""
     try:
+        logger.debug(f"[Process-{market}] Checking if market '{market}' is already displayed")
+
+        # Attempt to verify if the market is already displayed
+        try:
+            market_display = WebDriverWait(driver, 5).until(
+                EC.presence_of_element_located((
+                    By.XPATH,
+                    f"//*[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{market.lower()}') and "
+                    f"(contains(@class, 'symbol') or contains(@class, 'title') or contains(@class, 'chart-header'))]"
+                ))
+            )
+            logger.debug(f"[Process-{market}] Market '{market}' is already displayed")
+            WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.TAG_NAME, "canvas"))
+            )
+            logger.debug(f"[Process-{market}] Chart canvas detected for already displayed market '{market}'")
+            wait_for_page_load(driver, 10)
+            return True
+        except TimeoutException:
+            logger.debug(f"[Process-{market}] Market '{market}' not detected as currently displayed, proceeding with search")
+
+        # Proceed with searching for the market
         logger.debug(f"[Process-{market}] Searching for market '{market}'")
-        # Locate and interact with the search bar
         search_bar = WebDriverWait(driver, 10).until(
             EC.element_to_be_clickable((By.XPATH, "//input[contains(@id, 'search') or contains(@class, 'search') or contains(@placeholder, 'Search')]"))
         )
@@ -536,27 +614,91 @@ def search(driver, market):
                 logger.debug(f"[Process-{market}] Search button not found; assuming Enter worked")
 
         # Wait for and click the search result
-        search_result = WebDriverWait(driver, 10).until(
-            EC.element_to_be_clickable((By.XPATH, f"//*[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{market.lower()}')]"))
-        )
-        search_result.click()
-        time.sleep(1)  # Brief pause to allow UI to update
+        try:
+            search_result = WebDriverWait(driver, 10).until(
+                EC.element_to_be_clickable((By.XPATH, f"//*[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{market.lower()}')]"))
+            )
+            search_result.click()
+            time.sleep(1)  # Brief pause to allow UI to update
 
-        # Confirm selection by checking for chart canvas presence
-        WebDriverWait(driver, 60).until(
-            EC.presence_of_element_located((By.TAG_NAME, "canvas"))
-        )
-        logger.debug(f"[Process-{market}] Chart canvas detected, assuming market '{market}' selected successfully")
-        wait_for_page_load(driver, 10)
-        return True
+            # Confirm selection by checking for chart canvas presence
+            WebDriverWait(driver, 60).until(
+                EC.presence_of_element_located((By.TAG_NAME, "canvas"))
+            )
+            logger.debug(f"[Process-{market}] Chart canvas detected, assuming market '{market}' selected successfully")
+            wait_for_page_load(driver, 10)
+            return True
+        except (TimeoutException, NoSuchElementException):
+            logger.warning(f"[Process-{market}] Failed to select market '{market}', attempting random market")
+            import random
+            other_markets = [m for m in MARKETS if m != market]
+            if not other_markets:
+                logger.error(f"[Process-{market}] No other markets available to try")
+                return False
+            random_market = random.choice(other_markets)
+            logger.debug(f"[Process-{market}] Attempting to select random market '{random_market}'")
+            search_bar.clear()
+            search_bar.send_keys(random_market)
+            try:
+                search_bar.send_keys(Keys.RETURN)
+            except Exception as e:
+                logger.debug(f"[Process-{market}] Enter key failed for random market: {e}")
+                try:
+                    search_button = WebDriverWait(driver, 5).until(
+                        EC.element_to_be_clickable((By.XPATH, "//button[contains(@class, 'search') or contains(text(), 'Search')]"))
+                    )
+                    search_button.click()
+                except (TimeoutException, NoSuchElementException):
+                    logger.debug(f"[Process-{market}] Search button not found for random market; assuming Enter worked")
+            try:
+                random_result = WebDriverWait(driver, 10).until(
+                    EC.element_to_be_clickable((By.XPATH, f"//*[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{random_market.lower()}')]"))
+                )
+                random_result.click()
+                time.sleep(1)
+                WebDriverWait(driver, 60).until(
+                    EC.presence_of_element_located((By.TAG_NAME, "canvas"))
+                )
+                logger.debug(f"[Process-{market}] Successfully selected random market '{random_market}'")
+            except (TimeoutException, NoSuchElementException):
+                logger.error(f"[Process-{market}] Failed to select random market '{random_market}'")
+                return False
 
-    except TimeoutException:
-        logger.error(f"[Process-{market}] Timeout waiting for search results or chart canvas for '{market}'")
-        return False
+            # Retry the original market
+            logger.debug(f"[Process-{market}] Retrying search for original market '{market}'")
+            search_bar.clear()
+            search_bar.send_keys(market)
+            try:
+                search_bar.send_keys(Keys.RETURN)
+            except Exception as e:
+                logger.debug(f"[Process-{market}] Enter key failed on retry: {e}")
+                try:
+                    search_button = WebDriverWait(driver, 5).until(
+                        EC.element_to_be_clickable((By.XPATH, "//button[contains(@class, 'search') or contains(text(), 'Search')]"))
+                    )
+                    search_button.click()
+                except (TimeoutException, NoSuchElementException):
+                    logger.debug(f"[Process-{market}] Search button not found on retry; assuming Enter worked")
+            try:
+                search_result = WebDriverWait(driver, 10).until(
+                    EC.element_to_be_clickable((By.XPATH, f"//*[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{market.lower()}')]"))
+                )
+                search_result.click()
+                time.sleep(1)
+                WebDriverWait(driver, 60).until(
+                    EC.presence_of_element_located((By.TAG_NAME, "canvas"))
+                )
+                logger.debug(f"[Process-{market}] Chart canvas detected after retry, assuming market '{market}' selected successfully")
+                wait_for_page_load(driver, 10)
+                return True
+            except (TimeoutException, NoSuchElementException):
+                logger.error(f"[Process-{market}] Failed to select market '{market}' after retry")
+                return False
+
     except Exception as e:
-        logger.error(f"[Process-{market}] Error searching for '{market}': {e}")
+        logger.error(f"[Process-{market}] Unexpected error searching for '{market}': {e}")
         return False
-
+       
 def watchlist(driver, action, market):
     """Toggle watchlist."""
     try:
@@ -761,65 +903,41 @@ def verify_candlestick_contours(image_path, market, timeframe):
 def save_status(market, timeframe, destination_path, status):
     """Save the status of the process for a market and timeframe to a JSON file."""
     try:
-        # Normalize timeframe to desired format (e.g., 5m -> m5, 15m -> m15, H1 -> h1)
         mapped_timeframe = normalize_timeframe(timeframe)
         market_folder = os.path.join(destination_path, market.replace(" ", "_"), mapped_timeframe)
         os.makedirs(market_folder, exist_ok=True)
         status_file = os.path.join(market_folder, "status.json")
-        # Get current time in WAT (Africa/Lagos, UTC+1)
         current_time = datetime.now(pytz.timezone('Africa/Lagos'))
-        # Format timestamp as "YYYY-MM-DD T HH:MM:SS am/pm .microseconds+HH:MM"
         am_pm = "am" if current_time.hour < 12 else "pm"
-        hour_12 = current_time.hour % 12
-        if hour_12 == 0:
-            hour_12 = 12  # Convert 0 to 12 for 12 AM/PM
-        timestamp = (
-            f"{current_time.strftime('%Y-%m-%d T %I:%M:%S')} {am_pm} "
-            f".{current_time.microsecond:06d}+01:00"
-        )
-        # Prepare status data
+        hour_12 = current_time.hour % 12 or 12
+        timestamp = f"{current_time.strftime('%Y-%m-%d T %I:%M:%S')} {am_pm} .{current_time.microsecond:06d}+01:00"
+        
         status_data = {
             "market": market,
-            "timeframe": timeframe,  # Store original timeframe for reference
-            "normalized_timeframe": mapped_timeframe,  # Store normalized timeframe
-            "timestamp": timestamp
+            "timeframe": timeframe,
+            "normalized_timeframe": mapped_timeframe,
+            "timestamp": timestamp,
+            "status": status,
+            "elligible_status": "chart_identified" if status == "chart_identified" else "order_free"
         }
-        # Set elligible_status to match the logic in marketsliststatus
-        elligible_status = "order_free" if status == "order_free" else "chart_identified" if status == "chart_identified" else ""
-        # Load existing status.json if it exists to preserve other fields
-        existing_status_data = None
+        
         if os.path.exists(status_file):
             try:
                 with open(status_file, 'r') as f:
-                    existing_status_data = json.load(f)
-                if "elligible_status" not in existing_status_data:
-                    existing_status_data["elligible_status"] = elligible_status
-                    existing_status_data["timestamp"] = timestamp
-                    existing_status_data["status"] = status
-                    existing_status_data["normalized_timeframe"] = mapped_timeframe
-                    status_data = existing_status_data
-                else:
-                    existing_status_data["elligible_status"] = elligible_status
-                    existing_status_data["timestamp"] = timestamp
-                    existing_status_data["status"] = status
-                    existing_status_data["normalized_timeframe"] = mapped_timeframe
-                    status_data = existing_status_data
+                    existing_data = json.load(f)
+                existing_data.update(status_data)
+                status_data = existing_data
             except Exception as e:
-                logger.warning(f"[Process-{market}] Error reading existing status.json for {market} ({timeframe}): {e}")
-                status_data["status"] = status
-                status_data["elligible_status"] = elligible_status
-        else:
-            status_data["status"] = status
-            status_data["elligible_status"] = elligible_status
+                logger.warning(f"[Process-{market}] Error reading existing status.json: {e}")
         
         with open(status_file, 'w') as f:
             json.dump(status_data, f, indent=4)
-        logger.debug(f"[Process-{market}] Saved status '{status}' with elligible_status '{elligible_status}' to {status_file}")
+        logger.debug(f"[Process-{market}] Saved status '{status}' with elligible_status '{status_data['elligible_status']}' to {status_file}")
     except Exception as e:
         logger.error(f"[Process-{market}] Error saving status for {market} ({timeframe}): {e}")
 
 def create_verification_json(market, destination_path):
-    """Create verification.json for a market by collecting statuses from each timeframe's status.json."""
+    """Create verification.json for a market by collecting statuses from each timeframe's status.json, creating status.json if missing."""
     try:
         market_folder = os.path.join(destination_path, market.replace(" ", "_"))
         verification_data = {}
@@ -841,9 +959,31 @@ def create_verification_json(market, destination_path):
                     verification_data[tf.lower()] = "error_reading_status"
                     all_identified = False
             else:
-                logger.warning(f"[Process-{market}] status.json not found for {market} ({tf})")
-                verification_data[tf.lower()] = "missing_status"
-                all_identified = False
+                # Create status.json with "incomplete" status
+                logger.warning(f"[Process-{market}] status.json not found for {market} ({tf}), creating with 'incomplete' status")
+                os.makedirs(os.path.dirname(status_file), exist_ok=True)
+                current_time = datetime.now(pytz.timezone('Africa/Lagos'))
+                am_pm = "am" if current_time.hour < 12 else "pm"
+                hour_12 = current_time.hour % 12 or 12
+                timestamp = f"{current_time.strftime('%Y-%m-%d T %I:%M:%S')} {am_pm} .{current_time.microsecond:06d}+01:00"
+                status_data = {
+                    "market": market,
+                    "timeframe": tf,
+                    "normalized_timeframe": normalized_tf,
+                    "timestamp": timestamp,
+                    "status": "incomplete",
+                    "elligible_status": "order_free"
+                }
+                try:
+                    with open(status_file, 'w') as f:
+                        json.dump(status_data, f, indent=4)
+                    logger.debug(f"[Process-{market}] Created status.json for {market} ({tf}) with status 'incomplete'")
+                    verification_data[tf.lower()] = "incomplete"
+                    all_identified = False
+                except Exception as e:
+                    logger.error(f"[Process-{market}] Error creating status.json for {market} ({tf}): {e}")
+                    verification_data[tf.lower()] = "error_creating_status"
+                    all_identified = False
 
         verification_data["all_timeframes"] = "verified" if all_identified else "incomplete_verification"
         verification_file = os.path.join(market_folder, "verification.json")
@@ -851,9 +991,11 @@ def create_verification_json(market, destination_path):
         with open(verification_file, 'w') as f:
             json.dump(verification_data, f, indent=4)
         logger.debug(f"[Process-{market}] Saved verification.json to {verification_file}")
+        return True
     except Exception as e:
         logger.error(f"[Process-{market}] Error creating verification.json for {market}: {e}")
-
+        return False
+     
 def download_and_verify_chart(driver, market, timeframe, destination_path, max_timeout=30):
     """Download and verify chart, retrying up to 2 times within session, and save candle data and status."""
     normalized_tf = normalize_timeframe(timeframe)  # Normalize timeframe for folder path
@@ -1094,7 +1236,10 @@ def marketsstatus(destination_path, markets, timeframes):
             verification_file = os.path.join(destination_path, market.replace(" ", "_"), "verification.json")
             if not os.path.exists(verification_file):
                 logger.warning(f"No verification.json found for {market}, marking all timeframes as incomplete")
-                incomplete_markets[market] = timeframes
+                incomplete_markets[market] = {
+                    "timeframes": timeframes,
+                    "reason": "missing_verification_file"
+                }
                 continue
 
             try:
@@ -1102,22 +1247,49 @@ def marketsstatus(destination_path, markets, timeframes):
                     verification_data = json.load(f)
                 identified_timeframes = []
                 incomplete_timeframes = []
+                reasons = []
 
                 for tf in timeframes:
+                    normalized_tf = normalize_timeframe(tf)
                     status = verification_data.get(tf.lower(), "missing_status")
+                    status_file = os.path.join(destination_path, market.replace(" ", "_"), normalized_tf, "status.json")
+                    
                     if status == "chart_identified":
                         identified_timeframes.append(tf)
                     else:
                         incomplete_timeframes.append(tf)
+                        # Determine reason based on status or status.json
+                        if status == "missing_status":
+                            if os.path.exists(status_file):
+                                try:
+                                    with open(status_file, 'r') as f_status:
+                                        status_data = json.load(f_status)
+                                        status_reason = status_data.get("status", "incomplete")
+                                        reasons.append(f"{tf}: {status_reason}")
+                                except Exception as e:
+                                    logger.error(f"Error reading status.json for {market} ({tf}): {e}")
+                                    reasons.append(f"{tf}: error_reading_status")
+                            else:
+                                reasons.append(f"{tf}: missing_status_file")
+                        else:
+                            reasons.append(f"{tf}: {status}")
 
                 if identified_timeframes:
                     chart_identified_markets[market] = identified_timeframes
                 if incomplete_timeframes:
-                    incomplete_markets[market] = incomplete_timeframes
+                    # Combine reasons into a single string or structure as needed
+                    reason_summary = "; ".join(set(reasons))  # Use set to avoid duplicates
+                    incomplete_markets[market] = {
+                        "timeframes": incomplete_timeframes,
+                        "reason": reason_summary
+                    }
 
             except Exception as e:
                 logger.error(f"Error reading verification.json for {market}: {e}")
-                incomplete_markets[market] = timeframes
+                incomplete_markets[market] = {
+                    "timeframes": timeframes,
+                    "reason": "error_reading_verification"
+                }
 
         status_data = {
             "chart_identified_markets": chart_identified_markets,
@@ -1137,10 +1309,11 @@ def marketsstatus(destination_path, markets, timeframes):
     except Exception as e:
         logger.error(f"Error generating market status report: {e}")
         return False
-
+    
 def timeframeselligibilityupdater(*, timeframe, elligible_status):
     """
-    Update the elligible_status in status.json for specified timeframes across all markets.
+    Configure eligible timeframes for processing by setting elligible_status in status.json.
+    This is a settings function called once at script start to specify which timeframes to process.
     
     Args:
         timeframe (str): Comma-separated list of timeframes (e.g., "m5,m15,m30,1hour,4hours").
@@ -1149,7 +1322,7 @@ def timeframeselligibilityupdater(*, timeframe, elligible_status):
     Returns:
         bool: True if successful, False otherwise.
     """
-    logger.debug(f"Starting timeframeselligibilityupdater with timeframe: {timeframe}, elligible_status: {elligible_status}")
+    logger.debug(f"Configuring timeframes with timeframe: {timeframe}, elligible_status: {elligible_status}")
     try:
         # Validate inputs
         if not timeframe:
@@ -1179,12 +1352,13 @@ def timeframeselligibilityupdater(*, timeframe, elligible_status):
             logger.error("No valid timeframes provided")
             return False
         
-        logger.debug(f"Valid timeframes to update: {valid_timeframes}, new status: {elligible_status}")
+        logger.debug(f"Configuring valid timeframes: {valid_timeframes}, elligible_status: {elligible_status}")
         
-        # Update status.json for each market and specified timeframe
+        # Update or create status.json for each market and timeframe
         for market in MARKETS:
             for tf in TIMEFRAMES:
                 normalized_tf = normalize_timeframe(tf)
+                # Only process specified timeframes
                 if normalized_tf in valid_timeframes:
                     try:
                         market_folder = os.path.join(DESTINATION_PATH, market.replace(" ", "_"), normalized_tf)
@@ -1194,9 +1368,7 @@ def timeframeselligibilityupdater(*, timeframe, elligible_status):
                         # Get current time in WAT (Africa/Lagos, UTC+1)
                         current_time = datetime.now(pytz.timezone('Africa/Lagos'))
                         am_pm = "am" if current_time.hour < 12 else "pm"
-                        hour_12 = current_time.hour % 12
-                        if hour_12 == 0:
-                            hour_12 = 12
+                        hour_12 = current_time.hour % 12 or 12
                         timestamp = (
                             f"{current_time.strftime('%Y-%m-%d T %I:%M:%S')} {am_pm} "
                             f".{current_time.microsecond:06d}+01:00"
@@ -1209,34 +1381,52 @@ def timeframeselligibilityupdater(*, timeframe, elligible_status):
                             "normalized_timeframe": normalized_tf,
                             "timestamp": timestamp,
                             "elligible_status": elligible_status,
-                            "status": "updated"
+                            "status": "incomplete"  # Default for new files
                         }
                         
                         if os.path.exists(status_file):
                             try:
                                 with open(status_file, 'r') as f:
                                     existing_data = json.load(f)
-                                existing_data["elligible_status"] = elligible_status
-                                existing_data["timestamp"] = timestamp
-                                existing_data["status"] = "updated"
+                                # Preserve existing status unless it's a new file
                                 status_data = existing_data
+                                status_data["elligible_status"] = elligible_status
+                                status_data["timestamp"] = timestamp
                             except Exception as e:
                                 logger.warning(f"[Process-{market}] Error reading existing status.json for {market} ({tf}): {e}")
                         
                         # Write updated status.json
                         with open(status_file, 'w') as f:
                             json.dump(status_data, f, indent=4)
-                        logger.debug(f"[Process-{market}] Updated status.json for {market} ({tf}) to elligible_status: {elligible_status}")
+                        logger.debug(f"[Process-{market}] Configured status.json for {market} ({tf}) with elligible_status: {elligible_status}, status: {status_data['status']}")
                     except Exception as e:
-                        logger.error(f"[Process-{market}] Error updating status.json for {market} ({tf}): {e}")
+                        logger.error(f"[Process-{market}] Error configuring status.json for {market} ({tf}): {e}")
+                else:
+                    # For non-specified timeframes, set elligible_status to a non-processable state if needed
+                    try:
+                        market_folder = os.path.join(DESTINATION_PATH, market.replace(" ", "_"), normalized_tf)
+                        status_file = os.path.join(market_folder, "status.json")
+                        if os.path.exists(status_file):
+                            with open(status_file, 'r') as f:
+                                existing_data = json.load(f)
+                            if existing_data.get("elligible_status") != "chart_identified":
+                                existing_data["elligible_status"] = "inactive"
+                                existing_data["timestamp"] = datetime.now(pytz.timezone('Africa/Lagos')).strftime(
+                                    "%Y-%m-%d T %I:%M:%S %p .%f+01:00"
+                                )
+                                with open(status_file, 'w') as f:
+                                    json.dump(existing_data, f, indent=4)
+                                logger.debug(f"[Process-{market}] Set elligible_status to 'inactive' for non-specified timeframe {tf} of {market}")
+                    except Exception as e:
+                        logger.error(f"[Process-{market}] Error updating non-specified timeframe {tf} for {market}: {e}")
         
-        logger.debug("Completed updating eligible statuses for specified timeframes")
+        logger.debug("Completed configuring eligible timeframes")
         return True
     
     except Exception as e:
         logger.error(f"Error in timeframeselligibilityupdater: {e}")
         return False
-
+    
 def run_script_for_market(market, eligible_pairs, processed_pairs):
     """Process a single market for eligible timeframes with elligible_status 'order_free'."""
     driver = None
@@ -1268,6 +1458,24 @@ def run_script_for_market(market, eligible_pairs, processed_pairs):
                 logger.error(f"[Process-{market}] Failed to select market '{market}', restarting")
                 for tf in eligible_timeframes:
                     save_status(market, tf, DESTINATION_PATH, "market_selection_failed")
+                driver.quit()
+                create_verification_json(market, DESTINATION_PATH)
+                time.sleep(10)
+                continue
+            # Verify market selection
+            try:
+                WebDriverWait(driver, 5).until(
+                    EC.presence_of_element_located((
+                        By.XPATH,
+                        f"//*[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{market.lower()}') and "
+                        f"(contains(@class, 'symbol') or contains(@class, 'title') or contains(@class, 'chart-header'))]"
+                    ))
+                )
+                logger.debug(f"[Process-{market}] Confirmed market '{market}' is selected")
+            except TimeoutException:
+                logger.error(f"[Process-{market}] Market '{market}' not confirmed as selected, restarting")
+                for tf in eligible_timeframes:
+                    save_status(market, tf, DESTINATION_PATH, "market_confirmation_failed")
                 driver.quit()
                 create_verification_json(market, DESTINATION_PATH)
                 time.sleep(10)
@@ -1315,92 +1523,167 @@ def run_script_for_market(market, eligible_pairs, processed_pairs):
         create_verification_json(market, DESTINATION_PATH)
         time.sleep(10)
         return False
+    
+def test_all_symbols():
+    """Test availability of all markets in MT5."""
+    if not mt5.initialize(path=TERMINAL_PATH, timeout=60000):
+        logger.error("Failed to initialize MT5 for symbol check")
+        return False
+    unavailable_symbols = []
+    for market in MARKETS:
+        if not mt5.symbol_select(market, True):
+            logger.error(f"Symbol {market} not available: {mt5.last_error()}")
+            unavailable_symbols.append(market)
+        else:
+            symbol_info = mt5.symbol_info(market)
+            if symbol_info is None or not symbol_info.visible:
+                logger.error(f"Symbol {market} not visible in MT5")
+                unavailable_symbols.append(market)
+    mt5.shutdown()
+    if unavailable_symbols:
+        logger.error(f"Unavailable symbols: {unavailable_symbols}")
+        return False
+    return True
+
+def is_pair_completed(market, timeframe):
+    """Check if a market-timeframe pair is completed (chart_identified or market_closed)."""
+    status_file = os.path.join(DESTINATION_PATH, market.replace(" ", "_"), normalize_timeframe(timeframe), "status.json")
+    if os.path.exists(status_file):
+        try:
+            with open(status_file, 'r') as f:
+                status_data = json.load(f)
+                status = status_data.get("status")
+                return status in ["chart_identified", "market_closed"]
+        except Exception as e:
+            logger.error(f"[Process-{market}] Error checking status for {market} ({timeframe}): {e}")
+            return False
+    return False
 
 def main():
-    """Main loop to process eligible markets (elligible_status: 'order_free') in batches of 10 until all are verified."""
+    """Main loop with symbol pre-check and verification.json creation, retrying until all eligible pairs are chart_identified or market_closed."""
     logger.debug("Starting main loop")
+    clear_all_market_files()
     
-    # Call timeframeselligibilityupdater with specific timeframes and status
-    if not timeframeselligibilityupdater(timeframe="m5", elligible_status="chart_identified"):
-        logger.error("Failed to update timeframe eligibility statuses. Exiting.")
-        return False
-    
-    # Check if required lists and credentials are loaded
-    if not MARKETS or not TIMEFRAMES or not FOREX_MARKETS or not SYNTHETIC_INDICES or not INDEX_MARKETS or not all([LOGIN_ID, PASSWORD, SERVER, BASE_URL, TERMINAL_PATH]):
-        logger.error("One or more required lists (MARKETS, FOREX_MARKETS, SYNTHETIC_INDICES, INDEX_MARKETS, TIMEFRAMES) or credentials (LOGIN_ID, PASSWORD, SERVER, BASE_URL, TERMINAL_PATH) are empty. Check base.json file. Exiting.")
-        return False
-    
-    # Get eligible market-timeframe pairs
-    eligible_pairs = get_eligible_market_timeframes()
-    markets_to_process = list(set(pair[0] for pair in eligible_pairs))  # Unique markets
-    processed_pairs = []  # Track successfully processed market-timeframe pairs
-
-    if not markets_to_process:
-        logger.debug("No markets with elligible_status 'order_free' found. Exiting.")
+    # Check all symbols
+    if not test_all_symbols():
+        logger.error("Symbol availability check failed. Creating verification.json for all markets.")
+        for market in MARKETS:
+            create_verification_json(market, DESTINATION_PATH)
         marketsstatus(DESTINATION_PATH, MARKETS, TIMEFRAMES)
+        return False
+    
+    # Configure eligible timeframes once at the start
+    if not timeframeselligibilityupdater(timeframe="m5,m15,m30,1hour,4hours", elligible_status="order_free"):
+        logger.error("Failed to configure timeframe eligibility statuses")
+        for market in MARKETS:
+            create_verification_json(market, DESTINATION_PATH)
+        marketsstatus(DESTINATION_PATH, MARKETS, TIMEFRAMES)
+        return False
+    
+    if not MARKETS or not TIMEFRAMES or not FOREX_MARKETS or not SYNTHETIC_INDICES or not INDEX_MARKETS or not all([LOGIN_ID, PASSWORD, SERVER, BASE_URL, TERMINAL_PATH]):
+        logger.error("Required lists or credentials missing. Exiting.")
+        for market in MARKETS:
+            create_verification_json(market, DESTINATION_PATH)
+        marketsstatus(DESTINATION_PATH, MARKETS, TIMEFRAMES)
+        return False
+    
+    eligible_pairs = get_eligible_market_timeframes()
+    markets_to_process = list(set(pair[0] for pair in eligible_pairs))
+    processed_pairs = []
+    
+    if not markets_to_process:
+        logger.debug("No markets with elligible_status 'order_free' found")
+        marketsstatus(DESTINATION_PATH, MARKETS, TIMEFRAMES)
+        for market in MARKETS:
+            create_verification_json(market, DESTINATION_PATH)
         return True
-
-    batch_size = 10  # Limit to 10 markets per batch
+    
+    batch_size = 10
+    batch_attempts = 0
+    
     while markets_to_process:
-        # Select up to 10 markets for the current batch
+        batch_attempts += 1
+        logger.debug(f"Batch attempt {batch_attempts} for markets: {markets_to_process}")
         current_batch = markets_to_process[:batch_size]
         failed_markets = []
         processes = []
         try:
-            logger.debug(f"Processing batch of markets: {current_batch}")
+            logger.debug(f"Processing batch: {current_batch}")
             for market in current_batch:
-                logger.debug(f"Starting process for {market}")
                 process = multiprocessing.Process(target=run_script_for_market, args=(market, eligible_pairs, processed_pairs))
                 processes.append((market, process))
                 process.start()
             for market, process in processes:
                 process.join()
                 if process.exitcode != 0:
-                    logger.error(f"[Process-{market}] Process failed for {market}")
+                    logger.error(f"[Process-{market}] Process failed")
                     failed_markets.append(market)
-                else:
-                    logger.debug(f"[Process-{market}] Market {market} processed successfully")
             if len(failed_markets) >= 5:
-                logger.debug(f"Detected {len(failed_markets)} market failures, calling handle_network_issue")
                 handle_network_issue()
-            # Remove successfully processed markets from markets_to_process
-            markets_to_process = [m for m in markets_to_process if m in failed_markets]
-            if not markets_to_process:
-                logger.debug("All markets processed successfully")
-                # Print eligible processed markets immediately after the debug log
-                formatted_pairs = [f"{market}({tf})" for market, tf in processed_pairs]
-                print(f'Eligible processed markets[{", ".join(formatted_pairs)}]')
-                # Generate market status report after successful processing
-                if not marketsstatus(DESTINATION_PATH, MARKETS, TIMEFRAMES):
-                    logger.error("Failed to generate market status report")
-                return True
-            logger.debug(f"Markets failed in batch: {failed_markets}. Moving to next batch...")
-            # Refresh eligible pairs for the next batch
+            
+            # Refresh eligible pairs to ensure we capture any changes
             eligible_pairs = get_eligible_market_timeframes()
-            markets_to_process = list(set(pair[0] for pair in eligible_pairs if pair[0] in failed_markets or pair[0] not in [m for m, _ in processed_pairs]))
-            time.sleep(10)
+            # Update markets to process, only including those with incomplete pairs
+            markets_to_process = list(set(
+                pair[0] for pair in eligible_pairs
+                if pair not in processed_pairs and not is_pair_completed(pair[0], pair[1])
+            ))
+            
+            # Log current status
+            logger.debug(f"Remaining markets to process: {markets_to_process}")
+            logger.debug(f"Processed pairs: {processed_pairs}")
+            
+            if not markets_to_process:
+                logger.debug("All eligible market-timeframe pairs are either chart_identified or market_closed")
+                break
+                
         except Exception as e:
             logger.error(f"Main loop error: {e}")
             for _, process in processes:
                 if process.is_alive():
                     process.terminate()
-                    logger.debug(f"Terminated process: {process.name}")
             if len(markets_to_process) >= 5:
-                logger.debug(f"Main loop error with {len(markets_to_process)} markets, calling handle_network_issue")
                 handle_network_issue()
-            # Refresh eligible pairs in case of error
             eligible_pairs = get_eligible_market_timeframes()
-            markets_to_process = list(set(pair[0] for pair in eligible_pairs if pair[0] in failed_markets or pair[0] not in [m for m, _ in processed_pairs]))
+            markets_to_process = list(set(
+                pair[0] for pair in eligible_pairs
+                if pair not in processed_pairs and not is_pair_completed(pair[0], pair[1])
+            ))
             time.sleep(10)
-    logger.debug("Main loop completed successfully")
-    # Generate market status report in case loop exits unexpectedly
-    if not marketsstatus(DESTINATION_PATH, MARKETS, TIMEFRAMES):
-        logger.error("Failed to generate market status report")
-    # Print eligible processed markets even if loop exits unexpectedly
-    formatted_pairs = [f"{market}({tf})" for market, tf in processed_pairs]
-    print(f'Eligible processed markets[{", ".join(formatted_pairs)}]')
-    return True
     
+    # Ensure verification.json is created for all markets
+    for market in MARKETS:
+        create_verification_json(market, DESTINATION_PATH)
+    
+    marketsstatus(DESTINATION_PATH, MARKETS, TIMEFRAMES)
+    
+    # Log and print final processed pairs
+    formatted_pairs = [f"{market}({tf})" for market, tf in processed_pairs]
+    logger.debug(f"Eligible processed markets: {formatted_pairs}")
+    print(f'Eligible processed markets[{", ".join(formatted_pairs)}]')
+    
+    # Final verification
+    all_completed = True
+    for market, tf in eligible_pairs:
+        if not is_pair_completed(market, tf):
+            all_completed = False
+            status_file = os.path.join(DESTINATION_PATH, market.replace(" ", "_"), normalize_timeframe(tf), "status.json")
+            if os.path.exists(status_file):
+                try:
+                    with open(status_file, 'r') as f:
+                        status_data = json.load(f)
+                        logger.warning(f"[Process-{market}] {market} ({tf}) not completed: status={status_data.get('status')}, elligible_status={status_data.get('elligible_status')}")
+                except Exception as e:
+                    logger.error(f"[Process-{market}] Error reading status.json for {market} ({tf}): {e}")
+            else:
+                logger.warning(f"[Process-{market}] status.json missing for {market} ({tf})")
+    
+    if all_completed:
+        logger.debug("Main loop completed: all eligible market-timeframe pairs are chart_identified or market_closed")
+        return True
+    else:
+        logger.error("Main loop completed but not all eligible market-timeframe pairs are chart_identified or market_closed")
+        return False
 if __name__ == "__main__":
     try:
         clear_all_market_files()
