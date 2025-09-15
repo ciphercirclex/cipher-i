@@ -1573,7 +1573,7 @@ def main():
         return False
     
     # Configure eligible timeframes once at the start
-    if not timeframeselligibilityupdater(timeframe="m5,m15,m30,1hour,4hours", elligible_status="order_free"):
+    if not timeframeselligibilityupdater(timeframe="m5", elligible_status="chart_identified"):
         logger.error("Failed to configure timeframe eligibility statuses")
         for market in MARKETS:
             create_verification_json(market, DESTINATION_PATH)
@@ -1684,6 +1684,7 @@ def main():
     else:
         logger.error("Main loop completed but not all eligible market-timeframe pairs are chart_identified or market_closed")
         return False
+
 if __name__ == "__main__":
     try:
         clear_all_market_files()
