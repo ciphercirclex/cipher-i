@@ -8,7 +8,7 @@ import json
 import os
 
 # Path configuration
-MARKETS_JSON_PATH = r"C:\xampp\htdocs\CIPHER\cipher i\bouncestream\chart\base.json"
+MARKETS_JSON_PATH = r"C:\xampp\htdocs\CIPHER\cipher i\programmes\chart\base.json"
 
 # Initialize global variables
 MARKETS = []

@@ -5,8 +5,8 @@ import shutil
 import json
 
 # Path configuration
-BASE_INPUT_FOLDER = r"C:\xampp\htdocs\CIPHER\cipher i\bouncestream\chart\fetched"
-BASE_OUTPUT_FOLDER = r"C:\xampp\htdocs\CIPHER\cipher i\bouncestream\chart\processing"
+BASE_INPUT_FOLDER = r"C:\xampp\htdocs\CIPHER\cipher i\programmes\chart\fetched"
+BASE_OUTPUT_FOLDER = r"C:\xampp\htdocs\CIPHER\cipher i\programmes\chart\processing"
 MARKET_NAME = "Drift Switch Index 30"
 
 # Dynamically construct INPUT_FOLDER and OUTPUT_FOLDER with market name

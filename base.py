@@ -3,7 +3,7 @@ import os
 
 def create_base_json():
     # Define the target path and directory
-    target_dir = r"C:\xampp\htdocs\CIPHER\cipher i\bouncestream\chart"
+    target_dir = r"C:\xampp\htdocs\CIPHER\cipher i\programmes\chart"
     target_file = os.path.join(target_dir, "base.json")
 
     # Create the directory if it doesn't exist

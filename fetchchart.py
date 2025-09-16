@@ -32,7 +32,7 @@ for name in ['webdriver_manager', 'selenium', 'urllib3', 'selenium.webdriver', '
     logging.getLogger(name).setLevel(logging.WARNING)
 
 # Configuration
-MARKETS_JSON_PATH = r"C:\xampp\htdocs\CIPHER\cipher i\bouncestream\chart\base.json"
+MARKETS_JSON_PATH = r"C:\xampp\htdocs\CIPHER\cipher i\programmes\chart\base.json"
 
 # Function to load markets, timeframes, and credentials from JSON
 def load_markets_and_credentials(json_path):
@@ -114,7 +114,7 @@ MT5_TIMEFRAMES = {
     "H1": mt5.TIMEFRAME_H1,
     "H4": mt5.TIMEFRAME_H4
 }
-DESTINATION_PATH = r"C:\xampp\htdocs\CIPHER\cipher i\bouncestream\chart\fetched"
+DESTINATION_PATH = r"C:\xampp\htdocs\CIPHER\cipher i\programmes\chart\fetched"
 
 # Shared multiprocessing variables
 network_issue_event = multiprocessing.Event()
@@ -1312,7 +1312,7 @@ def marketsstatus(destination_path, markets, timeframes):
     
 def timeframeselligibilityupdater(*, timeframe, elligible_status):
     """
-    Configure eligible timeframes for processing by setting elligible_status in status.json.
+    Configure eligible timeframes for processing by setting elligible_status and status in status.json.
     This is a settings function called once at script start to specify which timeframes to process.
     
     Args:
@@ -1381,17 +1381,20 @@ def timeframeselligibilityupdater(*, timeframe, elligible_status):
                             "normalized_timeframe": normalized_tf,
                             "timestamp": timestamp,
                             "elligible_status": elligible_status,
-                            "status": "incomplete"  # Default for new files
+                            "status": elligible_status  # Set status to the same value as elligible_status
                         }
                         
                         if os.path.exists(status_file):
                             try:
                                 with open(status_file, 'r') as f:
                                     existing_data = json.load(f)
-                                # Preserve existing status unless it's a new file
+                                # Update only the specified fields, preserving others
+                                existing_data.update({
+                                    "elligible_status": elligible_status,
+                                    "status": elligible_status,  # Update status to match elligible_status
+                                    "timestamp": timestamp
+                                })
                                 status_data = existing_data
-                                status_data["elligible_status"] = elligible_status
-                                status_data["timestamp"] = timestamp
                             except Exception as e:
                                 logger.warning(f"[Process-{market}] Error reading existing status.json for {market} ({tf}): {e}")
                         
@@ -1426,7 +1429,7 @@ def timeframeselligibilityupdater(*, timeframe, elligible_status):
     except Exception as e:
         logger.error(f"Error in timeframeselligibilityupdater: {e}")
         return False
-    
+        
 def run_script_for_market(market, eligible_pairs, processed_pairs):
     """Process a single market for eligible timeframes with elligible_status 'order_free'."""
     driver = None
@@ -1569,7 +1572,7 @@ def main():
         logger.error("Symbol availability check failed. Creating verification.json for all markets.")
         for market in MARKETS:
             create_verification_json(market, DESTINATION_PATH)
-        marketsstatus(DESTINATION_PATH, MARKETS, TIMEFRAMES)
+        marketsstatus(DESTINATION_PATH, MARKETS, TIMEFRAMES)  # Generate status report even on symbol check failure
         return False
     
     # Configure eligible timeframes once at the start
@@ -1577,14 +1580,14 @@ def main():
         logger.error("Failed to configure timeframe eligibility statuses")
         for market in MARKETS:
             create_verification_json(market, DESTINATION_PATH)
-        marketsstatus(DESTINATION_PATH, MARKETS, TIMEFRAMES)
+        marketsstatus(DESTINATION_PATH, MARKETS, TIMEFRAMES)  # Generate status report even on failure
         return False
     
     if not MARKETS or not TIMEFRAMES or not FOREX_MARKETS or not SYNTHETIC_INDICES or not INDEX_MARKETS or not all([LOGIN_ID, PASSWORD, SERVER, BASE_URL, TERMINAL_PATH]):
         logger.error("Required lists or credentials missing. Exiting.")
         for market in MARKETS:
             create_verification_json(market, DESTINATION_PATH)
-        marketsstatus(DESTINATION_PATH, MARKETS, TIMEFRAMES)
+        marketsstatus(DESTINATION_PATH, MARKETS, TIMEFRAMES)  # Generate status report even on missing data
         return False
     
     eligible_pairs = get_eligible_market_timeframes()
@@ -1593,9 +1596,9 @@ def main():
     
     if not markets_to_process:
         logger.debug("No markets with elligible_status 'order_free' found")
-        marketsstatus(DESTINATION_PATH, MARKETS, TIMEFRAMES)
         for market in MARKETS:
             create_verification_json(market, DESTINATION_PATH)
+        marketsstatus(DESTINATION_PATH, MARKETS, TIMEFRAMES)  # Generate status report for all markets
         return True
     
     batch_size = 10
@@ -1655,6 +1658,7 @@ def main():
     for market in MARKETS:
         create_verification_json(market, DESTINATION_PATH)
     
+    # Generate final status report for all markets and timeframes, regardless of elligible_status
     marketsstatus(DESTINATION_PATH, MARKETS, TIMEFRAMES)
     
     # Log and print final processed pairs
@@ -1684,7 +1688,7 @@ def main():
     else:
         logger.error("Main loop completed but not all eligible market-timeframe pairs are chart_identified or market_closed")
         return False
-
+    
 if __name__ == "__main__":
     try:
         clear_all_market_files()

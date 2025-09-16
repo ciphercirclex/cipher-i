@@ -9,9 +9,9 @@ import json
 import multiprocessing
 
 # Path configuration
-BASE_INPUT_FOLDER = r"C:\xampp\htdocs\CIPHER\cipher i\bouncestream\chart\fetched"
-BASE_OUTPUT_FOLDER = r"C:\xampp\htdocs\CIPHER\cipher i\bouncestream\chart\processing"
-MARKETS_JSON_PATH = r"C:\xampp\htdocs\CIPHER\cipher i\bouncestream\chart\base.json"
+BASE_INPUT_FOLDER = r"C:\xampp\htdocs\CIPHER\cipher i\programmes\chart\fetched"
+BASE_OUTPUT_FOLDER = r"C:\xampp\htdocs\CIPHER\cipher i\programmes\chart\processing"
+MARKETS_JSON_PATH = r"C:\xampp\htdocs\CIPHER\cipher i\programmes\chart\base.json"
 
 # Initialize global credentials as None
 LOGIN_ID = None
@@ -377,7 +377,7 @@ def load_candlesamountinbetween(market, timeframe):
     try:
         market_folder_name = market.replace(" ", "_")
         json_path = os.path.join(
-            r"C:\xampp\htdocs\CIPHER\cipher i\bouncestream\chart\orders",
+            r"C:\xampp\htdocs\CIPHER\cipher i\programmes\chart\orders",
             market_folder_name,
             normalized_tf,
             "candlesamountinbetween.json"
@@ -2356,7 +2356,7 @@ def main1():
             default_market = MARKETS[0]  # Use the first market for candle time check
             timeframe = "M5"  # Fixed to M5 as per candletimeleft logic
             print(f"Checking M5 candle time left using market: {default_market}")
-            time_left, next_close_time = candletimeleft(default_market, timeframe, None, min_time_left=3)
+            time_left, next_close_time = candletimeleft(default_market, timeframe, None, min_time_left=1)
             
             if time_left is None or next_close_time is None:
                 print(f"Failed to retrieve candle time for {default_market} (M5). Exiting.")
@@ -2448,7 +2448,7 @@ def main2():
             default_market = MARKETS[0]  # Use the first market for candle time check
             timeframe = "M5"  # Fixed to M5 as per candletimeleft logic
             print(f"Checking M5 candle time left using market: {default_market}")
-            time_left, next_close_time = candletimeleft(default_market, timeframe, None, min_time_left=3)
+            time_left, next_close_time = candletimeleft(default_market, timeframe, None, min_time_left=1)
             
             if time_left is None or next_close_time is None:
                 print(f"Failed to retrieve candle time for {default_market} (M5). Exiting.")
