@@ -162,7 +162,6 @@ def run_updateorders():
         print("updateorders (M15) completed.")
     except Exception as e:
         print(f"Error in updateorders (M15): {e}")
-
 def run_updateorders2():
     """Run the updateorders script for M5 timeframe."""
     try:
@@ -178,6 +177,14 @@ def fetchlotsizeandrisk():
         print("fetchlotsizeandrisk completed.")
     except Exception as e:
         print(f"Error in fetchlotsizeandrisk: {e}")
+def insertpendingorderstodb():
+    """Run the fetchlotsizeandrisk function from updateorders."""
+    try:
+        updateorders.executeinsertpendingorderstodb()
+        print("fetchlotsizeandrisk completed.")
+    except Exception as e:
+        print(f"Error in fetchlotsizeandrisk: {e}")
+
 
 def execute(mode="loop"):
     """Execute the scripts sequentially with the specified mode: 'loop' or 'once'."""
@@ -191,7 +198,7 @@ def execute(mode="loop"):
     if not MARKETS:
         print("No markets defined in MARKETS list. Exiting.")
         return
-
+    fetchlotsizeandrisk()
     def execute_charts_identified():
         """Helper function to run analysechart_m and updateorders sequentially for M15 timeframe."""
         default_market = MARKETS[0]  # Use first market from MARKETS list
@@ -267,7 +274,7 @@ def execute(mode="loop"):
 
             print("5 minutes markets (M5) completed successfully.")
             return time_left, start_time, initial_time_left
-
+    insertpendingorderstodb()
     try:
         if mode == "loop":
             while True:
@@ -315,7 +322,7 @@ def execute(mode="loop"):
                 print("=======================\n")
             
             print("Execution completed (once mode).")
-
+        
     except Exception as e:
         print(f"Error in main loop: {e}")
 

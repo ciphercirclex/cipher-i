@@ -2946,6 +2946,181 @@ def marketsliststatus() -> bool:
         log_and_print(f"Error processing marketsliststatus: {str(e)}", "ERROR")
         return False
 
+def insertpendingorderstodb(json_path: str = os.path.join(BASE_OUTPUT_FOLDER, "allpendingorders.json")) -> bool:
+    """Insert all pending orders from allpendingorders.json into cipherbouncestream_signals table."""
+    log_and_print("Inserting all pending orders into cipherbouncestream_signals table", "INFO")
+    
+    # Initialize error log list
+    error_log = []
+    
+    # Define error log file path
+    error_json_path = os.path.join(BASE_PROCESSING_FOLDER, "insertpendingorderserror.json")
+    
+    # Helper function to save errors to JSON
+    def save_errors():
+        try:
+            with open(error_json_path, 'w') as f:
+                json.dump(error_log, f, indent=4)
+            log_and_print(f"Errors saved to {error_json_path}", "INFO")
+        except Exception as e:
+            log_and_print(f"Failed to save errors to {error_json_path}: {str(e)}", "ERROR")
+    
+    # Load pending orders from JSON
+    try:
+        if not os.path.exists(json_path):
+            error_log.append({
+                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                "error": f"Pending orders JSON file not found at: {json_path}"
+            })
+            save_errors()
+            log_and_print(f"Pending orders JSON file not found at: {json_path}", "ERROR")
+            return False
+        
+        with open(json_path, 'r') as f:
+            data = json.load(f)
+        
+        # Extract orders list
+        orders = data.get('orders', [])
+        if not orders:
+            error_log.append({
+                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                "error": "No orders found in allpendingorders.json or 'orders' key is missing"
+            })
+            save_errors()
+            log_and_print("No orders found in allpendingorders.json or 'orders' key is missing", "ERROR")
+            return False
+        
+        log_and_print(f"Loaded {len(orders)} pending orders from {json_path}", "INFO")
+        
+    except Exception as e:
+        error_log.append({
+            "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+            "error": f"Error loading allpendingorders.json: {str(e)}"
+        })
+        save_errors()
+        log_and_print(f"Error loading allpendingorders.json: {str(e)}", "ERROR")
+        return False
+    
+    # Prepare SQL INSERT query with formatted values
+    sql_query = """
+        INSERT INTO cipherbouncestream_signals (
+            pair, timeframe, order_type, entry_price, 
+            ratio_0_5_price, ratio_1_price, ratio_2_price, 
+            profit_price
+        ) VALUES 
+    """
+    value_strings = []
+    
+    for order in orders:
+        try:
+            pair = order.get('pair', 'N/A')
+            timeframe = DB_TIMEFRAME_MAPPING.get(order.get('timeframe', 'N/A'), order.get('timeframe', 'N/A'))
+            order_type = order.get('order_type', 'N/A')
+            entry_price = float(order.get('entry_price', 0.0))
+            ratio0_5_price = float(order.get('1:0.5_price', 0.0))
+            ratio_1_price = float(order.get('1:1_price', 0.0))
+            ratio_2_price = float(order.get('1:2_price', 0.0))
+            profit_price = float(order.get('profit_price', 0.0))
+            
+            # Format values into a single string, ensuring strings are quoted
+            value_string = (
+                f"('{pair}', '{timeframe}', '{order_type}', {entry_price}, "
+                f"{ratio0_5_price}, {ratio_1_price}, {ratio_2_price}, {profit_price})"
+            )
+            value_strings.append(value_string)
+        except (ValueError, TypeError) as e:
+            error_log.append({
+                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                "error": f"Invalid data format in order {order.get('pair', 'unknown')} {order.get('timeframe', 'unknown')}: {str(e)}"
+            })
+            log_and_print(f"Invalid data format in order {order.get('pair', 'unknown')} {order.get('timeframe', 'unknown')}: {str(e)}", "ERROR")
+            continue
+    
+    if not value_strings:
+        error_log.append({
+            "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+            "error": "No valid orders to insert after processing"
+        })
+        save_errors()
+        log_and_print("No valid orders to insert after processing", "ERROR")
+        return False
+    
+    # Combine value strings into SQL query
+    sql_query += ", ".join(value_strings)
+    
+    # Execute query with retries
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            result = db.execute_query(sql_query)
+            log_and_print(f"Raw query result for inserting pending orders: {json.dumps(result, indent=2)}", "DEBUG")
+            
+            if not isinstance(result, dict):
+                error_log.append({
+                    "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                    "error": f"Invalid result format on attempt {attempt}: Expected dict, got {type(result)}"
+                })
+                save_errors()
+                log_and_print(f"Invalid result format on attempt {attempt}: Expected dict, got {type(result)}", "ERROR")
+                continue
+                
+            if result.get('status') != 'success':
+                error_message = result.get('message', 'No message provided')
+                error_log.append({
+                    "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                    "error": f"Query failed on attempt {attempt}: {error_message}"
+                })
+                save_errors()
+                log_and_print(f"Query failed on attempt {attempt}: {error_message}", "ERROR")
+                continue
+                
+            # Check affected rows
+            affected_rows = result.get('results', {}).get('affected_rows', 0)
+            if affected_rows > 0:
+                log_and_print(f"Successfully inserted {affected_rows} pending orders into cipherbouncestream_signals", "SUCCESS")
+                return True
+            else:
+                error_log.append({
+                    "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                    "error": f"No rows affected on attempt {attempt}"
+                })
+                save_errors()
+                log_and_print(f"No rows affected on attempt {attempt}", "ERROR")
+                continue
+                
+        except Exception as e:
+            error_log.append({
+                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                "error": f"Exception on attempt {attempt}: {str(e)}"
+            })
+            save_errors()
+            log_and_print(f"Exception on attempt {attempt}: {str(e)}", "ERROR")
+            
+        if attempt < MAX_RETRIES:
+            delay = RETRY_DELAY * (2 ** (attempt - 1))
+            log_and_print(f"Retrying after {delay} seconds...", "INFO")
+            time.sleep(delay)
+        else:
+            error_log.append({
+                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                "error": "Max retries reached for inserting pending orders"
+            })
+            save_errors()
+            log_and_print("Max retries reached for inserting pending orders", "ERROR")
+            return False
+    
+    error_log.append({
+        "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+        "error": "Function exited without success"
+    })
+    save_errors()
+    return False
+def executeinsertpendingorderstodb():
+    """Execute the insertion of pending orders into the database."""
+    log_and_print("===== Execute Insert Pending Orders to Database =====", "TITLE")
+    if not insertpendingorderstodb():
+        log_and_print("Failed to insert pending orders into database. Exiting.", "ERROR")
+        return
+    log_and_print("===== Insert Pending Orders to Database Completed =====", "TITLE")
 
 def process_5minutes_timeframe():
     """Process all markets for the 5-minute (M5) timeframe, checking candle time left."""
@@ -3310,4 +3485,5 @@ def main():
 if __name__ == "__main__":
     executefetchlotsizeandrisk()
     main()
+    executeinsertpendingorderstodb()
     
