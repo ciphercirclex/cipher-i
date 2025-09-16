@@ -205,6 +205,91 @@ def candletimeleft(market, timeframe, candle_time, min_time_left):
             
     finally:
         mt5.shutdown()
+def candletimeleft_5minutes(market, candle_time, min_time_left):
+    """Check the time left for the current 5-minute (M5) candle for a given market."""
+    # Initialize MT5
+    print(f"[Process-{market}] Initializing MT5 for {market} (M5)")
+    for attempt in range(3):
+        if mt5.initialize(path=TERMINAL_PATH, timeout=60000):
+            break
+        print(f"[Process-{market}] Attempt {attempt + 1}/3: Failed to initialize MT5 terminal. Error: {mt5.last_error()}")
+        time.sleep(5)
+    else:
+        print(f"[Process-{market}] Failed to initialize MT5 terminal after 3 attempts")
+        return None, None
+
+    for _ in range(5):
+        if mt5.terminal_info() is not None:
+            break
+        print(f"[Process-{market}] Waiting for MT5 terminal to fully initialize...")
+        time.sleep(2)
+    else:
+        print(f"[Process-{market}] MT5 terminal not ready")
+        mt5.shutdown()
+        return None, None
+
+    for attempt in range(3):
+        if mt5.login(login=int(LOGIN_ID), password=PASSWORD, server=SERVER, timeout=60000):
+            print(f"[Process-{market}] Successfully logged in to MT5")
+            break
+        error_code, error_message = mt5.last_error()
+        print(f"[Process-{market}] Attempt {attempt + 1}/3: Failed to log in to MT5. Error code: {error_code}, Message: {error_message}")
+        time.sleep(5)
+    else:
+        print(f"[Process-{market}] Failed to log in to MT5 after 3 attempts")
+        mt5.shutdown()
+        return None, None
+
+    try:
+        # Fetch current candle
+        if not mt5.symbol_select(market, True):
+            print(f"[Process-{market}] Failed to select market: {market}, error: {mt5.last_error()}")
+            return None, None
+
+        while True:
+            for attempt in range(3):
+                candles = mt5.copy_rates_from_pos(market, mt5.TIMEFRAME_M5, 0, 1)
+                if candles is None or len(candles) == 0:
+                    print(f"[Process-{market}] Attempt {attempt + 1}/3: Failed to fetch candle data for {market} (M5), error: {mt5.last_error()}")
+                    time.sleep(2)
+                    continue
+                current_time = datetime.now(pytz.UTC)
+                candle_time_dt = datetime.fromtimestamp(candles[0]['time'], tz=pytz.UTC)
+                if (current_time - candle_time_dt).total_seconds() > 6 * 60:  # 6 minutes for M5
+                    print(f"[Process-{market}] Attempt {attempt + 1}/3: Candle for {market} (M5) is too old (time: {candle_time_dt})")
+                    time.sleep(2)
+                    continue
+                candle_time = candles[0]['time']
+                break
+            else:
+                print(f"[Process-{market}] Failed to fetch recent candle data for {market} (M5) after 3 attempts")
+                return None, None
+
+            # Process M5 timeframe
+            candle_datetime = datetime.fromtimestamp(candle_time, tz=pytz.UTC)
+            minutes_per_candle = 5
+            total_minutes = (candle_datetime.hour * 60 + candle_datetime.minute)
+            remainder = total_minutes % minutes_per_candle
+            last_candle_start = candle_datetime - timedelta(minutes=remainder, seconds=candle_datetime.second, microseconds=candle_datetime.microsecond)
+            next_close_time = last_candle_start + timedelta(minutes=minutes_per_candle)
+            current_time = datetime.now(pytz.UTC)
+            time_left = (next_close_time - current_time).total_seconds() / 60.0
+            if time_left <= 0:
+                next_close_time += timedelta(minutes=minutes_per_candle)
+                time_left = (next_close_time - current_time).total_seconds() / 60.0
+            print(f"[Process-{market}] Candle time: {candle_datetime}, Next close: {next_close_time}, Time left: {time_left:.2f} minutes")
+            
+            if time_left > min_time_left:
+                return time_left, next_close_time
+            else:
+                print(f"[Process-{market}] Time left ({time_left:.2f} minutes) is <= {min_time_left} minutes, waiting for next candle")
+                time_to_wait = (next_close_time - current_time).total_seconds() + 5  # Wait until next candle starts
+                time.sleep(time_to_wait)
+                continue
+            
+    finally:
+        mt5.shutdown()
+
 
 def normalize_timeframe(timeframe: str) -> str:
     """Normalize timeframe input to standard format (e.g., '5m' -> 'M5', '4h' -> 'H4')."""
@@ -299,7 +384,7 @@ def fetch_candle_data(market: str, timeframe: str) -> tuple[Optional[Dict], Opti
             "Close": float(candle['close'])
         }
         candle_data[f"Candle_{position}"] = candle_details
-        log_and_print(f"Stored candle for position {position}: Time={candle_details['Time']}, Open={candle_details['Open']}, High={candle_details['High']}, Low={candle_details['Low']}, Close={candle_details['Close']}", "DEBUG")
+        #log_and_print(f"stored candle for position {position}: Time={candle_details['Time']}, Open={candle_details['Open']}, High={candle_details['High']}, Low={candle_details['Low']}, Close={candle_details['Close']}", "DEBUG")
 
     # Verify the first few candles for correct indexing
     log_and_print(f"Verifying candle indexing for {market} {timeframe}: Candle_1 Time={candle_data.get('Candle_1', {}).get('Time', 'N/A')}, Candle_2 Time={candle_data.get('Candle_2', {}).get('Time', 'N/A')}", "DEBUG")
@@ -1302,7 +1387,7 @@ def executioncandle_after_breakoutparent(market: str, timeframe: str, json_dir: 
         try:
             with open(pricecandle_json_path, 'w') as f:
                 json.dump(updated_pricecandle_data, f, indent=4)
-            log_and_print(f"Updated pricecandle.json with executioner candle for {market} {timeframe}", "SUCCESS")
+            #log_and_print(f"updated pricecandle.json with executioner candle for {market} {timeframe}", "SUCCESS")
             return True
         except Exception as e:
             log_and_print(f"Error saving updated pricecandle.json for {market} {timeframe}: {e}", "ERROR")
@@ -1611,7 +1696,7 @@ def getorderholderpriceswithlotsizeandrisk(market: str, timeframe: str, json_dir
         
         # Log available pairs and timeframes for debugging
         available_pairs_timeframes = [(entry.get("pair", ""), entry.get("timeframe", "")) for entry in lotsizeandrisk_data]
-        log_and_print(f"Available pairs and timeframes in lotsizeandrisk.json: {available_pairs_timeframes}", "DEBUG")
+        #log_and_print(f"Available pairs and timeframes in lotsizeandrisk.json: {available_pairs_timeframes}", "DEBUG")
         
         # Normalize input timeframe
         normalized_timeframe = normalize_timeframe(timeframe)
@@ -1906,7 +1991,7 @@ def getorderholderpriceswithlotsizeandrisk(market: str, timeframe: str, json_dir
         return False
 
 def PendingOrderUpdater(market: str, timeframe: str, json_dir: str) -> bool:
-    log_and_print(f"Updating pending orders for market={market}, timeframe={timeframe}", "INFO")
+    #log_and_print(f"updating pending orders for market={market}, timeframe={timeframe}", "INFO")
     
     # Define file paths
     pricecandle_json_path = os.path.join(json_dir, "pricecandle.json")
@@ -2039,7 +2124,7 @@ def PendingOrderUpdater(market: str, timeframe: str, json_dir: str) -> bool:
         try:
             with open(pricecandle_json_path, 'w') as f:
                 json.dump(final_pricecandle_data, f, indent=4)
-            log_and_print(f"Updated pricecandle.json with pending order updates and duplicates removed for {market} {timeframe}", "SUCCESS")
+            #log_and_print(f"updated pricecandle.json with pending order updates and duplicates removed for {market} {timeframe}", "SUCCESS")
             return True
         except Exception as e:
             log_and_print(f"Error saving final pricecandle.json for {market} {timeframe}: {e}", "ERROR")
@@ -2286,10 +2371,6 @@ def collect_all_pending_orders(market: str, timeframe: str, json_dir: str) -> bo
                         if isinstance(pending_data, list):
                             all_pending_orders.extend(pending_data)
                             timeframe_counts_pending[db_tf] += len(pending_data)
-                            log_and_print(
-                                f"Collected {len(pending_data)} pending orders from {pending_path}",
-                                "DEBUG"
-                            )
                         else:
                             log_and_print(f"Invalid data format in {pending_path}: Expected list, got {type(pending_data)}", "WARNING")
                     except Exception as e:
@@ -2526,10 +2607,6 @@ def collect_all_executionercandle_orders(market: str, timeframe: str, json_dir: 
         try:
             with open(pricecandle_json_path, 'w') as f:
                 json.dump(trendlines_to_keep, f, indent=4)
-            log_and_print(
-                f"Updated {pricecandle_json_path} with {len(trendlines_to_keep)} trendlines after moving {len(executed_orders)} executed orders",
-                "SUCCESS"
-            )
         except Exception as e:
             log_and_print(f"Error updating pricecandle.json for {market} {timeframe}: {str(e)}", "ERROR")
             return False
@@ -2571,10 +2648,6 @@ def collect_all_executionercandle_orders(market: str, timeframe: str, json_dir: 
                         if isinstance(executed_data, list):
                             all_executed_orders.extend(executed_data)
                             timeframe_counts_executed[db_tf] += len(executed_data)
-                            log_and_print(
-                                f"Collected {len(executed_data)} executed orders from {executed_path}",
-                                "DEBUG"
-                            )
                         else:
                             log_and_print(f"Invalid data format in {executed_path}: Expected list, got {type(executed_data)}", "WARNING")
                     except Exception as e:
@@ -2706,10 +2779,6 @@ def marketsliststatus() -> bool:
                         new_number_position_value = candles_data.get("new number position for matched candle data")
                         if new_number_position_value is not None:
                             new_number_position = str(new_number_position_value)
-                            log_and_print(
-                                f"Found new number position {new_number_position} for timeframe {tf_key} from {market}",
-                                "DEBUG"
-                            )
                             # Take the first valid value
                             break
                     except Exception as e:
@@ -2839,11 +2908,6 @@ def marketsliststatus() -> bool:
                     os.makedirs(os.path.dirname(status_file), exist_ok=True)
                     with open(status_file, 'w') as f:
                         json.dump(status_data, f, indent=4)
-                    log_and_print(
-                        f"Updated {status_file} to status '{status_data['status']}' and eligible_status "
-                        f"'{status_data['elligible_status']}' for {market} ({tf})",
-                        "DEBUG"
-                    )
                 except Exception as e:
                     log_and_print(f"Error updating status.json for {market} ({tf}) at {status_file}: {str(e)}", "ERROR")
         
@@ -2881,7 +2945,80 @@ def marketsliststatus() -> bool:
     except Exception as e:
         log_and_print(f"Error processing marketsliststatus: {str(e)}", "ERROR")
         return False
-       
+
+
+def process_5minutes_timeframe():
+    """Process all markets for the 5-minute (M5) timeframe, checking candle time left."""
+    try:
+        log_and_print("===== Fetch and Process M5 Candle Data =====", "TITLE")
+        
+        # Verify that credentials were loaded
+        if not all([LOGIN_ID, PASSWORD, SERVER, TERMINAL_PATH]):
+            log_and_print("Credentials not properly loaded from base.json. Exiting.", "ERROR")
+            return
+        
+        # Check M5 candle time left globally
+        if not MARKETS:
+            log_and_print("No markets defined in MARKETS list. Exiting.", "ERROR")
+            return
+        default_market = MARKETS[0]
+        timeframe = "M5"
+        log_and_print(f"Checking M5 candle time left using market: {default_market}", "INFO")
+        time_left, next_close_time = candletimeleft_5minutes(default_market, None, min_time_left=1)
+        
+        if time_left is None or next_close_time is None:
+            log_and_print(f"Failed to retrieve candle time for {default_market} (M5). Exiting.", "ERROR")
+            return
+        
+        log_and_print(f"M5 candle time left: {time_left:.2f} minutes. Proceeding with execution.", "INFO")
+
+        # Create tasks for all markets with M5 timeframe
+        tasks = [(market, timeframe) for market in MARKETS]
+        success_data = []
+        no_pending_data = []
+        failed_data = []
+
+        with multiprocessing.Pool(processes=4) as pool:
+            results = pool.starmap(process_market_timeframe, tasks)
+
+        # Collect status for each market
+        for (market, _), (success, error_message, status, process_messages) in zip(tasks, results):
+            if status == "success":
+                success_data.append({
+                    "market": market,
+                    "timeframe": timeframe,
+                    "processed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "process_messages": process_messages
+                })
+            elif status == "no_pending_orders":
+                no_pending_data.append({
+                    "market": market,
+                    "timeframe": timeframe,
+                    "message": process_messages.get("match_trendline_with_candle_data", "No pending orders found"),
+                    "processed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "process_messages": process_messages
+                })
+            else:
+                failed_data.append({
+                    "market": market,
+                    "timeframe": timeframe,
+                    "error_message": error_message,
+                    "processed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "process_messages": process_messages
+                })
+
+        # Log summary
+        success_count = len(success_data)
+        no_pending_count = len(no_pending_data)
+        failed_count = len(failed_data)
+        log_and_print(f"M5 processing completed: {success_count}/{len(tasks)} markets processed successfully, "
+                      f"{no_pending_count} with no pending orders, {failed_count} failed", "INFO")
+        
+    except Exception as e:
+        log_and_print(f"Error in M5 processing: {str(e)}", "ERROR")
+    finally:
+        log_and_print("===== Fetch and Process M5 Candle Data Completed =====", "TITLE")
+
 def process_market_timeframe(market: str, timeframe: str) -> Tuple[bool, Optional[str], str, Dict]:
     """Process a single market and timeframe combination, returning success status, error message, status, and process messages."""
     error_message = None
@@ -3044,8 +3181,6 @@ def process_market_timeframe(market: str, timeframe: str) -> Tuple[bool, Optiona
                     all_pending_data = json.load(f)
                 all_pending_count = len(all_pending_data.get('orders', []))
             process_messages["collect_all_pending_orders"] = (
-                f"Collected {pending_count} pending orders for {market} {timeframe}, "
-                f"total {all_pending_count} pending orders across all markets"
             )
 
         # Collect executioner candle orders
@@ -3061,7 +3196,6 @@ def process_market_timeframe(market: str, timeframe: str) -> Tuple[bool, Optiona
                     executed_data = json.load(f)
                 executed_count = len(executed_data)
             process_messages["collect_all_executionercandle_orders"] = (
-                f"Collected {executed_count} executioner candle orders for {market} {timeframe}"
             )
 
         # Generate markets order list status
@@ -3117,7 +3251,7 @@ def main():
         default_market = MARKETS[0]
         timeframe = "M15"  # Changed from "M5" to "M15"
         log_and_print(f"Checking M15 candle time left using market: {default_market}", "INFO")
-        time_left, next_close_time = candletimeleft(default_market, timeframe, None, min_time_left=5)
+        time_left, next_close_time = candletimeleft(default_market, timeframe, None, min_time_left=0.3)
         
         if time_left is None or next_close_time is None:
             log_and_print(f"Failed to retrieve candle time for {default_market} (M15). Exiting.", "ERROR")
@@ -3172,6 +3306,8 @@ def main():
         log_and_print(f"Error in main processing: {str(e)}", "ERROR")
     finally:
         log_and_print("===== Fetch and Process Candle Data Completed =====", "TITLE")
-        
+
 if __name__ == "__main__":
+    executefetchlotsizeandrisk()
     main()
+    

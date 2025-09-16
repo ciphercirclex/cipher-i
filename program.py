@@ -55,7 +55,8 @@ def load_markets_and_timeframes(json_path):
 # Load markets, timeframes, and credentials at startup
 MARKETS, TIMEFRAMES = load_markets_and_timeframes(MARKETS_JSON_PATH)
 
-def candletimeleft(market, timeframe, candle_time, min_time_left=6):
+def candletimeleft(market, timeframe, candle_time, min_time_left):
+    """Generic function to calculate time left for a candle in the specified timeframe."""
     # Initialize MT5
     print(f"[Process-{market}] Initializing MT5 for {market}")
     for attempt in range(3):
@@ -94,29 +95,31 @@ def candletimeleft(market, timeframe, candle_time, min_time_left=6):
             return None, None
         while True:
             for attempt in range(3):
-                candles = mt5.copy_rates_from_pos(market, mt5.TIMEFRAME_M15, 0, 1)
+                mt5_timeframe = mt5.TIMEFRAME_M15 if timeframe.upper() == "M15" else mt5.TIMEFRAME_M5
+                max_age = 16 * 60 if timeframe.upper() == "M15" else 6 * 60  # Max age in seconds
+                candles = mt5.copy_rates_from_pos(market, mt5_timeframe, 0, 1)
                 if candles is None or len(candles) == 0:
-                    print(f"[Process-{market}] Attempt {attempt + 1}/3: Failed to fetch candle data for {market} (M15), error: {mt5.last_error()}")
+                    print(f"[Process-{market}] Attempt {attempt + 1}/3: Failed to fetch candle data for {market} ({timeframe}), error: {mt5.last_error()}")
                     time.sleep(2)
                     continue
                 current_time = datetime.now(pytz.UTC)
                 candle_time_dt = datetime.fromtimestamp(candles[0]['time'], tz=pytz.UTC)
-                if (current_time - candle_time_dt).total_seconds() > 16 * 60:  # 16 minutes for M15
-                    print(f"[Process-{market}] Attempt {attempt + 1}/3: Candle for {market} (M15) is too old (time: {candle_time_dt})")
+                if (current_time - candle_time_dt).total_seconds() > max_age:
+                    print(f"[Process-{market}] Attempt {attempt + 1}/3: Candle for {market} ({timeframe}) is too old (time: {candle_time_dt})")
                     time.sleep(2)
                     continue
                 candle_time = candles[0]['time']
                 break
             else:
-                print(f"[Process-{market}] Failed to fetch recent candle data for {market} (M15) after 3 attempts")
+                print(f"[Process-{market}] Failed to fetch recent candle data for {market} ({timeframe}) after 3 attempts")
                 return None, None
 
-            if timeframe.upper() != "M15":
-                print(f"[Process-{market}] Only M15 timeframe is supported, received {timeframe}")
+            if timeframe.upper() not in ["M5", "M15"]:
+                print(f"[Process-{market}] Only M5 and M15 timeframes are supported, received {timeframe}")
                 return None, None
 
             candle_datetime = datetime.fromtimestamp(candle_time, tz=pytz.UTC)
-            minutes_per_candle = 15
+            minutes_per_candle = 15 if timeframe.upper() == "M15" else 5
             total_minutes = (candle_datetime.hour * 60 + candle_datetime.minute)
             remainder = total_minutes % minutes_per_candle
             last_candle_start = candle_datetime - timedelta(minutes=remainder, seconds=candle_datetime.second, microseconds=candle_datetime.microsecond)
@@ -138,35 +141,43 @@ def candletimeleft(market, timeframe, candle_time, min_time_left=6):
         mt5.shutdown()
 
 def run_analysechart_m1():
-    """Run the analysechart_m script."""
+    """Run the analysechart_m script for M15 timeframe."""
     try:
-        analysechart_m.main1()
-        print("analysechart_m completed.")
+        analysechart_m.main()
+        print("analysechart_m (M15) completed.")
     except Exception as e:
-        print(f"Error in analysechart_m: {e}")
+        print(f"Error in analysechart_m (M15): {e}")
 def run_analysechart_m2():
-    """Run the analysechart_m script."""
+    """Run the analysechart_m script for M5 timeframe."""
     try:
-        analysechart_m.main2()
-        print("analysechart_m completed.")
+        analysechart_m.process_5minutes_timeframe()
+        print("analysechart_m (M5) completed.")
     except Exception as e:
-        print(f"Error in analysechart_m: {e}")
-
+        print(f"Error in analysechart_m (M5): {e}")
 
 def run_updateorders():
-    """Run the updateorders script."""
+    """Run the updateorders script for M15 timeframe."""
     try:
         updateorders.main()
-        print("updateorders completed.")
+        print("updateorders (M15) completed.")
     except Exception as e:
-        print(f"Error in updateorders: {e}")
+        print(f"Error in updateorders (M15): {e}")
+
+def run_updateorders2():
+    """Run the updateorders script for M5 timeframe."""
+    try:
+        updateorders.process_5minutes_timeframe()
+        print("updateorders (M5) completed.")
+    except Exception as e:
+        print(f"Error in updateorders (M5): {e}")
+
 def fetchlotsizeandrisk():
-    """Run the analysechart_m script."""
+    """Run the fetchlotsizeandrisk function from updateorders."""
     try:
         updateorders.executefetchlotsizeandrisk()
-        print("analysechart_m completed.")
+        print("fetchlotsizeandrisk completed.")
     except Exception as e:
-        print(f"Error in analysechart_m: {e}")
+        print(f"Error in fetchlotsizeandrisk: {e}")
 
 def execute(mode="loop"):
     """Execute the scripts sequentially with the specified mode: 'loop' or 'once'."""
@@ -180,188 +191,133 @@ def execute(mode="loop"):
     if not MARKETS:
         print("No markets defined in MARKETS list. Exiting.")
         return
-    
-    def execute_orderfree_markets():
-        def run_sequential():
-            """Helper function to run analysechart_m and updateorders sequentially with candle time checks."""
-            default_market = MARKETS[0]  # Use first market from MARKETS list
-            timeframe = "M15"  # Changed to M15 timeframe
-            
-            while True:
-                # First candle check before updateorders
-                start_time = datetime.now(pytz.UTC)  # Capture system time at the start
-                time_left, next_close_time = candletimeleft(default_market, timeframe, None)
-                if time_left is None or next_close_time is None:
-                    print(f"[Process-{default_market}] Insufficient time left for {default_market} (M15). Restarting sequence.")
-                    time.sleep(5)  # Small delay before restarting
-                    continue
-                initial_time_left = time_left  # Store initial time left for operation time calculation
-                print(f"[Process-{default_market}] Time left for M15 candle: {time_left:.2f} minutes. Running updateorders.")
-                run_updateorders()  # Run updateorders first
-
-                # Second candle check before analysechart_m
-                time_left, next_close_time = candletimeleft(default_market, timeframe, None)
-                if time_left is None or next_close_time is None:
-                    print(f"[Process-{default_market}] Insufficient time left for {default_market} (M15). Restarting sequence.")
-                    time.sleep(5)  # Small delay before restarting
-                    continue
-                print(f"[Process-{default_market}] Time left for M15 candle: {time_left:.2f} minutes. Running analysechart_m.")
-                run_analysechart_m2()  # Run analysechart_m second
-
-                # Third candle check before updateorders
-                time_left, next_close_time = candletimeleft(default_market, timeframe, None)
-                if time_left is None or next_close_time is None:
-                    print(f"[Process-{default_market}] Insufficient time left for {default_market} (M15). Restarting sequence.")
-                    time.sleep(5)  # Small delay before restarting
-                    continue
-                print(f"[Process-{default_market}] Time left for M15 candle: {time_left:.2f} minutes. Running updateorders.")
-                run_updateorders()  # Run updateorders third
-
-                print("Both scripts completed successfully.")
-                return time_left, start_time, initial_time_left  # Return values for final print
-
-        try:
-            if mode == "loop":
-                while True:
-                    result = run_sequential()
-                    if result:
-                        return result  # Return result for aggregation
-                    print("Restarting entire sequence...")
-                    time.sleep(5)  # Small delay before restarting the loop
-            else:  # mode == "once"
-                return run_sequential()  # Return result for aggregation
-
-        except Exception as e:
-            print(f"Error in main loop: {e}")
-            return None
 
     def execute_charts_identified():
-        def run_sequential():
-            """Helper function to run analysechart_m and updateorders sequentially with candle time checks."""
-            default_market = MARKETS[0]  # Use first market from MARKETS list
-            timeframe = "M15"  # Changed to M15 timeframe
-            
-            while True:
-                # First candle check before updateorders
-                start_time = datetime.now(pytz.UTC)  # Capture system time at the start
-                time_left, next_close_time = candletimeleft(default_market, timeframe, None)
-                if time_left is None or next_close_time is None:
-                    print(f"[Process-{default_market}] Insufficient time left for {default_market} (M15). Restarting sequence.")
-                    time.sleep(5)  # Small delay before restarting
-                    continue
-                initial_time_left = time_left  # Store initial time left for operation time calculation
-                print(f"[Process-{default_market}] Time left for M15 candle: {time_left:.2f} minutes. Running updateorders.")
-                run_updateorders()  # Run updateorders first
+        """Helper function to run analysechart_m and updateorders sequentially for M15 timeframe."""
+        default_market = MARKETS[0]  # Use first market from MARKETS list
+        timeframe = "M15"
+        
+        while True:
+            # First candle check before updateorders
+            start_time = datetime.now(pytz.UTC)
+            time_left, next_close_time = candletimeleft(default_market, timeframe, None, min_time_left=14)
+            if time_left is None or next_close_time is None:
+                print(f"[Process-{default_market}] Insufficient time left for {default_market} (M15). Restarting sequence.")
+                time.sleep(5)
+                continue
+            initial_time_left = time_left
+            print(f"[Process-{default_market}] Time left for M15 candle: {time_left:.2f} minutes. Running updateorders.")
+            run_updateorders()
 
-                # Second candle check before analysechart_m
-                time_left, next_close_time = candletimeleft(default_market, timeframe, None)
-                if time_left is None or next_close_time is None:
-                    print(f"[Process-{default_market}] Insufficient time left for {default_market} (M15). Restarting sequence.")
-                    time.sleep(5)  # Small delay before restarting
-                    continue
-                print(f"[Process-{default_market}] Time left for M15 candle: {time_left:.2f} minutes. Running analysechart_m.")
-                run_analysechart_m1()  # Run analysechart_m second
+            # Second candle check before analysechart_m
+            time_left, next_close_time = candletimeleft(default_market, timeframe, None, min_time_left=6)
+            if time_left is None or next_close_time is None:
+                print(f"[Process-{default_market}] Insufficient time left for {default_market} (M15). Restarting sequence.")
+                time.sleep(5)
+                continue
+            print(f"[Process-{default_market}] Time left for M15 candle: {time_left:.2f} minutes. Running analysechart_m.")
+            run_analysechart_m1()
 
-                # Third candle check before updateorders
-                time_left, next_close_time = candletimeleft(default_market, timeframe, None)
-                if time_left is None or next_close_time is None:
-                    print(f"[Process-{default_market}] Insufficient time left for {default_market} (M15). Restarting sequence.")
-                    time.sleep(5)  # Small delay before restarting
-                    continue
-                print(f"[Process-{default_market}] Time left for M15 candle: {time_left:.2f} minutes. Running updateorders.")
-                run_updateorders()  # Run updateorders third
+            # Third candle check before updateorders
+            time_left, next_close_time = candletimeleft(default_market, timeframe, None, min_time_left=4)
+            if time_left is None or next_close_time is None:
+                print(f"[Process-{default_market}] Insufficient time left for {default_market} (M15). Restarting sequence.")
+                time.sleep(5)
+                continue
+            print(f"[Process-{default_market}] Time left for M15 candle: {time_left:.2f} minutes. Running updateorders.")
+            run_updateorders()
 
-                print("Both scripts completed successfully.")
-                return time_left, start_time, initial_time_left  # Return values for final print
+            print("Charts identified (M15) completed successfully.")
+            return time_left, start_time, initial_time_left
 
-        try:
-            if mode == "loop":
-                while True:
-                    result = run_sequential()
-                    if result:
-                        return result  # Return result for aggregation
-                    print("Restarting entire sequence...")
-                    time.sleep(5)  # Small delay before restarting the loop
-            else:  # mode == "once"
-                return run_sequential()  # Return result for aggregation
+    def execute_5minutes_markets():
+        """Helper function to run analysechart_m and updateorders sequentially for M5 timeframe."""
+        default_market = MARKETS[0]  # Use first market from MARKETS list
+        timeframe = "M5"
+        
+        while True:
+            # First candle check before updateorders
+            start_time = datetime.now(pytz.UTC)
+            time_left, next_close_time = candletimeleft(default_market, timeframe, None, min_time_left=4.1)
+            if time_left is None or next_close_time is None:
+                print(f"[Process-{default_market}] Insufficient time left for {default_market} (M5). Restarting sequence.")
+                time.sleep(5)
+                continue
+            initial_time_left = time_left
+            print(f"[Process-{default_market}] Time left for M5 candle: {time_left:.2f} minutes. Running updateorders.")
+            run_updateorders2()
 
-        except Exception as e:
-            print(f"Error in main loop: {e}")
-            return None
+            # Second candle check before analysechart_m
+            time_left, next_close_time = candletimeleft(default_market, timeframe, None, min_time_left=1)
+            if time_left is None or next_close_time is None:
+                print(f"[Process-{default_market}] Insufficient time left for {default_market} (M5). Restarting sequence.")
+                time.sleep(5)
+                continue
+            print(f"[Process-{default_market}] Time left for M5 candle: {time_left:.2f} minutes. Running analysechart_m.")
+            run_analysechart_m2()
+
+            # Third candle check before updateorders
+            time_left, next_close_time = candletimeleft(default_market, timeframe, None, min_time_left=0.5)
+            if time_left is None or next_close_time is None:
+                print(f"[Process-{default_market}] Insufficient time left for {default_market} (M5). Restarting sequence.")
+                time.sleep(5)
+                continue
+            print(f"[Process-{default_market}] Time left for M5 candle: {time_left:.2f} minutes. Running updateorders.")
+            run_updateorders2()
+
+            print("5 minutes markets (M5) completed successfully.")
+            return time_left, start_time, initial_time_left
 
     try:
         if mode == "loop":
             while True:
                 # Execute both functions and collect results
-                result_orderfree = execute_orderfree_markets()
                 result_charts = execute_charts_identified()
+                result_5min = execute_5minutes_markets()
                 
-                # Process results for timing calculation
-                total_operation_time = 0
-                earliest_start_time = None
-                final_time_left = None
-                
-                if result_orderfree:
-                    time_left_of, start_time_of, initial_time_left_of = result_orderfree
-                    operation_time_of = initial_time_left_of - time_left_of
-                    total_operation_time += operation_time_of
-                    if earliest_start_time is None or start_time_of < earliest_start_time:
-                        earliest_start_time = start_time_of
-                    final_time_left = time_left_of
-                
-                if result_charts:
+                # Process results for output
+                if result_charts and result_5min:
                     time_left_ci, start_time_ci, initial_time_left_ci = result_charts
-                    operation_time_ci = initial_time_left_ci - time_left_ci
-                    total_operation_time += operation_time_ci
-                    if earliest_start_time is None or start_time_ci < earliest_start_time:
-                        earliest_start_time = start_time_ci
-                    final_time_left = time_left_ci if final_time_left is None else min(final_time_left, time_left_ci)
-                
-                # Print combined timing information
-                if earliest_start_time and final_time_left is not None:
-                    print(f"Started time of candle: {earliest_start_time}")
-                    print(f"Candle time left: {final_time_left:.2f} minutes")
-                    print(f"Total operated within time: {total_operation_time:.2f} minutes")
+                    time_left_5m, start_time_5m, initial_time_left_5m = result_5min
+                    
+                    print("\n=== Execution Summary ===")
+                    print("Chart Identifier (M15):")
+                    print(f"Start time for chart identifier: {start_time_ci}")
+                    print(f"Remaining time: {time_left_ci:.2f} minutes")
+                    print(f"Chart identifier operated within: {(initial_time_left_ci - time_left_ci):.2f} minutes")
+                    print("\n5 Minutes Markets (M5):")
+                    print(f"Start time for 5 minutes markets: {start_time_5m}")
+                    print(f"Remaining time: {time_left_5m:.2f} minutes")
+                    print(f"5 minutes markets operated within: {(initial_time_left_5m - time_left_5m):.2f} minutes")
+                    print("=======================\n")
                 
                 print("Restarting entire sequence...")
-                time.sleep(5)  # Small delay before restarting the loop
+                time.sleep(5)
         else:  # mode == "once"
             # Execute both functions and collect results
-            result_orderfree = execute_orderfree_markets()
             result_charts = execute_charts_identified()
+            result_5min = execute_5minutes_markets()
+            
+            # Process results for output
+            if result_charts and result_5min:
+                time_left_ci, start_time_ci, initial_time_left_ci = result_charts
+                time_left_5m, start_time_5m, initial_time_left_5m = result_5min
+                
+                print("\n=== Execution Summary ===")
+                print("Chart Identifier (M15):")
+                print(f"Start time for chart identifier: {start_time_ci}")
+                print(f"Remaining time: {time_left_ci:.2f} minutes")
+                print(f"Chart identifier operated within: {(initial_time_left_ci - time_left_ci):.2f} minutes")
+                print("\n5 Minutes Markets (M5):")
+                print(f"Start time for 5 minutes markets: {start_time_5m}")
+                print(f"Remaining time: {time_left_5m:.2f} minutes")
+                print(f"5 minutes markets operated within: {(initial_time_left_5m - time_left_5m):.2f} minutes")
+                print("=======================\n")
             
             print("Execution completed (once mode).")
-            
-            # Process results for timing calculation
-            total_operation_time = 0
-            earliest_start_time = None
-            final_time_left = None
-            
-            if result_orderfree:
-                time_left_of, start_time_of, initial_time_left_of = result_orderfree
-                operation_time_of = initial_time_left_of - time_left_of
-                total_operation_time += operation_time_of
-                if earliest_start_time is None or start_time_of < earliest_start_time:
-                    earliest_start_time = start_time_of
-                final_time_left = time_left_of
-            
-            if result_charts:
-                time_left_ci, start_time_ci, initial_time_left_ci = result_charts
-                operation_time_ci = initial_time_left_ci - time_left_ci
-                total_operation_time += operation_time_ci
-                if earliest_start_time is None or start_time_ci < earliest_start_time:
-                    earliest_start_time = start_time_ci
-                final_time_left = time_left_ci if final_time_left is None else min(final_time_left, time_left_ci)
-            
-            # Print combined timing information
-            if earliest_start_time and final_time_left is not None:
-                print(f"Started time of candle: {earliest_start_time}")
-                print(f"Candle time left: {final_time_left:.2f} minutes")
-                print(f"Total operated within time: {total_operation_time:.2f} minutes")
 
     except Exception as e:
         print(f"Error in main loop: {e}")
-          
+
 if __name__ == "__main__":
-    # Example: Change to "once" or "loop" as needed
     execute(mode="once")

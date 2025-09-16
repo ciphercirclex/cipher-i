@@ -1575,14 +1575,6 @@ def main():
         marketsstatus(DESTINATION_PATH, MARKETS, TIMEFRAMES)  # Generate status report even on symbol check failure
         return False
     
-    # Configure eligible timeframes once at the start
-    if not timeframeselligibilityupdater(timeframe="m5", elligible_status="chart_identified"):
-        logger.error("Failed to configure timeframe eligibility statuses")
-        for market in MARKETS:
-            create_verification_json(market, DESTINATION_PATH)
-        marketsstatus(DESTINATION_PATH, MARKETS, TIMEFRAMES)  # Generate status report even on failure
-        return False
-    
     if not MARKETS or not TIMEFRAMES or not FOREX_MARKETS or not SYNTHETIC_INDICES or not INDEX_MARKETS or not all([LOGIN_ID, PASSWORD, SERVER, BASE_URL, TERMINAL_PATH]):
         logger.error("Required lists or credentials missing. Exiting.")
         for market in MARKETS:
@@ -1683,10 +1675,10 @@ def main():
                 logger.warning(f"[Process-{market}] status.json missing for {market} ({tf})")
     
     if all_completed:
-        logger.debug("Main loop completed: all eligible market-timeframe pairs are chart_identified or market_closed")
+        logger.debug("Main loop completed: all eligible market-timeframe pairs are chart_identified ")
         return True
     else:
-        logger.error("Main loop completed but not all eligible market-timeframe pairs are chart_identified or market_closed")
+        logger.error("Main loop completed but not all eligible market-timeframe pairs are chart_identified")
         return False
     
 if __name__ == "__main__":

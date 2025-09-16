@@ -47,7 +47,6 @@ def normalize_timeframe(timeframe):
         '4 hours': 'h4'
     }
     normalized = timeframe_map.get(timeframe, timeframe)
-    print(f"Normalized timeframe '{timeframe}' to '{normalized}'")
     return normalized
 
 # Function to load markets, timeframes, and credentials from JSON
@@ -170,6 +169,91 @@ def candletimeleft(market, timeframe, candle_time, min_time_left):
             
     finally:
         mt5.shutdown()
+def candletimeleft_5minutes(market, candle_time, min_time_left):
+    """Check the time left for the current 5-minute (M5) candle for a given market."""
+    # Initialize MT5
+    print(f"[Process-{market}] Initializing MT5 for {market} (M5)")
+    for attempt in range(3):
+        if mt5.initialize(path=TERMINAL_PATH, timeout=60000):
+            break
+        print(f"[Process-{market}] Attempt {attempt + 1}/3: Failed to initialize MT5 terminal. Error: {mt5.last_error()}")
+        time.sleep(5)
+    else:
+        print(f"[Process-{market}] Failed to initialize MT5 terminal after 3 attempts")
+        return None, None
+
+    for _ in range(5):
+        if mt5.terminal_info() is not None:
+            break
+        print(f"[Process-{market}] Waiting for MT5 terminal to fully initialize...")
+        time.sleep(2)
+    else:
+        print(f"[Process-{market}] MT5 terminal not ready")
+        mt5.shutdown()
+        return None, None
+
+    for attempt in range(3):
+        if mt5.login(login=int(LOGIN_ID), password=PASSWORD, server=SERVER, timeout=60000):
+            print(f"[Process-{market}] Successfully logged in to MT5")
+            break
+        error_code, error_message = mt5.last_error()
+        print(f"[Process-{market}] Attempt {attempt + 1}/3: Failed to log in to MT5. Error code: {error_code}, Message: {error_message}")
+        time.sleep(5)
+    else:
+        print(f"[Process-{market}] Failed to log in to MT5 after 3 attempts")
+        mt5.shutdown()
+        return None, None
+
+    try:
+        # Fetch current candle
+        if not mt5.symbol_select(market, True):
+            print(f"[Process-{market}] Failed to select market: {market}, error: {mt5.last_error()}")
+            return None, None
+
+        while True:
+            for attempt in range(3):
+                candles = mt5.copy_rates_from_pos(market, mt5.TIMEFRAME_M5, 0, 1)
+                if candles is None or len(candles) == 0:
+                    print(f"[Process-{market}] Attempt {attempt + 1}/3: Failed to fetch candle data for {market} (M5), error: {mt5.last_error()}")
+                    time.sleep(2)
+                    continue
+                current_time = datetime.now(pytz.UTC)
+                candle_time_dt = datetime.fromtimestamp(candles[0]['time'], tz=pytz.UTC)
+                if (current_time - candle_time_dt).total_seconds() > 6 * 60:  # 6 minutes for M5
+                    print(f"[Process-{market}] Attempt {attempt + 1}/3: Candle for {market} (M5) is too old (time: {candle_time_dt})")
+                    time.sleep(2)
+                    continue
+                candle_time = candles[0]['time']
+                break
+            else:
+                print(f"[Process-{market}] Failed to fetch recent candle data for {market} (M5) after 3 attempts")
+                return None, None
+
+            # Process M5 timeframe
+            candle_datetime = datetime.fromtimestamp(candle_time, tz=pytz.UTC)
+            minutes_per_candle = 5
+            total_minutes = (candle_datetime.hour * 60 + candle_datetime.minute)
+            remainder = total_minutes % minutes_per_candle
+            last_candle_start = candle_datetime - timedelta(minutes=remainder, seconds=candle_datetime.second, microseconds=candle_datetime.microsecond)
+            next_close_time = last_candle_start + timedelta(minutes=minutes_per_candle)
+            current_time = datetime.now(pytz.UTC)
+            time_left = (next_close_time - current_time).total_seconds() / 60.0
+            if time_left <= 0:
+                next_close_time += timedelta(minutes=minutes_per_candle)
+                time_left = (next_close_time - current_time).total_seconds() / 60.0
+            print(f"[Process-{market}] Candle time: {candle_datetime}, Next close: {next_close_time}, Time left: {time_left:.2f} minutes")
+            
+            if time_left > min_time_left:
+                return time_left, next_close_time
+            else:
+                print(f"[Process-{market}] Time left ({time_left:.2f} minutes) is <= {min_time_left} minutes, waiting for next candle")
+                time_to_wait = (next_close_time - current_time).total_seconds() + 5  # Wait until next candle starts
+                time.sleep(time_to_wait)
+                continue
+            
+    finally:
+        mt5.shutdown()
+
 
 def clear_image_and_json_files():
     """Clear all .png, .jpg, .jpeg, and .json files in all market/timeframe subfolders within BASE_OUTPUT_FOLDER."""
@@ -894,7 +978,6 @@ def draw_parent_main_trendlines(img_parent_labeled, all_positions, base_name, le
             "to_label": label2,
             "vertical_distance_px": distance
         })
-        print(f"PH-to-PH distance from {label1} (x={x1}, y={top_y1}) to {label2} (x={x2}, y={top_y2}): {distance}px")
     
     # Calculate PL-to-PL vertical distances
     pl_labels_sorted = sorted(pl_labels, key=lambda x: x[0])
@@ -908,7 +991,6 @@ def draw_parent_main_trendlines(img_parent_labeled, all_positions, base_name, le
             "to_label": label2,
             "vertical_distance_px": distance
         })
-        print(f"PL-to-PL distance from {label1} (x={x1}, y={bottom_y1}) to {label2} (x={x2}, y={bottom_y2}): {distance}px")
     
     # Save parent distances to JSON
     parent_distances_json_path = os.path.join(OUTPUT_FOLDER, f"{base_name}_parent_distances.json")
@@ -1214,7 +1296,6 @@ def draw_parent_main_trendlines(img_parent_labeled, all_positions, base_name, le
             break
         
         if next_ph is None:
-            print(f"No PH found to the right of MSPH {label_ms}, skipping connection")
             i += 1
             continue
         
@@ -1231,8 +1312,6 @@ def draw_parent_main_trendlines(img_parent_labeled, all_positions, base_name, le
         # Check if MainSender top is higher than ReceiverAndSender top
         ras_valid = True
         if ms_top_y >= top_y_ras:
-            print(f"Skipping MSPH-to-RASPH trendline from {label_ms} to {label_ras} because MSPH top (y={ms_top_y}) "
-                  f"is not higher than RASPH top (y={top_y_ras})")
             ras_valid = False
         
         if ras_valid and not allow_latest_main_trendline:
@@ -1250,8 +1329,6 @@ def draw_parent_main_trendlines(img_parent_labeled, all_positions, base_name, le
         if ras_valid:
             vertical_distance = abs(top_y_ms - top_y_ras)
             if vertical_distance < distance_threshold:
-                print(f"Skipping MSPH-to-RASPH trendline from {label_ms} to {label_ras} "
-                      f"due to vertical distance {vertical_distance} < threshold {distance_threshold}")
                 ras_valid = False
         
         if ras_valid:
@@ -1261,8 +1338,6 @@ def draw_parent_main_trendlines(img_parent_labeled, all_positions, base_name, le
                 exclude_labels={label_ms, label_ras}
             )
             if crosses:
-                print(f"Skipping MSPH-to-RASPH trendline from {label_ms} to {label_ras} "
-                      f"due to crossing {crossed_label}")
                 ras_valid = False
         
         if ras_valid:
@@ -1273,8 +1348,6 @@ def draw_parent_main_trendlines(img_parent_labeled, all_positions, base_name, le
                 exclude_labels={label_ms, label_ras}
             )
             if crosses:
-                print(f"Skipping MSPH-to-RASPH trendline extension from {label_ms} to {label_ras} "
-                      f"due to crossing {crossed_label} in extension")
                 ras_valid = False
         
         if ras_valid:
@@ -1348,8 +1421,6 @@ def draw_parent_main_trendlines(img_parent_labeled, all_positions, base_name, le
                 ras_top_y = ras_candle[1]
                 rasr_valid = True
                 if ras_top_y >= top_y_rasr:
-                    print(f"Skipping RASPH-to-RASRPH trendline from {label_ras} to {label_rasr} because RASPH top (y={ras_top_y}) "
-                          f"is not higher than RASRPH top (y={top_y_rasr})")
                     rasr_valid = False
                 
                 if rasr_valid and not allow_latest_main_trendline:
@@ -1367,8 +1438,6 @@ def draw_parent_main_trendlines(img_parent_labeled, all_positions, base_name, le
                 if rasr_valid:
                     vertical_distance = abs(top_y_ras - top_y_rasr)
                     if vertical_distance < distance_threshold:
-                        print(f"Skipping RASPH-to-RASRPH trendline from {label_ras} to {label_rasr} "
-                              f"due to vertical distance {vertical_distance} < threshold {distance_threshold}")
                         rasr_valid = False
                 
                 if rasr_valid:
@@ -1378,8 +1447,6 @@ def draw_parent_main_trendlines(img_parent_labeled, all_positions, base_name, le
                         exclude_labels={label_ras, label_rasr}
                     )
                     if crosses:
-                        print(f"Skipping RASPH-to-RASRPH trendline from {label_ras} to {label_rasr} "
-                              f"due to crossing {crossed_label}")
                         rasr_valid = False
                 
                 if rasr_valid:
@@ -1390,8 +1457,6 @@ def draw_parent_main_trendlines(img_parent_labeled, all_positions, base_name, le
                         exclude_labels={label_ras, label_rasr}
                     )
                     if crosses:
-                        print(f"Skipping RASPH-to-RASRPH trendline extension from {label_ras} to {label_rasr} "
-                              f"due to crossing {crossed_label} in extension")
                         rasr_valid = False
                 
                 if rasr_valid:
@@ -1454,20 +1519,14 @@ def draw_parent_main_trendlines(img_parent_labeled, all_positions, base_name, le
             x_rasr, top_y_rasr, label_rasr, arrow_number_rasr = next_ph_rasr
             ras_rasr_distance = abs(top_y_ras - top_y_rasr)
             if ras_rasr_distance <= 40:
-                print(f"Skipping MSPH-to-RASRPH trendline from {label_ms} to {label_rasr} "
-                      f"because RASPH-RASRPH vertical distance {ras_rasr_distance}px <= 40px")
                 i = next((idx for idx, lbl in enumerate(ph_labels_sorted) if lbl[2] == label_ras), i + 1) if ras_valid else i + 1
                 continue
             if ras_rasr_distance <= 60:
-                print(f"Skipping MSPH-to-RASRPH trendline from {label_ms} to {label_rasr} "
-                      f"because RASPH-RASRPH vertical distance {ras_rasr_distance}px is between 40px and 60px")
                 i = next((idx for idx, lbl in enumerate(ph_labels_sorted) if lbl[2] == label_ras), i + 1) if ras_valid else i + 1
                 continue
             
             ms_rasr_valid = True
             if ms_top_y >= top_y_rasr:
-                print(f"Skipping MSPH-to-RASRPH trendline from {label_ms} to {label_rasr} because MSPH top (y={ms_top_y}) "
-                      f"is not higher than RASRPH top (y={top_y_rasr})")
                 ms_rasr_valid = False
             
             if ms_rasr_valid and not allow_latest_main_trendline:
@@ -1485,8 +1544,6 @@ def draw_parent_main_trendlines(img_parent_labeled, all_positions, base_name, le
             if ms_rasr_valid:
                 vertical_distance = abs(top_y_ms - top_y_rasr)
                 if vertical_distance < distance_threshold:
-                    print(f"Skipping MSPH-to-RASRPH trendline from {label_ms} to {label_rasr} "
-                          f"due to vertical distance {vertical_distance} < threshold {distance_threshold}")
                     ms_rasr_valid = False
             
             if ms_rasr_valid:
@@ -1496,8 +1553,6 @@ def draw_parent_main_trendlines(img_parent_labeled, all_positions, base_name, le
                     exclude_labels={label_ms, label_rasr}
                 )
                 if crosses:
-                    print(f"Skipping MSPH-to-RASRPH trendline from {label_ms} to {label_rasr} "
-                          f"due to crossing {crossed_label}")
                     ms_rasr_valid = False
             
             if ms_rasr_valid:
@@ -1508,8 +1563,6 @@ def draw_parent_main_trendlines(img_parent_labeled, all_positions, base_name, le
                     exclude_labels={label_ms, label_rasr}
                 )
                 if crosses:
-                    print(f"Skipping MSPH-to-RASRPH trendline extension from {label_ms} to {label_rasr} "
-                          f"due to crossing {crossed_label} in extension")
                     ms_rasr_valid = False
             
             if ms_rasr_valid:
@@ -1600,8 +1653,6 @@ def draw_parent_main_trendlines(img_parent_labeled, all_positions, base_name, le
         # Check if MainSender bottom is lower than ReceiverAndSender bottom
         ras_valid = True
         if ms_bottom_y <= bottom_y_ras:
-            print(f"Skipping MSPL-to-RASPL trendline from {label_ms} to {label_ras} because MSPL bottom (y={ms_bottom_y}) "
-                  f"is not lower than RASPL bottom (y={bottom_y_ras})")
             ras_valid = False
         
         if ras_valid and not allow_latest_main_trendline:
@@ -1619,8 +1670,6 @@ def draw_parent_main_trendlines(img_parent_labeled, all_positions, base_name, le
         if ras_valid:
             vertical_distance = abs(bottom_y_ms - bottom_y_ras)
             if vertical_distance < distance_threshold:
-                print(f"Skipping MSPL-to-RASPL trendline from {label_ms} to {label_ras} "
-                      f"due to vertical distance {vertical_distance} < threshold {distance_threshold}")
                 ras_valid = False
         
         if ras_valid:
@@ -1630,8 +1679,6 @@ def draw_parent_main_trendlines(img_parent_labeled, all_positions, base_name, le
                 exclude_labels={label_ms, label_ras}
             )
             if crosses:
-                print(f"Skipping MSPL-to-RASPL trendline from {label_ms} to {label_ras} "
-                      f"due to crossing {crossed_label}")
                 ras_valid = False
         
         if ras_valid:
@@ -1642,8 +1689,6 @@ def draw_parent_main_trendlines(img_parent_labeled, all_positions, base_name, le
                 exclude_labels={label_ms, label_ras}
             )
             if crosses:
-                print(f"Skipping MSPL-to-RASPL trendline extension from {label_ms} to {label_ras} "
-                      f"due to crossing {crossed_label} in extension")
                 ras_valid = False
         
         if ras_valid:
@@ -1717,8 +1762,6 @@ def draw_parent_main_trendlines(img_parent_labeled, all_positions, base_name, le
                 ras_bottom_y = ras_candle[2]
                 rasr_valid = True
                 if ras_bottom_y <= bottom_y_rasr:
-                    print(f"Skipping RASPL-to-RASRPL trendline from {label_ras} to {label_rasr} because RASPL bottom (y={ras_bottom_y}) "
-                          f"is not lower than RASRPL bottom (y={bottom_y_rasr})")
                     rasr_valid = False
                 
                 if rasr_valid and not allow_latest_main_trendline:
@@ -1736,8 +1779,6 @@ def draw_parent_main_trendlines(img_parent_labeled, all_positions, base_name, le
                 if rasr_valid:
                     vertical_distance = abs(bottom_y_ras - bottom_y_rasr)
                     if vertical_distance < distance_threshold:
-                        print(f"Skipping RASPL-to-RASRPL trendline from {label_ras} to {label_rasr} "
-                              f"due to vertical distance {vertical_distance} < threshold {distance_threshold}")
                         rasr_valid = False
                 
                 if rasr_valid:
@@ -1747,8 +1788,6 @@ def draw_parent_main_trendlines(img_parent_labeled, all_positions, base_name, le
                         exclude_labels={label_ras, label_rasr}
                     )
                     if crosses:
-                        print(f"Skipping RASPL-to-RASRPL trendline from {label_ras} to {label_rasr} "
-                              f"due to crossing {crossed_label}")
                         rasr_valid = False
                 
                 if rasr_valid:
@@ -1759,8 +1798,6 @@ def draw_parent_main_trendlines(img_parent_labeled, all_positions, base_name, le
                         exclude_labels={label_ras, label_rasr}
                     )
                     if crosses:
-                        print(f"Skipping RASPL-to-RASRPL trendline extension from {label_ras} to {label_rasr} "
-                              f"due to crossing {crossed_label} in extension")
                         rasr_valid = False
                 
                 if rasr_valid:
@@ -1823,20 +1860,14 @@ def draw_parent_main_trendlines(img_parent_labeled, all_positions, base_name, le
             x_rasr, bottom_y_rasr, label_rasr, arrow_number_rasr = next_pl_rasr
             ras_rasr_distance = abs(bottom_y_ras - bottom_y_rasr)
             if ras_rasr_distance <= 40:
-                print(f"Skipping MSPL-to-RASRPL trendline from {label_ms} to {label_rasr} "
-                      f"because RASPL-RASRPL vertical distance {ras_rasr_distance}px <= 40px")
                 i = next((idx for idx, lbl in enumerate(pl_labels_sorted) if lbl[2] == label_ras), i + 1) if ras_valid else i + 1
                 continue
             if ras_rasr_distance <= 60:
-                print(f"Skipping MSPL-to-RASRPL trendline from {label_ms} to {label_rasr} "
-                      f"because RASPL-RASRPL vertical distance {ras_rasr_distance}px is between 40px and 60px")
                 i = next((idx for idx, lbl in enumerate(pl_labels_sorted) if lbl[2] == label_ras), i + 1) if ras_valid else i + 1
                 continue
             
             ms_rasr_valid = True
             if ms_bottom_y <= bottom_y_rasr:
-                print(f"Skipping MSPL-to-RASRPL trendline from {label_ms} to {label_rasr} because MSPL bottom (y={ms_bottom_y}) "
-                      f"is not lower than RASRPL bottom (y={bottom_y_rasr})")
                 ms_rasr_valid = False
             
             if ms_rasr_valid and not allow_latest_main_trendline:
@@ -1854,8 +1885,6 @@ def draw_parent_main_trendlines(img_parent_labeled, all_positions, base_name, le
             if ms_rasr_valid:
                 vertical_distance = abs(bottom_y_ms - bottom_y_rasr)
                 if vertical_distance < distance_threshold:
-                    print(f"Skipping MSPL-to-RASRPL trendline from {label_ms} to {label_rasr} "
-                          f"due to vertical distance {vertical_distance} < threshold {distance_threshold}")
                     ms_rasr_valid = False
             
             if ms_rasr_valid:
@@ -1865,8 +1894,6 @@ def draw_parent_main_trendlines(img_parent_labeled, all_positions, base_name, le
                     exclude_labels={label_ms, label_rasr}
                 )
                 if crosses:
-                    print(f"Skipping MSPL-to-RASRPL trendline from {label_ms} to {label_rasr} "
-                          f"due to crossing {crossed_label}")
                     ms_rasr_valid = False
             
             if ms_rasr_valid:
@@ -1877,8 +1904,6 @@ def draw_parent_main_trendlines(img_parent_labeled, all_positions, base_name, le
                     exclude_labels={label_ms, label_rasr}
                 )
                 if crosses:
-                    print(f"Skipping MSPL-to-RASRPL trendline extension from {label_ms} to {label_rasr} "
-                          f"due to crossing {crossed_label} in extension")
                     ms_rasr_valid = False
             
             if ms_rasr_valid:
@@ -1965,7 +1990,6 @@ def draw_parent_main_trendlines(img_parent_labeled, all_positions, base_name, le
         receiver_y = next((y for x, y, label, _ in (ph_labels if main_trendline['type'] == 'PH-to-PH' else pl_labels) if label == receiver_label), None)
         
         if sender_x is None or sender_y is None or receiver_x is None or receiver_y is None:
-            print(f"Skipping trendline drawing for {main_trendline['type']} due to missing coordinates")
             continue
         
         # Draw main trendline
@@ -2031,7 +2055,6 @@ def draw_parent_main_trendlines(img_parent_labeled, all_positions, base_name, le
                 bottom_y, top_y = get_parent_y_coordinates(order_parent_label, 'PH', all_positions, pl_labels, ph_labels)
         
         if top_y is None or bottom_y is None:
-            print(f"Skipping box for {main_trendline['type']} from {order_parent_label} due to missing y-coordinates")
             continue
         
         # Determine box right edge and log
@@ -2202,6 +2225,87 @@ def main_trendlinetocandleposition(position):
     
     return str(pos)
 
+def process_5minutes_timeframe():
+    """Process all markets for the 5-minute (M5) timeframe if status is 'chart identified' or 'chart_identified'."""
+    def check_status_json(market):
+        """Check if the status.json file for a market and M5 timeframe has 'chart identified' or 'chart_identified' status."""
+        try:
+            normalized_tf = normalize_timeframe("M5")
+            market_folder_name = market.replace(" ", "_")
+            status_file = os.path.join(BASE_INPUT_FOLDER, market_folder_name, normalized_tf, "status.json")
+            os.makedirs(os.path.dirname(status_file), exist_ok=True)
+            
+            if not os.path.exists(status_file):
+                print(f"Status file not found for {market} timeframe M5: {status_file}. Creating default status.json")
+                default_status = {
+                    "market": market,
+                    "timeframe": "M5",
+                    "normalized_timeframe": normalized_tf,
+                    "timestamp": "",
+                    "status": "order_free",
+                    "elligible_status": "order_free"
+                }
+                with open(status_file, 'w') as f:
+                    json.dump(default_status, f, indent=4)
+            
+            with open(status_file, 'r') as f:
+                status_data = json.load(f)
+            status = status_data.get("status", "")
+            if status in ["order_free", "chart_identified"]:
+                #print(f"Status '{status}' found for {market} timeframe M5")
+                return True
+            else:
+                #print(f"Status '{status}' for {market} timeframe M5, skipping processing")
+                return False
+        except Exception as e:
+            print(f"Error reading or creating status file for {market} timeframe M5: {e}")
+            return False
+
+    try:
+        # Load markets and credentials
+        global MARKETS, TIMEFRAMES
+        MARKETS, TIMEFRAMES = load_markets_and_timeframes(MARKETS_JSON_PATH)
+        
+        if not MARKETS:
+            print("No markets defined in MARKETS list. Exiting.")
+            return
+        
+        # Check M5 candle time left using the first market
+        default_market = MARKETS[0]
+        timeframe = "M5"
+        print(f"Checking M5 candle time left using market: {default_market}")
+        time_left, next_close_time = candletimeleft_5minutes(default_market, None, min_time_left=1)
+        
+        if time_left is None or next_close_time is None:
+            print(f"Failed to retrieve candle time for {default_market} (M5). Exiting.")
+            return
+        
+        print(f"M5 candle time left: {time_left:.2f} minutes. Proceeding with execution.")
+        
+        # Create a list of markets with valid status for M5
+        tasks = []
+        for market in MARKETS:
+            if check_status_json(market):
+                tasks.append((market, timeframe))
+        
+        if not tasks:
+            print("No markets with 'chart identified' or 'chart_identified' status for M5 timeframe found. Exiting.")
+            return
+        
+        print(f"Processing {len(tasks)} markets for M5 timeframe")
+        
+        # Use multiprocessing to process valid markets for M5 timeframe in parallel
+        with multiprocessing.Pool(processes=multiprocessing.cpu_count()) as pool:
+            results = pool.starmap(process_market_timeframe, tasks)
+        
+        # Print summary of processing
+        success_count = sum(1 for result in results if result)
+        print(f"Processing completed: {success_count}/{len(tasks)} markets processed successfully for M5 timeframe")
+        
+    except Exception as e:
+        print(f"Error in process_5minutes_timeframe: {e}")
+
+
 def process_market_timeframe(market, timeframe):
     """Process a single market and timeframe combination."""
     try:
@@ -2234,7 +2338,6 @@ def process_market_timeframe(market, timeframe):
         # Load latest chart
         img, base_name = load_latest_chart(input_folder, market, timeframe)
         if img is None:
-            print(f"Skipping market {market} timeframe {timeframe} due to no chart found")
             return False
         
         # Get image dimensions
@@ -2303,7 +2406,7 @@ def process_market_timeframe(market, timeframe):
         print(f"Error processing market {market} timeframe {timeframe}: {e}")
         return False
 
-def main1():
+def main():
     def check_status_json(market, timeframe):
         """Check if the status.json file for a market and timeframe has 'chart identified' or 'chart_identified' status.
         Create a default status.json if it doesn't exist."""
@@ -2332,11 +2435,11 @@ def main1():
             with open(status_file, 'r') as f:
                 status_data = json.load(f)
             status = status_data.get("status", "")
-            if status in ["chart identified", "chart_identified"]:
-                print(f"Status '{status}' found for {market} timeframe {timeframe}")
+            if status in ["order_free", "chart_identified"]:
+                #print(f"Status '{status}' found for {market} timeframe {timeframe}")
                 return True
             else:
-                print(f"Status '{status}' for {market} timeframe {timeframe}, skipping processing")
+                #print(f"Status '{status}' for {market} timeframe {timeframe}, skipping processing")
                 return False
         except Exception as e:
             print(f"Error reading or creating status file for {market} timeframe {timeframe}: {e}")
@@ -2356,7 +2459,7 @@ def main1():
             default_market = MARKETS[0]  # Use the first market for candle time check
             timeframe = "M15"  # Changed to M15
             print(f"Checking M15 candle time left using market: {default_market}")
-            time_left, next_close_time = candletimeleft(default_market, timeframe, None, min_time_left=5)
+            time_left, next_close_time = candletimeleft(default_market, timeframe, None, min_time_left=0.3)
             
             if time_left is None or next_close_time is None:
                 print(f"Failed to retrieve candle time for {default_market} (M15). Exiting.")
@@ -2395,98 +2498,5 @@ def main1():
             print(f"Error in main processing: {e}")
     chart_identified_main()
 
-def main2():
-    def check_status_json(market, timeframe):
-        """Check if the status.json file for a market and timeframe has 'order_free' status.
-        Create a default status.json if it doesn't exist."""
-        try:
-            normalized_tf = normalize_timeframe(timeframe)  # Normalize timeframe for folder path
-            market_folder_name = market.replace(" ", "_")
-            status_file = os.path.join(BASE_INPUT_FOLDER, market_folder_name, normalized_tf, "status.json")
-            # Create the directory if it doesn't exist
-            os.makedirs(os.path.dirname(status_file), exist_ok=True)
-            
-            # Check if status file exists, if not create it with default values
-            if not os.path.exists(status_file):
-                print(f"Status file not found for {market} timeframe {timeframe}: {status_file}. Creating default status.json")
-                default_status = {
-                    "market": market,
-                    "timeframe": timeframe,
-                    "normalized_timeframe": normalized_tf,  # Include normalized timeframe
-                    "timestamp": "",
-                    "status": "order_free",
-                    "elligible_status": "order_free"
-                }
-                with open(status_file, 'w') as f:
-                    json.dump(default_status, f, indent=4)
-            
-            # Read the status file
-            with open(status_file, 'r') as f:
-                status_data = json.load(f)
-            status = status_data.get("status", "")
-            if status in ["order_free"]:
-                print(f"Status '{status}' found for {market} timeframe {timeframe}")
-                return True
-            else:
-                print(f"Status '{status}' for {market} timeframe {timeframe}, skipping processing")
-                return False
-        except Exception as e:
-            print(f"Error reading or creating status file for {market} timeframe {timeframe}: {e}")
-            return False
-
-    def chart_identified_main():
-        """Main function to process markets and timeframes with 'order_free' status."""
-        try:
-            # Load markets, timeframes, and credentials
-            global MARKETS, TIMEFRAMES
-            MARKETS, TIMEFRAMES = load_markets_and_timeframes(MARKETS_JSON_PATH)
-            
-            # Check M15 candle time left globally (using a default market, e.g., first in MARKETS)
-            if not MARKETS or not TIMEFRAMES:
-                print("No markets defined in MARKETS list. Exiting.")
-                return
-            default_market = MARKETS[0]  # Use the first market for candle time check
-            timeframe = "M15"  # Changed to M15
-            print(f"Checking M15 candle time left using market: {default_market}")
-            time_left, next_close_time = candletimeleft(default_market, timeframe, None, min_time_left=5)
-            
-            if time_left is None or next_close_time is None:
-                print(f"Failed to retrieve candle time for {default_market} (M15). Exiting.")
-                return
-            
-            print(f"M15 candle time left: {time_left:.2f} minutes. Proceeding with execution.")
-
-            # Clear the base output folder before processing
-            #clear_image_and_json_files() # Uncomment if you want to clear the output folder
-            
-            # Process markets with 'order_free' status
-            print(f"Markets to check: {MARKETS}")
-            
-            # Create a list of market and timeframe combinations with valid status
-            tasks = []
-            for market in MARKETS:
-                for timeframe in TIMEFRAMES:
-                    if check_status_json(market, timeframe):
-                        tasks.append((market, timeframe))
-            
-            if not tasks:
-                print("No market-timeframe combinations with 'order_free' status found. Exiting.")
-                return
-            
-            print(f"Processing {len(tasks)} market-timeframe combinations with 'order_free' status")
-            
-            # Use multiprocessing to process valid market-timeframe combinations in parallel
-            with multiprocessing.Pool(processes=multiprocessing.cpu_count()) as pool:
-                results = pool.starmap(process_market_timeframe, tasks)
-            
-            # Print summary of processing
-            success_count = sum(1 for result in results if result)
-            print(f"Processing completed: {success_count}/{len(tasks)} market-timeframe combinations processed successfully")
-            
-        except Exception as e:
-            print(f"Error in main processing: {e}")
-    chart_identified_main()
-    
 if __name__ == "__main__":
-    main2()
-    main1()
+     main()
