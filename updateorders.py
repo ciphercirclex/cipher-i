@@ -161,29 +161,29 @@ def candletimeleft(market, timeframe, candle_time, min_time_left):
             return None, None
         while True:
             for attempt in range(3):
-                candles = mt5.copy_rates_from_pos(market, mt5.TIMEFRAME_M5, 0, 1)
+                candles = mt5.copy_rates_from_pos(market, mt5.TIMEFRAME_M15, 0, 1)
                 if candles is None or len(candles) == 0:
-                    print(f"[Process-{market}] Attempt {attempt + 1}/3: Failed to fetch candle data for {market} (M5), error: {mt5.last_error()}")
+                    print(f"[Process-{market}] Attempt {attempt + 1}/3: Failed to fetch candle data for {market} (M15), error: {mt5.last_error()}")
                     time.sleep(2)
                     continue
                 current_time = datetime.now(pytz.UTC)
                 candle_time_dt = datetime.fromtimestamp(candles[0]['time'], tz=pytz.UTC)
-                if (current_time - candle_time_dt).total_seconds() > 6 * 60:  # 6 minutes for M5
-                    print(f"[Process-{market}] Attempt {attempt + 1}/3: Candle for {market} (M5) is too old (time: {candle_time_dt})")
+                if (current_time - candle_time_dt).total_seconds() > 16 * 60:  # 16 minutes for M15
+                    print(f"[Process-{market}] Attempt {attempt + 1}/3: Candle for {market} (M15) is too old (time: {candle_time_dt})")
                     time.sleep(2)
                     continue
                 candle_time = candles[0]['time']
                 break
             else:
-                print(f"[Process-{market}] Failed to fetch recent candle data for {market} (M5) after 3 attempts")
+                print(f"[Process-{market}] Failed to fetch recent candle data for {market} (M15) after 3 attempts")
                 return None, None
 
-            if timeframe.upper() != "M5":
-                print(f"[Process-{market}] Only M5 timeframe is supported, received {timeframe}")
+            if timeframe.upper() != "M15":
+                print(f"[Process-{market}] Only M15 timeframe is supported, received {timeframe}")
                 return None, None
 
             candle_datetime = datetime.fromtimestamp(candle_time, tz=pytz.UTC)
-            minutes_per_candle = 5
+            minutes_per_candle = 15
             total_minutes = (candle_datetime.hour * 60 + candle_datetime.minute)
             remainder = total_minutes % minutes_per_candle
             last_candle_start = candle_datetime - timedelta(minutes=remainder, seconds=candle_datetime.second, microseconds=candle_datetime.microsecond)
@@ -3110,20 +3110,20 @@ def main():
             log_and_print("Credentials not properly loaded from base.json. Exiting.", "ERROR")
             return
         
-        # Check M5 candle time left globally
+        # Check M15 candle time left globally
         if not MARKETS:
             log_and_print("No markets defined in MARKETS list. Exiting.", "ERROR")
             return
         default_market = MARKETS[0]
-        timeframe = "M5"
-        log_and_print(f"Checking M5 candle time left using market: {default_market}", "INFO")
-        time_left, next_close_time = candletimeleft(default_market, timeframe, None, min_time_left=1)
+        timeframe = "M15"  # Changed from "M5" to "M15"
+        log_and_print(f"Checking M15 candle time left using market: {default_market}", "INFO")
+        time_left, next_close_time = candletimeleft(default_market, timeframe, None, min_time_left=5)
         
         if time_left is None or next_close_time is None:
-            log_and_print(f"Failed to retrieve candle time for {default_market} (M5). Exiting.", "ERROR")
+            log_and_print(f"Failed to retrieve candle time for {default_market} (M15). Exiting.", "ERROR")
             return
         
-        log_and_print(f"M5 candle time left: {time_left:.2f} minutes. Proceeding with execution.", "INFO")
+        log_and_print(f"M15 candle time left: {time_left:.2f} minutes. Proceeding with execution.", "INFO")
 
         # Create tasks for all market-timeframe combinations
         tasks = [(market, timeframe) for market in MARKETS for timeframe in TIMEFRAMES]
@@ -3172,6 +3172,6 @@ def main():
         log_and_print(f"Error in main processing: {str(e)}", "ERROR")
     finally:
         log_and_print("===== Fetch and Process Candle Data Completed =====", "TITLE")
-
+        
 if __name__ == "__main__":
     main()
