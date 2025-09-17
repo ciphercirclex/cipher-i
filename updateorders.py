@@ -2407,6 +2407,7 @@ def collect_all_pending_orders(market: str, timeframe: str, json_dir: str) -> bo
         log_and_print(f"Error collecting pending orders for {market} {timeframe}: {str(e)}", "ERROR")
         return False
 
+
 def collect_all_executionercandle_orders(market: str, timeframe: str, json_dir: str) -> bool:
     """Collect executioner candle orders from pricecandle.json for a specific market and timeframe,
     move to executedorders.json, remove from pricecandle.json, and aggregate across all markets and timeframes to allexecutedorders.json."""
@@ -2947,7 +2948,7 @@ def marketsliststatus() -> bool:
         return False
 
 def insertpendingorderstodb(json_path: str = os.path.join(BASE_OUTPUT_FOLDER, "allpendingorders.json")) -> bool:
-    """Insert all pending orders from allpendingorders.json into cipherbouncestream_signals table."""
+    """Insert all pending orders from allpendingorders.json into cipherbouncestream_signals table after validation."""
     log_and_print("Inserting all pending orders into cipherbouncestream_signals table", "INFO")
     
     # Initialize error log list
@@ -2979,7 +2980,6 @@ def insertpendingorderstodb(json_path: str = os.path.join(BASE_OUTPUT_FOLDER, "a
         with open(json_path, 'r') as f:
             data = json.load(f)
         
-        # Extract orders list
         orders = data.get('orders', [])
         if not orders:
             error_log.append({
@@ -3001,15 +3001,55 @@ def insertpendingorderstodb(json_path: str = os.path.join(BASE_OUTPUT_FOLDER, "a
         log_and_print(f"Error loading allpendingorders.json: {str(e)}", "ERROR")
         return False
     
-    # Prepare SQL INSERT query with formatted values
-    sql_query = """
-        INSERT INTO cipherbouncestream_signals (
-            pair, timeframe, order_type, entry_price, 
-            ratio_0_5_price, ratio_1_price, ratio_2_price, 
-            profit_price
-        ) VALUES 
+    # Fetch existing signals from the database
+    fetch_query = """
+        SELECT pair, timeframe, order_type, entry_price, created_at
+        FROM cipherbouncestream_signals
     """
-    value_strings = []
+    try:
+        result = db.execute_query(fetch_query)
+        log_and_print(f"Raw query result for fetching signals: {json.dumps(result, indent=2)}", "DEBUG")
+        
+        existing_signals = []
+        if isinstance(result, dict):
+            if result.get('status') != 'success':
+                error_log.append({
+                    "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                    "error": f"Query failed: {result.get('message', 'No message provided')}"
+                })
+                save_errors()
+                log_and_print(f"Query failed: {result.get('message', 'No message provided')}", "ERROR")
+                return False
+            existing_signals = result.get('data', {}).get('rows', []) or result.get('results', [])
+        elif isinstance(result, list):
+            existing_signals = result
+        else:
+            error_log.append({
+                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                "error": f"Invalid result format: Expected dict or list, got {type(result)}"
+            })
+            save_errors()
+            log_and_print(f"Invalid result format: Expected dict or list, got {type(result)}", "ERROR")
+            return False
+        
+        log_and_print(f"Fetched {len(existing_signals)} existing signals from database", "INFO")
+        
+    except Exception as e:
+        error_log.append({
+            "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+            "error": f"Error fetching existing signals: {str(e)}"
+        })
+        save_errors()
+        log_and_print(f"Error fetching existing signals: {str(e)}", "ERROR")
+        return False
+    
+    # Process JSON orders and validate
+    json_order_keys = set()
+    valid_orders = []
+    
+    # Define maximum allowed value for numeric fields
+    MAX_NUMERIC_VALUE = 9999999999.99
+    MIN_NUMERIC_VALUE = -9999999999.99
     
     for order in orders:
         try:
@@ -3022,12 +3062,177 @@ def insertpendingorderstodb(json_path: str = os.path.join(BASE_OUTPUT_FOLDER, "a
             ratio_2_price = float(order.get('1:2_price', 0.0))
             profit_price = float(order.get('profit_price', 0.0))
             
-            # Format values into a single string, ensuring strings are quoted
-            value_string = (
-                f"('{pair}', '{timeframe}', '{order_type}', {entry_price}, "
-                f"{ratio0_5_price}, {ratio_1_price}, {ratio_2_price}, {profit_price})"
-            )
-            value_strings.append(value_string)
+            # Validate numeric fields
+            for field_name, value in [
+                ('entry_price', entry_price),
+                ('1:0.5_price', ratio0_5_price),
+                ('1:1_price', ratio_1_price),
+                ('1:2_price', ratio_2_price),
+                ('profit_price', profit_price)
+            ]:
+                if not (MIN_NUMERIC_VALUE <= value <= MAX_NUMERIC_VALUE):
+                    raise ValueError(f"{field_name} out of range: {value}")
+            
+            order_key = (pair, timeframe, order_type, entry_price)
+            if order_key in json_order_keys:
+                error_log.append({
+                    "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                    "error": f"Duplicate order in JSON: {pair}, {timeframe}, {order_type}, {entry_price}"
+                })
+                log_and_print(f"Duplicate order in JSON: {pair}, {timeframe}, {order_type}, {entry_price}", "WARNING")
+                continue
+            json_order_keys.add(order_key)
+            valid_orders.append(order)
+        except (ValueError, TypeError) as e:
+            error_log.append({
+                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                "error": f"Invalid data format in order {order.get('pair', 'unknown')} {order.get('timeframe', 'unknown')}: {str(e)}"
+            })
+            log_and_print(f"Invalid data format in order {order.get('pair', 'unknown')} {order.get('timeframe', 'unknown')}: {str(e)}", "ERROR")
+            continue
+    
+    # Identify signals to delete (not in JSON) and duplicates in DB
+    db_order_keys = {}
+    signals_to_delete = []
+    duplicates_to_remove = []
+    
+    for signal in existing_signals:
+        try:
+            pair = signal.get('pair', 'N/A')
+            timeframe = signal.get('timeframe', 'N/A')
+            order_type = signal.get('order_type', 'N/A')
+            entry_price = float(signal.get('entry_price', 0.0))
+            created_at = signal.get('created_at', '')
+            
+            signal_key = (pair, timeframe, order_type, entry_price)
+            
+            if signal_key not in json_order_keys:
+                signals_to_delete.append(signal)
+            elif signal_key in db_order_keys:
+                if created_at < db_order_keys[signal_key]['created_at']:
+                    duplicates_to_remove.append(db_order_keys[signal_key])
+                    db_order_keys[signal_key] = signal
+                else:
+                    duplicates_to_remove.append(signal)
+            else:
+                db_order_keys[signal_key] = signal
+        except (ValueError, TypeError) as e:
+            error_log.append({
+                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                "error": f"Invalid data in existing signal {signal.get('pair', 'unknown')}: {str(e)}"
+            })
+            log_and_print(f"Invalid data in existing signal {signal.get('pair', 'unknown')}: {str(e)}", "ERROR")
+            continue
+    
+    # Batch delete duplicates
+    DELETE_BATCH_SIZE = 80
+    if duplicates_to_delete := duplicates_to_remove:
+        for i in range(0, len(duplicates_to_delete), DELETE_BATCH_SIZE):
+            batch = duplicates_to_delete[i:i + DELETE_BATCH_SIZE]
+            batch_number = i // DELETE_BATCH_SIZE + 1
+            try:
+                delete_conditions = []
+                for signal in batch:
+                    pair = signal['pair'].replace("'", "''")
+                    timeframe = signal['timeframe'].replace("'", "''")
+                    order_type = signal['order_type'].replace("'", "''")
+                    entry_price = float(signal['entry_price'])
+                    created_at = signal['created_at'].replace("'", "''")
+                    condition = (
+                        f"(pair = '{pair}' AND timeframe = '{timeframe}' AND "
+                        f"order_type = '{order_type}' AND entry_price = {entry_price} AND created_at = '{created_at}')"
+                    )
+                    delete_conditions.append(condition)
+                
+                delete_query = f"DELETE FROM cipherbouncestream_signals WHERE {' OR '.join(delete_conditions)}"
+                result = db.execute_query(delete_query)
+                affected_rows = result.get('results', {}).get('affected_rows', 0) if isinstance(result, dict) else 0
+                log_and_print(f"[{datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S')} ] │ SUCCESS │ Successfully removed {affected_rows} duplicate orders in batch {batch_number}", "SUCCESS")
+            except Exception as e:
+                error_log.append({
+                    "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                    "error": f"Failed to batch delete duplicates in batch {batch_number}: {str(e)}"
+                })
+                save_errors()
+                log_and_print(f"Failed to batch delete duplicates in batch {batch_number}: {str(e)}", "ERROR")
+                return False
+    
+    # Batch delete signals not in JSON
+    if signals_to_delete:
+        for i in range(0, len(signals_to_delete), DELETE_BATCH_SIZE):
+            batch = signals_to_delete[i:i + DELETE_BATCH_SIZE]
+            batch_number = i // DELETE_BATCH_SIZE + 1
+            try:
+                delete_conditions = []
+                for signal in batch:
+                    pair = signal['pair'].replace("'", "''")
+                    timeframe = signal['timeframe'].replace("'", "''")
+                    order_type = signal['order_type'].replace("'", "''")
+                    entry_price = float(signal['entry_price'])
+                    created_at = signal['created_at'].replace("'", "''")
+                    condition = (
+                        f"(pair = '{pair}' AND timeframe = '{timeframe}' AND "
+                        f"order_type = '{order_type}' AND entry_price = {entry_price} AND created_at = '{created_at}')"
+                    )
+                    delete_conditions.append(condition)
+                
+                delete_query = f"DELETE FROM cipherbouncestream_signals WHERE {' OR '.join(delete_conditions)}"
+                result = db.execute_query(delete_query)
+                affected_rows = result.get('results', {}).get('affected_rows', 0) if isinstance(result, dict) else 0
+                log_and_print(f"[{datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S')} ] │ SUCCESS │ Successfully deleted {affected_rows} orders that doesn't exist in allpendingorders in batch {batch_number}", "SUCCESS")
+            except Exception as e:
+                error_log.append({
+                    "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                    "error": f"Failed to batch delete non-JSON signals in batch {batch_number}: {str(e)}"
+                })
+                save_errors()
+                log_and_print(f"Failed to batch delete non-JSON signals in batch {batch_number}: {str(e)}", "ERROR")
+                return False
+    
+    # Prepare batch INSERT query for new valid orders (in chunks of 80)
+    BATCH_SIZE = 80
+    sql_query_base = """
+        INSERT INTO cipherbouncestream_signals (
+            pair, timeframe, order_type, entry_price, 
+            ratio_0_5_price, ratio_1_price, ratio_2_price, 
+            profit_price
+        ) VALUES 
+    """
+    value_strings = []
+    
+    for order in valid_orders:
+        try:
+            pair = order.get('pair', 'N/A')
+            timeframe = DB_TIMEFRAME_MAPPING.get(order.get('timeframe', 'N/A'), order.get('timeframe', 'N/A'))
+            order_type = order.get('order_type', 'N/A')
+            entry_price = float(order.get('entry_price', 0.0))
+            ratio0_5_price = float(order.get('1:0.5_price', 0.0))
+            ratio_1_price = float(order.get('1:1_price', 0.0))
+            ratio_2_price = float(order.get('1:2_price', 0.0))
+            profit_price = float(order.get('profit_price', 0.0))
+            
+            # Re-validate numeric fields
+            for field_name, value in [
+                ('entry_price', entry_price),
+                ('1:0.5_price', ratio0_5_price),
+                ('1:1_price', ratio_1_price),
+                ('1:2_price', ratio_2_price),
+                ('profit_price', profit_price)
+            ]:
+                if not (MIN_NUMERIC_VALUE <= value <= MAX_NUMERIC_VALUE):
+                    raise ValueError(f"{field_name} out of range: {value}")
+            
+            order_key = (pair, timeframe, order_type, entry_price)
+            
+            if order_key not in db_order_keys:
+                pair_escaped = pair.replace("'", "''")
+                timeframe_escaped = timeframe.replace("'", "''")
+                order_type_escaped = order_type.replace("'", "''")
+                value_string = (
+                    f"('{pair_escaped}', '{timeframe_escaped}', '{order_type_escaped}', {entry_price}, "
+                    f"{ratio0_5_price}, {ratio_1_price}, {ratio_2_price}, {profit_price})"
+                )
+                value_strings.append(value_string)
         except (ValueError, TypeError) as e:
             error_log.append({
                 "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
@@ -3039,81 +3244,80 @@ def insertpendingorderstodb(json_path: str = os.path.join(BASE_OUTPUT_FOLDER, "a
     if not value_strings:
         error_log.append({
             "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-            "error": "No valid orders to insert after processing"
+            "error": "No new valid orders to insert after processing"
         })
         save_errors()
-        log_and_print("No valid orders to insert after processing", "ERROR")
+        log_and_print(f"[{datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S')} ] │ INFO │ No new valid orders to insert after processing", "INFO")
+        return True
+    
+    # Execute batch INSERT in chunks of BATCH_SIZE with retries
+    success = True
+    for i in range(0, len(value_strings), BATCH_SIZE):
+        batch = value_strings[i:i + BATCH_SIZE]
+        batch_number = i // BATCH_SIZE + 1
+        sql_query = sql_query_base + ", ".join(batch)
+        
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                result = db.execute_query(sql_query)
+                log_and_print(f"Raw query result for inserting batch {batch_number}: {json.dumps(result, indent=2)}", "DEBUG")
+                
+                if not isinstance(result, dict):
+                    error_log.append({
+                        "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                        "error": f"Invalid result format on attempt {attempt} for batch {batch_number}: Expected dict, got {type(result)}"
+                    })
+                    save_errors()
+                    log_and_print(f"[{datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S')} ] │ ERROR │ Invalid result format on attempt {attempt} for batch {batch_number}: Expected dict, got {type(result)}", "ERROR")
+                    success = False
+                    continue
+                
+                if result.get('status') != 'success':
+                    error_log.append({
+                        "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                        "error": f"Query failed on attempt {attempt} for batch {batch_number}: {result.get('message', 'No message provided')}"
+                    })
+                    save_errors()
+                    log_and_print(f"[{datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S')} ] │ ERROR │ Query failed on attempt {attempt} for batch {batch_number}: {result.get('message', 'No message provided')}", "ERROR")
+                    success = False
+                    continue
+                
+                affected_rows = result.get('results', {}).get('affected_rows', 0)
+                log_and_print(f"{datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S,%f')[:-3]} [SUCCESS] Successfully inserted {affected_rows} orders in batch {batch_number}", "SUCCESS")
+                break  # Exit retry loop on success
+                
+            except Exception as e:
+                error_log.append({
+                    "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                    "error": f"Exception on attempt {attempt} for batch {batch_number}: {str(e)}"
+                })
+                save_errors()
+                log_and_print(f"[{datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S')} ] │ ERROR │ Exception on attempt {attempt} for batch {batch_number}: {str(e)}", "ERROR")
+                
+                if attempt < MAX_RETRIES:
+                    delay = RETRY_DELAY * (2 ** (attempt - 1))
+                    log_and_print(f"[{datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S')} ] │ INFO │ Retrying batch {batch_number} after {delay} seconds...", "INFO")
+                    time.sleep(delay)
+                else:
+                    error_log.append({
+                        "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                        "error": f"Max retries reached for batch {batch_number}"
+                    })
+                    save_errors()
+                    log_and_print(f"[{datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S')} ] │ ERROR │ Max retries reached for batch {batch_number}", "ERROR")
+                    success = False
+    
+    if not success:
+        error_log.append({
+            "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+            "error": "Function failed due to errors in one or more batches"
+        })
+        save_errors()
+        log_and_print(f"[{datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S')} ] │ ERROR │ Function failed due to errors in one or more batches", "ERROR")
         return False
     
-    # Combine value strings into SQL query
-    sql_query += ", ".join(value_strings)
-    
-    # Execute query with retries
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            result = db.execute_query(sql_query)
-            log_and_print(f"Raw query result for inserting pending orders: {json.dumps(result, indent=2)}", "DEBUG")
-            
-            if not isinstance(result, dict):
-                error_log.append({
-                    "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-                    "error": f"Invalid result format on attempt {attempt}: Expected dict, got {type(result)}"
-                })
-                save_errors()
-                log_and_print(f"Invalid result format on attempt {attempt}: Expected dict, got {type(result)}", "ERROR")
-                continue
-                
-            if result.get('status') != 'success':
-                error_message = result.get('message', 'No message provided')
-                error_log.append({
-                    "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-                    "error": f"Query failed on attempt {attempt}: {error_message}"
-                })
-                save_errors()
-                log_and_print(f"Query failed on attempt {attempt}: {error_message}", "ERROR")
-                continue
-                
-            # Check affected rows
-            affected_rows = result.get('results', {}).get('affected_rows', 0)
-            if affected_rows > 0:
-                log_and_print(f"Successfully inserted {affected_rows} pending orders into cipherbouncestream_signals", "SUCCESS")
-                return True
-            else:
-                error_log.append({
-                    "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-                    "error": f"No rows affected on attempt {attempt}"
-                })
-                save_errors()
-                log_and_print(f"No rows affected on attempt {attempt}", "ERROR")
-                continue
-                
-        except Exception as e:
-            error_log.append({
-                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-                "error": f"Exception on attempt {attempt}: {str(e)}"
-            })
-            save_errors()
-            log_and_print(f"Exception on attempt {attempt}: {str(e)}", "ERROR")
-            
-        if attempt < MAX_RETRIES:
-            delay = RETRY_DELAY * (2 ** (attempt - 1))
-            log_and_print(f"Retrying after {delay} seconds...", "INFO")
-            time.sleep(delay)
-        else:
-            error_log.append({
-                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-                "error": "Max retries reached for inserting pending orders"
-            })
-            save_errors()
-            log_and_print("Max retries reached for inserting pending orders", "ERROR")
-            return False
-    
-    error_log.append({
-        "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-        "error": "Function exited without success"
-    })
-    save_errors()
-    return False
+    log_and_print(f"[{datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S')} ] │ SUCCESS │ All batches processed successfully", "SUCCESS")
+    return True
 def executeinsertpendingorderstodb():
     """Execute the insertion of pending orders into the database."""
     log_and_print("===== Execute Insert Pending Orders to Database =====", "TITLE")

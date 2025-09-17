@@ -199,7 +199,7 @@ def execute(mode="loop"):
         print("No markets defined in MARKETS list. Exiting.")
         return
     fetchlotsizeandrisk()
-    def execute_charts_identified():
+    def execute_charts_identified(): 
         """Helper function to run analysechart_m and updateorders sequentially for M15 timeframe."""
         default_market = MARKETS[0]  # Use first market from MARKETS list
         timeframe = "M15"
@@ -207,7 +207,7 @@ def execute(mode="loop"):
         while True:
             # First candle check before updateorders
             start_time = datetime.now(pytz.UTC)
-            time_left, next_close_time = candletimeleft(default_market, timeframe, None, min_time_left=14)
+            time_left, next_close_time = candletimeleft(default_market, timeframe, None, min_time_left=10)
             if time_left is None or next_close_time is None:
                 print(f"[Process-{default_market}] Insufficient time left for {default_market} (M15). Restarting sequence.")
                 time.sleep(5)
