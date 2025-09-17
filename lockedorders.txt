@@ -1,0 +1,395 @@
+def lockpendingorders() -> bool:
+    """Move orders from temp_pendingorders.json to lockedpendingorders.json, add order_status: 'locked',
+    check and skip duplicates, remove duplicates in locked orders, move or replace up to three buy_limit
+    and three sell_limit orders per pair and timeframe, and include summary counts."""
+    log_and_print("Starting to lock pending orders", "INFO")
+    
+    # Define file paths
+    collective_pending_path = os.path.join(BASE_OUTPUT_FOLDER, "temp_pendingorders.json")
+    locked_pending_path = os.path.join(BASE_OUTPUT_FOLDER, "lockedpendingorders.json")
+    output_log_path = os.path.join(BASE_OUTPUT_FOLDER, "outputs", "lockedpendingorderoutputs.json")
+    
+    # Ensure output directory exists
+    os.makedirs(os.path.join(BASE_OUTPUT_FOLDER, "outputs"), exist_ok=True)
+    
+    # Initialize logging for output file
+    log_output = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "processed_orders": [],
+        "skipped_orders": [],
+        "duplicate_orders": [],
+        "error_messages": []
+    }
+    
+    # Check if temp_pendingorders.json exists
+    if not os.path.exists(collective_pending_path):
+        log_and_print(f"temp_pendingorders.json not found at {collective_pending_path}", "ERROR")
+        log_output["error_messages"].append(f"temp_pendingorders.json not found at {collective_pending_path}")
+        with open(output_log_path, 'w') as f:
+            json.dump(log_output, f, indent=4)
+        return False
+    
+    try:
+        # Load temp_pendingorders.json
+        with open(collective_pending_path, 'r') as f:
+            temp_data = json.load(f)
+        
+        # Extract orders
+        orders_to_lock = temp_data.get("orders", [])
+        if not orders_to_lock:
+            log_and_print("No orders found in temp_pendingorders.json", "WARNING")
+            log_output["error_messages"].append("No orders found in temp_pendingorders.json")
+            with open(output_log_path, 'w') as f:
+                json.dump(log_output, f, indent=4)
+            return True  # No orders to process, but not an error
+        
+        # Load existing lockedpendingorders.json if it exists
+        existing_locked_orders = []
+        if os.path.exists(locked_pending_path):
+            try:
+                with open(locked_pending_path, 'r') as f:
+                    existing_data = json.load(f)
+                    existing_locked_orders = existing_data.get("orders", [])
+            except Exception as e:
+                log_and_print(f"Error reading lockedpendingorders.json: {str(e)}", "WARNING")
+                log_output["error_messages"].append(f"Error reading lockedpendingorders.json: {str(e)}")
+        
+        # Remove duplicates in existing_locked_orders
+        unique_locked_orders = []
+        seen_keys = set()
+        for order in existing_locked_orders:
+            key = (
+                order.get("market"),
+                order.get("timeframe"),
+                order.get("order_type"),
+                order.get("entry_price"),
+                order.get("order_holder_timestamp")
+            )
+            if key not in seen_keys:
+                unique_locked_orders.append(order)
+                seen_keys.add(key)
+            else:
+                log_and_print(
+                    f"Removed duplicate order in lockedpendingorders.json: market={key[0]}, timeframe={key[1]}, "
+                    f"order_type={key[2]}, entry_price={key[3]}, timestamp={key[4]}",
+                    "INFO"
+                )
+                log_output["duplicate_orders"].append({
+                    "market": key[0],
+                    "timeframe": key[1],
+                    "order_type": key[2],
+                    "entry_price": key[3],
+                    "timestamp": key[4]
+                })
+        existing_locked_orders = unique_locked_orders
+        
+        # Check for duplicates in temp_pendingorders.json against lockedpendingorders.json
+        non_duplicate_orders = []
+        for order in orders_to_lock:
+            key = (
+                order.get("market"),
+                order.get("timeframe"),
+                order.get("order_type"),
+                order.get("entry_price"),
+                order.get("order_holder_timestamp")
+            )
+            if key in seen_keys:
+                log_and_print(
+                    f"Skipped duplicate order in temp_pendingorders.json: market={key[0]}, timeframe={key[1]}, "
+                    f"order_type={key[2]}, entry_price={key[3]}, timestamp={key[4]}",
+                    "INFO"
+                )
+                log_output["duplicate_orders"].append({
+                    "market": key[0],
+                    "timeframe": key[1],
+                    "order_type": key[2],
+                    "entry_price": key[3],
+                    "timestamp": key[4]
+                })
+                continue
+            non_duplicate_orders.append(order)
+            seen_keys.add(key)
+        
+        # Group non-duplicate orders by pair, timeframe, and order_type
+        temp_orders_by_pair_tf_type = {}
+        for order in non_duplicate_orders:
+            pair = order.get("pair")
+            timeframe = order.get("timeframe")
+            order_type = order.get("order_type")
+            if not all([pair, timeframe, order_type]):
+                log_and_print(
+                    f"Skipped order due to missing fields: {order}",
+                    "WARNING"
+                )
+                log_output["skipped_orders"].append({
+                    "order": order,
+                    "reason": "Missing pair, timeframe, or order_type"
+                })
+                continue
+            key = (pair, timeframe, order_type)
+            if key not in temp_orders_by_pair_tf_type:
+                temp_orders_by_pair_tf_type[key] = []
+            temp_orders_by_pair_tf_type[key].append(order)
+        
+        # Group existing locked orders by pair, timeframe, and order_type
+        locked_orders_by_pair_tf_type = {}
+        for order in existing_locked_orders:
+            pair = order.get("pair")
+            timeframe = order.get("timeframe")
+            order_type = order.get("order_type")
+            if not all([pair, timeframe, order_type]):
+                log_and_print(
+                    f"Skipped existing locked order due to missing fields: {order}",
+                    "WARNING"
+                )
+                log_output["skipped_orders"].append({
+                    "order": order,
+                    "reason": "Missing pair, timeframe, or order_type in existing locked order"
+                })
+                continue
+            key = (pair, timeframe, order_type)
+            if key not in locked_orders_by_pair_tf_type:
+                locked_orders_by_pair_tf_type[key] = []
+            locked_orders_by_pair_tf_type[key].append(order)
+        
+        # Initialize timeframe counts
+        timeframe_counts_locked = {
+            "5minutes": 0,
+            "15minutes": 0,
+            "30minutes": 0,
+            "1Hour": 0,
+            "4Hours": 0
+        }
+        
+        # Map timeframes to database format
+        DB_TIMEFRAME_MAPPING = {
+            "M5": "5minutes",
+            "M15": "15minutes",
+            "M30": "30minutes",
+            "H1": "1Hour",
+            "H4": "4Hours",
+            "5m": "5minutes",
+            "15m": "15minutes",
+            "30m": "30minutes",
+            "1h": "1Hour",
+            "4h": "4Hours"
+        }
+        
+        # Process orders and handle replacements
+        locked_orders = []
+        new_locked_count = 0
+        
+        # Get unique pair and timeframe combinations
+        pair_tf_combinations = set((pair, timeframe) for pair, timeframe, _ in temp_orders_by_pair_tf_type)
+        
+        # Process each pair and timeframe
+        for pair, timeframe in pair_tf_combinations:
+            # Process buy_limit orders
+            buy_key = (pair, timeframe, "buy_limit")
+            sell_key = (pair, timeframe, "sell_limit")
+            
+            # Buy orders
+            temp_buy_orders = temp_orders_by_pair_tf_type.get(buy_key, [])
+            existing_buy_orders = locked_orders_by_pair_tf_type.get(buy_key, [])
+            
+            # Count locked buy orders
+            locked_buy_orders = [order for order in existing_buy_orders if order.get("order_status") == "locked"]
+            remaining_buy_slots = 3 - len(locked_buy_orders)
+            
+            if remaining_buy_slots <= 0:
+                log_and_print(
+                    f"No slots available for buy_limit orders for pair={pair}, timeframe={timeframe}. Keeping {len(locked_buy_orders)} existing orders.",
+                    "INFO"
+                )
+                log_output["skipped_orders"].append({
+                    "pair": pair,
+                    "timeframe": timeframe,
+                    "order_type": "buy_limit",
+                    "reason": f"No slots available, {len(locked_buy_orders)} existing locked orders"
+                })
+                locked_orders.extend(existing_buy_orders)
+            else:
+                # Sort buy orders by lowest entry_price
+                sorted_buy_orders = sorted(
+                    temp_buy_orders,
+                    key=lambda x: x.get("entry_price", float('inf'))
+                )
+                selected_buy_orders = sorted_buy_orders[:min(remaining_buy_slots, len(sorted_buy_orders))]
+                
+                for order in selected_buy_orders:
+                    locked_order = order.copy()
+                    locked_order["order_status"] = "locked"
+                    locked_orders.append(locked_order)
+                    new_locked_count += 1
+                    log_and_print(
+                        f"Added new order for pair={pair}, timeframe={timeframe}, order_type=buy_limit: "
+                        f"entry_price={locked_order['entry_price']}",
+                        "INFO"
+                    )
+                    log_output["processed_orders"].append({
+                        "pair": pair,
+                        "timeframe": timeframe,
+                        "order_type": "buy_limit",
+                        "entry_price": locked_order["entry_price"],
+                        "status": "added"
+                    })
+                
+                if len(sorted_buy_orders) > remaining_buy_slots:
+                    skipped_buy_orders = sorted_buy_orders[remaining_buy_slots:]
+                    for order in skipped_buy_orders:
+                        log_and_print(
+                            f"Skipped buy_limit order due to slot limit for pair={pair}, timeframe={timeframe}: "
+                            f"entry_price={order['entry_price']}",
+                            "INFO"
+                        )
+                        log_output["skipped_orders"].append({
+                            "pair": pair,
+                            "timeframe": timeframe,
+                            "order_type": "buy_limit",
+                            "entry_price": order["entry_price"],
+                            "reason": "Exceeded maximum of 3 buy_limit orders"
+                        })
+                
+                # Add existing locked buy orders
+                locked_orders.extend(locked_buy_orders)
+            
+            # Sell orders
+            temp_sell_orders = temp_orders_by_pair_tf_type.get(sell_key, [])
+            existing_sell_orders = locked_orders_by_pair_tf_type.get(sell_key, [])
+            
+            # Count locked sell orders
+            locked_sell_orders = [order for order in existing_sell_orders if order.get("order_status") == "locked"]
+            remaining_sell_slots = 3 - len(locked_sell_orders)
+            
+            if remaining_sell_slots <= 0:
+                log_and_print(
+                    f"No slots available for sell_limit orders for pair={pair}, timeframe={timeframe}. Keeping {len(locked_sell_orders)} existing orders.",
+                    "INFO"
+                )
+                log_output["skipped_orders"].append({
+                    "pair": pair,
+                    "timeframe": timeframe,
+                    "order_type": "sell_limit",
+                    "reason": f"No slots available, {len(locked_sell_orders)} existing locked orders"
+                })
+                locked_orders.extend(existing_sell_orders)
+            else:
+                # Sort sell orders by highest entry_price
+                sorted_sell_orders = sorted(
+                    temp_sell_orders,
+                    key=lambda x: x.get("entry_price", float('-inf')),
+                    reverse=True
+                )
+                selected_sell_orders = sorted_sell_orders[:min(remaining_sell_slots, len(sorted_sell_orders))]
+                
+                for order in selected_sell_orders:
+                    locked_order = order.copy()
+                    locked_order["order_status"] = "locked"
+                    locked_orders.append(locked_order)
+                    new_locked_count += 1
+                    log_and_print(
+                        f"Added new order for pair={pair}, timeframe={timeframe}, order_type=sell_limit: "
+                        f"entry_price={locked_order['entry_price']}",
+                        "INFO"
+                    )
+                    log_output["processed_orders"].append({
+                        "pair": pair,
+                        "timeframe": timeframe,
+                        "order_type": "sell_limit",
+                        "entry_price": locked_order["entry_price"],
+                        "status": "added"
+                    })
+                
+                if len(sorted_sell_orders) > remaining_sell_slots:
+                    skipped_sell_orders = sorted_sell_orders[remaining_sell_slots:]
+                    for order in skipped_sell_orders:
+                        log_and_print(
+                            f"Skipped sell_limit order due to slot limit for pair={pair}, timeframe={timeframe}: "
+                            f"entry_price={order['entry_price']}",
+                            "INFO"
+                        )
+                        log_output["skipped_orders"].append({
+                            "pair": pair,
+                            "timeframe": timeframe,
+                            "order_type": "sell_limit",
+                            "entry_price": order["entry_price"],
+                            "reason": "Exceeded maximum of 3 sell_limit orders"
+                        })
+                
+                # Add existing locked sell orders
+                locked_orders.extend(locked_sell_orders)
+        
+        # Include orders for pair/timeframe/order_type not in temp_pendingorders.json
+        for key in locked_orders_by_pair_tf_type:
+            if key not in temp_orders_by_pair_tf_type:
+                locked_orders.extend(locked_orders_by_pair_tf_type[key])
+                log_and_print(
+                    f"Retained existing orders for pair={key[0]}, timeframe={key[1]}, order_type={key[2]}: "
+                    f"{len(locked_orders_by_pair_tf_type[key])} orders",
+                    "INFO"
+                )
+                log_output["processed_orders"].append({
+                    "pair": key[0],
+                    "timeframe": key[1],
+                    "order_type": key[2],
+                    "count": len(locked_orders_by_pair_tf_type[key]),
+                    "status": "retained"
+                })
+        
+        # Calculate timeframe counts
+        for order in locked_orders:
+            timeframe = order.get("timeframe")
+            db_timeframe = DB_TIMEFRAME_MAPPING.get(timeframe, None)
+            if db_timeframe in timeframe_counts_locked:
+                timeframe_counts_locked[db_timeframe] += 1
+            else:
+                log_and_print(f"Unknown timeframe {timeframe} in locked order in {order.get('market')}", "WARNING")
+                log_output["error_messages"].append(f"Unknown timeframe {timeframe} in locked order in {order.get('market')}")
+        
+        # Prepare output JSON with summaries
+        locked_output = {
+            "temp_pendingorders": len(locked_orders),
+            "5minutes pending orders": timeframe_counts_locked["5minutes"],
+            "15minutes pending orders": timeframe_counts_locked["15minutes"],
+            "30minutes pending orders": timeframe_counts_locked["30minutes"],
+            "1Hour pending orders": timeframe_counts_locked["1Hour"],
+            "4Hours pending orders": timeframe_counts_locked["4Hours"],
+            "orders": locked_orders
+        }
+        
+        # Save to lockedpendingorders.json
+        try:
+            with open(locked_pending_path, 'w') as f:
+                json.dump(locked_output, f, indent=4)
+            log_and_print(
+                f"Successfully saved {new_locked_count} new locked orders to {locked_pending_path} "
+                f"(total: {len(locked_orders)}, "
+                f"5m: {timeframe_counts_locked['5minutes']}, 15m: {timeframe_counts_locked['15minutes']}, "
+                f"30m: {timeframe_counts_locked['30minutes']}, 1H: {timeframe_counts_locked['1Hour']}, "
+                f"4H: {timeframe_counts_locked['4Hours']})",
+                "SUCCESS"
+            )
+        except Exception as e:
+            log_and_print(f"Error saving lockedpendingorders.json: {str(e)}", "ERROR")
+            log_output["error_messages"].append(f"Error saving lockedpendingorders.json: {str(e)}")
+            with open(output_log_path, 'w') as f:
+                json.dump(log_output, f, indent=4)
+            return False
+        
+        # Save log output
+        try:
+            with open(output_log_path, 'w') as f:
+                json.dump(log_output, f, indent=4)
+            log_and_print(f"Saved processing log to {output_log_path}", "SUCCESS")
+        except Exception as e:
+            log_and_print(f"Error saving lockedpendingorderoutputs.json: {str(e)}", "ERROR")
+            return False
+        
+        return True
+    
+    except Exception as e:
+        log_and_print(f"Error processing lockpendingorders: {str(e)}", "ERROR")
+        log_output["error_messages"].append(f"Error processing lockpendingorders: {str(e)}")
+        with open(output_log_path, 'w') as f:
+            json.dump(log_output, f, indent=4)
+        return False

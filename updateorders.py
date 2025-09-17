@@ -2135,14 +2135,14 @@ def PendingOrderUpdater(market: str, timeframe: str, json_dir: str) -> bool:
         return False
 def collect_all_pending_orders(market: str, timeframe: str, json_dir: str) -> bool:
     """Collect all pending orders from pricecandle.json for a specific market and timeframe,
-    save to contractpendingorders.json, and aggregate across all markets and timeframes to allpendingorders.json."""
+    save to contractpendingorders.json, and aggregate across all markets and timeframes to temp_pendingorders.json."""
     log_and_print(f"Collecting pending orders for market={market}, timeframe={timeframe}", "INFO")
     
     # Define file paths
     pricecandle_json_path = os.path.join(json_dir, "pricecandle.json")
     calculatedprices_json_path = os.path.join(json_dir, "calculatedprices.json")
     pending_orders_json_path = os.path.join(json_dir, "contractpendingorders.json")
-    collective_pending_path = os.path.join(BASE_OUTPUT_FOLDER, "allpendingorders.json")
+    collective_pending_path = os.path.join(BASE_OUTPUT_FOLDER, "temp_pendingorders.json")
     
     # Check if required JSON files exist
     if not os.path.exists(pricecandle_json_path):
@@ -2378,7 +2378,7 @@ def collect_all_pending_orders(market: str, timeframe: str, json_dir: str) -> bo
         
         # Prepare and save collective pending orders JSON
         pending_output = {
-            "allpendingorders": len(all_pending_orders),
+            "temp_pendingorders": len(all_pending_orders),
             "5minutes pending orders": timeframe_counts_pending["5minutes"],
             "15minutes pending orders": timeframe_counts_pending["15minutes"],
             "30minutes pending orders": timeframe_counts_pending["30minutes"],
@@ -2398,7 +2398,7 @@ def collect_all_pending_orders(market: str, timeframe: str, json_dir: str) -> bo
                 "SUCCESS"
             )
         except Exception as e:
-            log_and_print(f"Error saving allpendingorders.json: {str(e)}", "ERROR")
+            log_and_print(f"Error saving temp_pendingorders.json: {str(e)}", "ERROR")
             return False
         
         return True
@@ -2406,6 +2406,376 @@ def collect_all_pending_orders(market: str, timeframe: str, json_dir: str) -> bo
     except Exception as e:
         log_and_print(f"Error collecting pending orders for {market} {timeframe}: {str(e)}", "ERROR")
         return False
+def lockpendingorders() -> bool:
+    """Move orders from temp_pendingorders.json to lockedpendingorders.json, add order_status: 'locked',
+    check and skip duplicates, remove duplicates in locked orders, move or replace up to three buy_limit
+    and three sell_limit orders per pair and timeframe, and include summary counts."""
+    log_and_print("Starting to lock pending orders", "INFO")
+    
+    # Define file paths
+    collective_pending_path = os.path.join(BASE_OUTPUT_FOLDER, "temp_pendingorders.json")
+    locked_pending_path = os.path.join(BASE_OUTPUT_FOLDER, "lockedpendingorders.json")
+    output_log_path = r"C:\xampp\htdocs\CIPHER\cipher i\programmes\chart\Outputs\lockedpendingorderoutputs.json"
+    
+    # Ensure output directory exists
+    os.makedirs(os.path.dirname(output_log_path), exist_ok=True)
+    
+    # Initialize counters for summary
+    total_processed = 0
+    total_skipped = 0
+    total_duplicates = 0
+    total_retained = 0
+    error_messages = []
+    
+    # Check if temp_pendingorders.json exists
+    if not os.path.exists(collective_pending_path):
+        error_msg = f"temp_pendingorders.json not found at {collective_pending_path}"
+        log_and_print(error_msg, "ERROR")
+        error_messages.append(error_msg)
+        with open(output_log_path, 'w') as f:
+            f.write(f"ERROR: {error_msg}\n")
+        return False
+    
+    try:
+        # Load temp_pendingorders.json
+        with open(collective_pending_path, 'r') as f:
+            temp_data = json.load(f)
+        
+        # Extract orders
+        orders_to_lock = temp_data.get("orders", [])
+        if not orders_to_lock:
+            warning_msg = "No orders found in temp_pendingorders.json"
+            log_and_print(warning_msg, "WARNING")
+            error_messages.append(warning_msg)
+            with open(output_log_path, 'w') as f:
+                f.write(f"WARNING: {warning_msg}\n")
+            return True  # No orders to process, but not an error
+        
+        # Load existing lockedpendingorders.json if it exists
+        existing_locked_orders = []
+        if os.path.exists(locked_pending_path):
+            try:
+                with open(locked_pending_path, 'r') as f:
+                    existing_data = json.load(f)
+                    existing_locked_orders = existing_data.get("orders", [])
+            except Exception as e:
+                error_msg = f"Error reading lockedpendingorders.json: {str(e)}"
+                log_and_print(error_msg, "WARNING")
+                error_messages.append(error_msg)
+        
+        # Remove duplicates in existing_locked_orders
+        unique_locked_orders = []
+        seen_keys = set()
+        for order in existing_locked_orders:
+            key = (
+                order.get("market"),
+                order.get("timeframe"),
+                order.get("order_type"),
+                order.get("entry_price"),
+                order.get("order_holder_timestamp")
+            )
+            if key not in seen_keys:
+                unique_locked_orders.append(order)
+                seen_keys.add(key)
+            else:
+                total_duplicates += 1
+                log_and_print(
+                    f"Removed duplicate order in lockedpendingorders.json: market={key[0]}, timeframe={key[1]}, "
+                    f"order_type={key[2]}, entry_price={key[3]}, timestamp={key[4]}",
+                    "INFO"
+                )
+        existing_locked_orders = unique_locked_orders
+        total_retained += len(existing_locked_orders)
+        
+        # Check for duplicates in temp_pendingorders.json against lockedpendingorders.json
+        non_duplicate_orders = []
+        for order in orders_to_lock:
+            key = (
+                order.get("market"),
+                order.get("timeframe"),
+                order.get("order_type"),
+                order.get("entry_price"),
+                order.get("order_holder_timestamp")
+            )
+            if key in seen_keys:
+                total_duplicates += 1
+                log_and_print(
+                    f"Skipped duplicate order in temp_pendingorders.json: market={key[0]}, timeframe={key[1]}, "
+                    f"order_type={key[2]}, entry_price={key[3]}, timestamp={key[4]}",
+                    "INFO"
+                )
+                continue
+            non_duplicate_orders.append(order)
+            seen_keys.add(key)
+        
+        # Group non-duplicate orders by pair, timeframe, and order_type
+        temp_orders_by_pair_tf_type = {}
+        for order in non_duplicate_orders:
+            pair = order.get("pair")
+            timeframe = order.get("timeframe")
+            order_type = order.get("order_type")
+            if not all([pair, timeframe, order_type]):
+                total_skipped += 1
+                log_and_print(
+                    f"Skipped order due to missing fields: {order}",
+                    "WARNING"
+                )
+                continue
+            key = (pair, timeframe, order_type)
+            if key not in temp_orders_by_pair_tf_type:
+                temp_orders_by_pair_tf_type[key] = []
+            temp_orders_by_pair_tf_type[key].append(order)
+        
+        # Group existing locked orders by pair, timeframe, and order_type
+        locked_orders_by_pair_tf_type = {}
+        for order in existing_locked_orders:
+            pair = order.get("pair")
+            timeframe = order.get("timeframe")
+            order_type = order.get("order_type")
+            if not all([pair, timeframe, order_type]):
+                total_skipped += 1
+                log_and_print(
+                    f"Skipped existing locked order due to missing fields: {order}",
+                    "WARNING"
+                )
+                continue
+            key = (pair, timeframe, order_type)
+            if key not in locked_orders_by_pair_tf_type:
+                locked_orders_by_pair_tf_type[key] = []
+            locked_orders_by_pair_tf_type[key].append(order)
+        
+        # Initialize timeframe counts
+        timeframe_counts_locked = {
+            "5minutes": 0,
+            "15minutes": 0,
+            "30minutes": 0,
+            "1Hour": 0,
+            "4Hours": 0
+        }
+        
+        # Map timeframes to database format
+        DB_TIMEFRAME_MAPPING = {
+            "M5": "5minutes",
+            "M15": "15minutes",
+            "M30": "30minutes",
+            "H1": "1Hour",
+            "H4": "4Hours",
+            "5m": "5minutes",
+            "15m": "15minutes",
+            "30m": "30minutes",
+            "1h": "1Hour",
+            "4h": "4Hours"
+        }
+        
+        # Process orders and handle replacements
+        locked_orders = []
+        new_locked_count = 0
+        
+        # Get unique pair and timeframe combinations
+        pair_tf_combinations = set((pair, timeframe) for pair, timeframe, _ in temp_orders_by_pair_tf_type)
+        
+        # Process each pair and timeframe
+        for pair, timeframe in pair_tf_combinations:
+            # Process buy_limit orders
+            buy_key = (pair, timeframe, "buy_limit")
+            sell_key = (pair, timeframe, "sell_limit")
+            
+            # Buy orders
+            temp_buy_orders = temp_orders_by_pair_tf_type.get(buy_key, [])
+            existing_buy_orders = locked_orders_by_pair_tf_type.get(buy_key, [])
+            
+            # Count locked buy orders
+            locked_buy_orders = [order for order in existing_buy_orders if order.get("order_status") == "locked"]
+            remaining_buy_slots = 3 - len(locked_buy_orders)
+            
+            if remaining_buy_slots <= 0:
+                total_skipped += len(temp_buy_orders)
+                log_and_print(
+                    f"No slots available for buy_limit orders for pair={pair}, timeframe={timeframe}. Keeping {len(locked_buy_orders)} existing orders.",
+                    "INFO"
+                )
+                locked_orders.extend(existing_buy_orders)
+            else:
+                # Sort buy orders by lowest entry_price
+                sorted_buy_orders = sorted(
+                    temp_buy_orders,
+                    key=lambda x: x.get("entry_price", float('inf'))
+                )
+                selected_buy_orders = sorted_buy_orders[:min(remaining_buy_slots, len(sorted_buy_orders))]
+                
+                for order in selected_buy_orders:
+                    locked_order = order.copy()
+                    locked_order["order_status"] = "locked"
+                    locked_orders.append(locked_order)
+                    new_locked_count += 1
+                    total_processed += 1
+                    log_and_print(
+                        f"Added new order for pair={pair}, timeframe={timeframe}, order_type=buy_limit: "
+                        f"entry_price={locked_order['entry_price']}",
+                        "INFO"
+                    )
+                
+                if len(sorted_buy_orders) > remaining_buy_slots:
+                    total_skipped += len(sorted_buy_orders) - remaining_buy_slots
+                    for order in sorted_buy_orders[remaining_buy_slots:]:
+                        log_and_print(
+                            f"Skipped buy_limit order due to slot limit for pair={pair}, timeframe={timeframe}: "
+                            f"entry_price={order['entry_price']}",
+                            "INFO"
+                        )
+                
+                # Add existing locked buy orders
+                locked_orders.extend(locked_buy_orders)
+            
+            # Sell orders
+            temp_sell_orders = temp_orders_by_pair_tf_type.get(sell_key, [])
+            existing_sell_orders = locked_orders_by_pair_tf_type.get(sell_key, [])
+            
+            # Count locked sell orders
+            locked_sell_orders = [order for order in existing_sell_orders if order.get("order_status") == "locked"]
+            remaining_sell_slots = 3 - len(locked_sell_orders)
+            
+            if remaining_sell_slots <= 0:
+                total_skipped += len(temp_sell_orders)
+                log_and_print(
+                    f"No slots available for sell_limit orders for pair={pair}, timeframe={timeframe}. Keeping {len(locked_sell_orders)} existing orders.",
+                    "INFO"
+                )
+                locked_orders.extend(existing_sell_orders)
+            else:
+                # Sort sell orders by highest entry_price
+                sorted_sell_orders = sorted(
+                    temp_sell_orders,
+                    key=lambda x: x.get("entry_price", float('-inf')),
+                    reverse=True
+                )
+                selected_sell_orders = sorted_sell_orders[:min(remaining_sell_slots, len(sorted_sell_orders))]
+                
+                for order in selected_sell_orders:
+                    locked_order = order.copy()
+                    locked_order["order_status"] = "locked"
+                    locked_orders.append(locked_order)
+                    new_locked_count += 1
+                    total_processed += 1
+                    log_and_print(
+                        f"Added new order for pair={pair}, timeframe={timeframe}, order_type=sell_limit: "
+                        f"entry_price={locked_order['entry_price']}",
+                        "INFO"
+                    )
+                
+                if len(sorted_sell_orders) > remaining_sell_slots:
+                    total_skipped += len(sorted_sell_orders) - remaining_sell_slots
+                    for order in sorted_sell_orders[remaining_sell_slots:]:
+                        log_and_print(
+                            f"Skipped sell_limit order due to slot limit for pair={pair}, timeframe={timeframe}: "
+                            f"entry_price={order['entry_price']}",
+                            "INFO"
+                        )
+                
+                # Add existing locked sell orders
+                locked_orders.extend(locked_sell_orders)
+        
+        # Include orders for pair/timeframe/order_type not in temp_pendingorders.json
+        for key in locked_orders_by_pair_tf_type:
+            if key not in temp_orders_by_pair_tf_type:
+                locked_orders.extend(locked_orders_by_pair_tf_type[key])
+                count = len(locked_orders_by_pair_tf_type[key])
+                total_retained += count
+                log_and_print(
+                    f"Retained existing orders for pair={key[0]}, timeframe={key[1]}, order_type={key[2]}: "
+                    f"{count} orders",
+                    "INFO"
+                )
+        
+        # Calculate timeframe counts
+        for order in locked_orders:
+            timeframe = order.get("timeframe")
+            db_timeframe = DB_TIMEFRAME_MAPPING.get(timeframe, None)
+            if db_timeframe in timeframe_counts_locked:
+                timeframe_counts_locked[db_timeframe] += 1
+            else:
+                error_msg = f"Unknown timeframe {timeframe} in locked order in {order.get('market')}"
+                log_and_print(error_msg, "WARNING")
+                error_messages.append(error_msg)
+        
+        # Prepare output JSON with summaries
+        locked_output = {
+            "temp_pendingorders": len(locked_orders),
+            "5minutes pending orders": timeframe_counts_locked["5minutes"],
+            "15minutes pending orders": timeframe_counts_locked["15minutes"],
+            "30minutes pending orders": timeframe_counts_locked["30minutes"],
+            "1Hour pending orders": timeframe_counts_locked["1Hour"],
+            "4Hours pending orders": timeframe_counts_locked["4Hours"],
+            "orders": locked_orders
+        }
+        
+        # Save to lockedpendingorders.json
+        try:
+            with open(locked_pending_path, 'w') as f:
+                json.dump(locked_output, f, indent=4)
+            log_and_print(
+                f"Successfully saved {new_locked_count} new locked orders to {locked_pending_path} "
+                f"(total: {len(locked_orders)}, "
+                f"5m: {timeframe_counts_locked['5minutes']}, 15m: {timeframe_counts_locked['15minutes']}, "
+                f"30m: {timeframe_counts_locked['30minutes']}, 1H: {timeframe_counts_locked['1Hour']}, "
+                f"4H: {timeframe_counts_locked['4Hours']})",
+                "SUCCESS"
+            )
+        except Exception as e:
+            error_msg = f"Error saving lockedpendingorders.json: {str(e)}"
+            log_and_print(error_msg, "ERROR")
+            error_messages.append(error_msg)
+            with open(output_log_path, 'w') as f:
+                f.write(f"ERROR: {error_msg}\n")
+            return False
+        
+        # Prepare plain text log output
+        log_lines = []
+        log_lines.append(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        log_lines.append(f"Total Orders Processed: {total_processed}")
+        log_lines.append(f"Total Orders Skipped: {total_skipped}")
+        log_lines.append(f"Total Duplicate Orders: {total_duplicates}")
+        log_lines.append(f"Total Orders Retained: {total_retained}")
+        log_lines.append(f"Total Locked Orders Saved: {len(locked_orders)}")
+        log_lines.append(f"Timeframe Breakdown:")
+        log_lines.append(f"  5minutes: {timeframe_counts_locked['5minutes']}")
+        log_lines.append(f"  15minutes: {timeframe_counts_locked['15minutes']}")
+        log_lines.append(f"  30minutes: {timeframe_counts_locked['30minutes']}")
+        log_lines.append(f"  1Hour: {timeframe_counts_locked['1Hour']}")
+        log_lines.append(f"  4Hours: {timeframe_counts_locked['4Hours']}")
+        log_lines.append("\nDetailed Logs:")
+        
+        # Add all log messages from log_and_print
+        # Assuming log_and_print appends to a global LOGS list or similar
+        # If log_and_print doesn't store logs, we'll rely on direct logging
+        # For simplicity, we assume log_and_print outputs are captured elsewhere
+        # If needed, modify log_and_print to store messages in a list
+        log_lines.append("(Detailed logs should be captured from log_and_print calls)")
+        
+        # Add error messages
+        if error_messages:
+            log_lines.append("\nError Messages:")
+            log_lines.extend(error_messages)
+        
+        # Save plain text log output
+        try:
+            with open(output_log_path, 'w') as f:
+                f.write("\n".join(log_lines))
+            log_and_print(f"Saved processing log to {output_log_path}", "SUCCESS")
+        except Exception as e:
+            log_and_print(f"Error saving lockedpendingorderoutputs.json: {str(e)}", "ERROR")
+            return False
+        
+        return True
+    
+    except Exception as e:
+        error_msg = f"Error processing lockpendingorders: {str(e)}"
+        log_and_print(error_msg, "ERROR")
+        error_messages.append(error_msg)
+        with open(output_log_path, 'w') as f:
+            f.write(f"ERROR: {error_msg}\n")
+        return False
+
 
 
 def collect_all_executionercandle_orders(market: str, timeframe: str, json_dir: str) -> bool:
@@ -2686,13 +3056,16 @@ def collect_all_executionercandle_orders(market: str, timeframe: str, json_dir: 
         return False
 
 def marketsliststatus() -> bool:
-    """Generate marketsorderlist.json with pending orders, order-free markets, and new number position for matched candle data by timeframe.
-    Updates status.json for order-free market-timeframe pairs to 'order_free' and pending order pairs to 'chart_identified' based on new rules.
-    Appends daily date in DD-MM-YYYY format to bouncestreamdates.json if not already present."""
+    """Generate marketsorderlist.json with pending orders from lockedpendingorders.json, order-free markets,
+    and new number position for matched candle data by timeframe.
+    Updates status.json for order-free market-timeframe pairs to 'order_free' and pending order pairs to
+    'chart_identified' based on new rules.
+    Appends daily date in DD-MM-YYYY format to bouncestreamdates.json if not already present.
+    Excludes markets with no locked orders across all timeframes from markets_pending."""
     log_and_print("Generating markets order list status", "INFO")
     
     markets_order_list_path = os.path.join(BASE_OUTPUT_FOLDER, "marketsorderlist.json")
-    collective_pending_path = os.path.join(BASE_OUTPUT_FOLDER, "allpendingorders.json")
+    locked_pending_path = os.path.join(BASE_OUTPUT_FOLDER, "lockedpendingorders.json")
     bouncestream_dates_path = os.path.join(BASE_OUTPUT_FOLDER, "bouncestreamdates.json")
     status_json_base_path = r"C:\xampp\htdocs\CIPHER\cipher i\programmes\chart\fetched"
     
@@ -2724,45 +3097,61 @@ def marketsliststatus() -> bool:
     }
     
     try:
-        # Load allpendingorders.json
-        if not os.path.exists(collective_pending_path):
-            log_and_print(f"allpendingorders.json not found at {collective_pending_path}", "ERROR")
+        # Load lockedpendingorders.json
+        if not os.path.exists(locked_pending_path):
+            log_and_print(f"lockedpendingorders.json not found at {locked_pending_path}", "ERROR")
             return False
         
-        with open(collective_pending_path, 'r') as f:
+        with open(locked_pending_path, 'r') as f:
             pending_data = json.load(f)
         
         if not isinstance(pending_data, dict) or "orders" not in pending_data:
-            log_and_print(f"Invalid data format in {collective_pending_path}: Expected dict with 'orders'", "ERROR")
+            log_and_print(f"Invalid data format in {locked_pending_path}: Expected dict with 'orders'", "ERROR")
             return False
         
         pending_orders = pending_data.get("orders", [])
-        log_and_print(f"Loaded {len(pending_orders)} pending orders from {collective_pending_path}", "DEBUG")
+        log_and_print(f"Loaded {len(pending_orders)} orders from {locked_pending_path}", "DEBUG")
         
-        # Initialize counts for all markets and timeframes
+        # Initialize temporary storage for order counts by market and timeframe
+        temp_market_counts = {}
         for market in MARKETS:
             formatted_market = market.replace(" ", "_")
-            markets_pending[formatted_market] = {}
+            temp_market_counts[formatted_market] = {}
             for tf in TIMEFRAMES:
                 tf_key = timeframe_mapping.get(tf, tf.lower())
-                markets_pending[formatted_market][tf_key] = {
+                temp_market_counts[formatted_market][tf_key] = {
                     "buy_limit": 0,
                     "sell_limit": 0
                 }
         
-        # Count pending orders by market, timeframe, and order type
+        # Count pending orders (only "locked" status) by market, timeframe, and order type
         for order in pending_orders:
+            if order.get("order_status") != "locked":
+                continue  # Skip "free" orders
             market = order.get("market", "").replace(" ", "_")
             timeframe = order.get("timeframe", "")
             order_type = order.get("order_type", "").lower()
             
             tf_key = timeframe_mapping.get(timeframe, timeframe.lower())
             
-            if market in markets_pending and tf_key in markets_pending[market]:
+            if market in temp_market_counts and tf_key in temp_market_counts[market]:
                 if order_type == "buy_limit":
-                    markets_pending[market][tf_key]["buy_limit"] += 1
+                    temp_market_counts[market][tf_key]["buy_limit"] += 1
                 elif order_type == "sell_limit":
-                    markets_pending[market][tf_key]["sell_limit"] += 1
+                    temp_market_counts[market][tf_key]["sell_limit"] += 1
+        
+        # Add markets with at least one locked order to markets_pending
+        for market in MARKETS:
+            formatted_market = market.replace(" ", "_")
+            has_locked_orders = False
+            for tf in TIMEFRAMES:
+                tf_key = timeframe_mapping.get(tf, tf.lower())
+                if (temp_market_counts[formatted_market][tf_key]["buy_limit"] > 0 or 
+                    temp_market_counts[formatted_market][tf_key]["sell_limit"] > 0):
+                    has_locked_orders = True
+                    break
+            if has_locked_orders:
+                markets_pending[formatted_market] = temp_market_counts[formatted_market]
         
         # Collect new number position for matched candle data for each timeframe
         for tf in TIMEFRAMES:
@@ -2859,7 +3248,7 @@ def marketsliststatus() -> bool:
                 is_order_free = False
                 
                 if buy_limit_count == 0 and sell_limit_count == 0:
-                    # No orders
+                    # No locked orders
                     if tf_key == "m5" and candles_count >= 100:
                         is_order_free = True
                     elif tf_key == "m15" and candles_count >= 100:
@@ -2946,10 +3335,10 @@ def marketsliststatus() -> bool:
     except Exception as e:
         log_and_print(f"Error processing marketsliststatus: {str(e)}", "ERROR")
         return False
-
-def insertpendingorderstodb(json_path: str = os.path.join(BASE_OUTPUT_FOLDER, "allpendingorders.json")) -> bool:
-    """Insert all pending orders from allpendingorders.json into cipherbouncestream_signals table after validation."""
-    log_and_print("Inserting all pending orders into cipherbouncestream_signals table", "INFO")
+    
+def insertpendingorderstodb(json_path: str = os.path.join(BASE_OUTPUT_FOLDER, "lockedpendingorders.json")) -> bool:
+    """Insert all 'locked' orders from lockedpendingorders.json into cipherbouncestream_signals table after validation."""
+    log_and_print("Inserting all locked orders into cipherbouncestream_signals table", "INFO")
     
     # Initialize error log list
     error_log = []
@@ -2966,15 +3355,15 @@ def insertpendingorderstodb(json_path: str = os.path.join(BASE_OUTPUT_FOLDER, "a
         except Exception as e:
             log_and_print(f"Failed to save errors to {error_json_path}: {str(e)}", "ERROR")
     
-    # Load pending orders from JSON
+    # Load locked orders from JSON
     try:
         if not os.path.exists(json_path):
             error_log.append({
                 "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-                "error": f"Pending orders JSON file not found at: {json_path}"
+                "error": f"Locked orders JSON file not found at: {json_path}"
             })
             save_errors()
-            log_and_print(f"Pending orders JSON file not found at: {json_path}", "ERROR")
+            log_and_print(f"Locked orders JSON file not found at: {json_path}", "ERROR")
             return False
         
         with open(json_path, 'r') as f:
@@ -2984,21 +3373,32 @@ def insertpendingorderstodb(json_path: str = os.path.join(BASE_OUTPUT_FOLDER, "a
         if not orders:
             error_log.append({
                 "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-                "error": "No orders found in allpendingorders.json or 'orders' key is missing"
+                "error": "No orders found in lockedpendingorders.json or 'orders' key is missing"
             })
             save_errors()
-            log_and_print("No orders found in allpendingorders.json or 'orders' key is missing", "ERROR")
+            log_and_print("No orders found in lockedpendingorders.json or 'orders' key is missing", "ERROR")
             return False
         
-        log_and_print(f"Loaded {len(orders)} pending orders from {json_path}", "INFO")
+        # Filter only "locked" orders
+        locked_orders = [order for order in orders if order.get("order_status") == "locked"]
+        log_and_print(f"Loaded {len(locked_orders)} locked orders from {json_path} (out of {len(orders)} total orders)", "INFO")
+        
+        if not locked_orders:
+            error_log.append({
+                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                "error": "No 'locked' orders found in lockedpendingorders.json"
+            })
+            save_errors()
+            log_and_print("No 'locked' orders found in lockedpendingorders.json", "INFO")
+            return True  # No locked orders to process, but not an error
         
     except Exception as e:
         error_log.append({
             "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-            "error": f"Error loading allpendingorders.json: {str(e)}"
+            "error": f"Error loading lockedpendingorders.json: {str(e)}"
         })
         save_errors()
-        log_and_print(f"Error loading allpendingorders.json: {str(e)}", "ERROR")
+        log_and_print(f"Error loading lockedpendingorders.json: {str(e)}", "ERROR")
         return False
     
     # Fetch existing signals from the database
@@ -3051,7 +3451,7 @@ def insertpendingorderstodb(json_path: str = os.path.join(BASE_OUTPUT_FOLDER, "a
     MAX_NUMERIC_VALUE = 9999999999.99
     MIN_NUMERIC_VALUE = -9999999999.99
     
-    for order in orders:
+    for order in locked_orders:
         try:
             pair = order.get('pair', 'N/A')
             timeframe = DB_TIMEFRAME_MAPPING.get(order.get('timeframe', 'N/A'), order.get('timeframe', 'N/A'))
@@ -3091,7 +3491,7 @@ def insertpendingorderstodb(json_path: str = os.path.join(BASE_OUTPUT_FOLDER, "a
             log_and_print(f"Invalid data format in order {order.get('pair', 'unknown')} {order.get('timeframe', 'unknown')}: {str(e)}", "ERROR")
             continue
     
-    # Identify signals to delete (not in JSON) and duplicates in DB
+    # Identify signals to delete (not in JSON locked orders) and duplicates in DB
     db_order_keys = {}
     signals_to_delete = []
     duplicates_to_remove = []
@@ -3157,7 +3557,7 @@ def insertpendingorderstodb(json_path: str = os.path.join(BASE_OUTPUT_FOLDER, "a
                 log_and_print(f"Failed to batch delete duplicates in batch {batch_number}: {str(e)}", "ERROR")
                 return False
     
-    # Batch delete signals not in JSON
+    # Batch delete signals not in JSON locked orders
     if signals_to_delete:
         for i in range(0, len(signals_to_delete), DELETE_BATCH_SIZE):
             batch = signals_to_delete[i:i + DELETE_BATCH_SIZE]
@@ -3179,7 +3579,7 @@ def insertpendingorderstodb(json_path: str = os.path.join(BASE_OUTPUT_FOLDER, "a
                 delete_query = f"DELETE FROM cipherbouncestream_signals WHERE {' OR '.join(delete_conditions)}"
                 result = db.execute_query(delete_query)
                 affected_rows = result.get('results', {}).get('affected_rows', 0) if isinstance(result, dict) else 0
-                log_and_print(f"[{datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S')} ] │ SUCCESS │ Successfully deleted {affected_rows} orders that doesn't exist in allpendingorders in batch {batch_number}", "SUCCESS")
+                log_and_print(f"[{datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S')} ] │ SUCCESS │ Successfully deleted {affected_rows} orders that don't exist in lockedpendingorders in batch {batch_number}", "SUCCESS")
             except Exception as e:
                 error_log.append({
                     "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
@@ -3244,10 +3644,10 @@ def insertpendingorderstodb(json_path: str = os.path.join(BASE_OUTPUT_FOLDER, "a
     if not value_strings:
         error_log.append({
             "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-            "error": "No new valid orders to insert after processing"
+            "error": "No new valid locked orders to insert after processing"
         })
         save_errors()
-        log_and_print(f"[{datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S')} ] │ INFO │ No new valid orders to insert after processing", "INFO")
+        log_and_print(f"[{datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S')} ] │ INFO │ No new valid locked orders to insert after processing", "INFO")
         return True
     
     # Execute batch INSERT in chunks of BATCH_SIZE with retries
@@ -3283,7 +3683,7 @@ def insertpendingorderstodb(json_path: str = os.path.join(BASE_OUTPUT_FOLDER, "a
                     continue
                 
                 affected_rows = result.get('results', {}).get('affected_rows', 0)
-                log_and_print(f"{datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S,%f')[:-3]} [SUCCESS] Successfully inserted {affected_rows} orders in batch {batch_number}", "SUCCESS")
+                log_and_print(f"{datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S,%f')[:-3]} [SUCCESS] Successfully inserted {affected_rows} locked orders in batch {batch_number}", "SUCCESS")
                 break  # Exit retry loop on success
                 
             except Exception as e:
@@ -3548,7 +3948,7 @@ def process_market_timeframe(market: str, timeframe: str) -> Tuple[bool, Optiona
             process_messages["collect_all_pending_orders"] = error_message
         else:
             output_json_path = os.path.join(json_dir, 'contractpendingorders.json')
-            collective_pending_path = os.path.join(BASE_OUTPUT_FOLDER, 'allpendingorders.json')
+            collective_pending_path = os.path.join(BASE_OUTPUT_FOLDER, 'temp_pendingorders.json')
             pending_count = 0
             all_pending_count = 0
             if os.path.exists(output_json_path):
@@ -3561,7 +3961,8 @@ def process_market_timeframe(market: str, timeframe: str) -> Tuple[bool, Optiona
                 all_pending_count = len(all_pending_data.get('orders', []))
             process_messages["collect_all_pending_orders"] = (
             )
-
+        lockpendingorders()
+        
         # Collect executioner candle orders
         if not collect_all_executionercandle_orders(market, timeframe, json_dir):
             error_message = f"Failed to collect executioner candle orders for {market} {timeframe}"

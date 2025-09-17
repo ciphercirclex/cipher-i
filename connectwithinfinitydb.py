@@ -260,7 +260,7 @@ def execute_query(sql_query):
                     response_data = response.json()
                 except ValueError as e:
                     log_and_print(f"Invalid JSON response from {server_type} server: {str(e)}", "ERROR")
-                    debug_path = r"C:\xampp\htdocs\CIPHER\cipher server 2\__pycache__\debugs"
+                    debug_path = r"C:\xampp\htdocs\CIPHER\cipher trader\__pycache__\debugs"
                     os.makedirs(debug_path, exist_ok=True)
                     with open(os.path.join(debug_path, f"direct_post_error_{server_type.lower()}.html"), "w", encoding="utf-8") as f:
                         f.write(response.text)
@@ -289,7 +289,7 @@ def execute_query(sql_query):
                     }
                 else:
                     log_and_print(f"Direct POST failed on {server_type} server: {response_data.get('message', 'Unknown error')}", "ERROR")
-                    debug_path = r"C:\xampp\htdocs\CIPHER\cipher server 2\__pycache__\debugs"
+                    debug_path = r"C:\xampp\htdocs\CIPHER\cipher trader\__pycache__\debugs"
                     os.makedirs(debug_path, exist_ok=True)
                     with open(os.path.join(debug_path, f"direct_post_error_{server_type.lower()}.json"), "w", encoding="utf-8") as f:
                         f.write(json.dumps(response_data, indent=2))
@@ -353,7 +353,7 @@ def execute_query(sql_query):
                     message_class = message_div.get_attribute("class")
                     if 'error' in message_class:
                         log_and_print(f"Server reported error: {message_text}", "ERROR")
-                        debug_path = r"C:\xampp\htdocs\CIPHER\cipher server 2\__pycache__\debugs"
+                        debug_path = r"C:\xampp\htdocs\CIPHER\cipher trader\__pycache__\debugs"
                         os.makedirs(debug_path, exist_ok=True)
                         with open(os.path.join(debug_path, f"error_page_attempt_{attempt}.html"), "w", encoding="utf-8") as f:
                             f.write(driver.page_source)

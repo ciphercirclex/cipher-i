@@ -263,7 +263,7 @@ def execute_query(sql_query, server="Backuper"):
                     }
                 else:
                     log_and_print(f"Direct POST failed on {server}: {response_data.get('message', 'Unknown error')}", "ERROR")
-                    debug_path = r"C:\xampp\htdocs\CIPHER\cipher server 2\__pycache__\debugs"
+                    debug_path = r"C:\xampp\htdocs\CIPHER\cipher trader\__pycache__\debugs"
                     os.makedirs(debug_path, exist_ok=True)
                     with open(os.path.join(debug_path, f"{server_key}_direct_post_error.json"), "w", encoding="utf-8") as f:
                         json.dump(response_data, f, indent=2)

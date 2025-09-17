@@ -169,6 +169,14 @@ def run_updateorders2():
         print("updateorders (M5) completed.")
     except Exception as e:
         print(f"Error in updateorders (M5): {e}")
+def run_updateorders3():
+    """Run the updateorders script for M5 timeframe."""
+    try:
+        updateorders.lockpendingorders()
+        print("updateorders (M5) completed.")
+    except Exception as e:
+        print(f"Error in updateorders (M5): {e}")
+
 
 def fetchlotsizeandrisk():
     """Run the fetchlotsizeandrisk function from updateorders."""
@@ -271,10 +279,12 @@ def execute(mode="loop"):
                 continue
             print(f"[Process-{default_market}] Time left for M5 candle: {time_left:.2f} minutes. Running updateorders.")
             run_updateorders2()
+            run_updateorders3()
+            insertpendingorderstodb()
 
             print("5 minutes markets (M5) completed successfully.")
             return time_left, start_time, initial_time_left
-    insertpendingorderstodb()
+   
     try:
         if mode == "loop":
             while True:
