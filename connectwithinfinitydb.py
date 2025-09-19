@@ -15,6 +15,7 @@ from colorama import Fore, Style
 from bs4 import BeautifulSoup
 import re
 import json
+from datetime import datetime
 
 # Initialize colorama for colored output
 colorama.init()
@@ -28,9 +29,14 @@ backup_servers = {
     'query_page': 'https://xevhtoaljedpik.infy.uk/phpmyadmintemplate.php',
     'fetch': 'https://xevhtoaljedpik.infy.uk/phpmyadmin_tablesfetch.php'
 }
+server3 = {
+    'query_page': 'https://connectwithinfinitydb.wuaze.com/phpmyadmintemplate.php',
+    'fetch': 'https://connectwithinfinitydb.wuaze.com/phpmyadmin_tablesfetch.php'
+}
 admin_email = 'ciphercirclex12@gmail.com'
 admin_password = '@ciphercircleadminauthenticator#'
 temp_download_dir = r'C:\xampp\htdocs\CIPHER\temp_downloads'
+json_log_path = r'C:\xampp\htdocs\CIPHER\cipher trader\market\dbserver\connectwithdb.json'
 
 # Global driver and session
 driver = None
@@ -54,6 +60,44 @@ def log_and_print(message, level="INFO"):
         color = Fore.WHITE
     formatted_message = f"{level:7} | {indent}{message}"
     print(f"{color}{formatted_message}{Style.RESET_ALL}")
+
+def append_to_json_log(server_type, server_url):
+    """Append the server used to the JSON log file if the URL is different from the last recorded URL."""
+    log_entry = {
+        'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'server_type': server_type,
+        'server_url': server_url,
+        'status': 'success'
+    }
+    log_data = []
+
+    # Check if JSON file exists and load existing data
+    try:
+        if os.path.exists(json_log_path):
+            with open(json_log_path, 'r', encoding='utf-8') as f:
+                log_data = json.load(f)
+                if not isinstance(log_data, list):
+                    log_data = []
+    except Exception as e:
+        log_and_print(f"Error reading JSON log file: {str(e)}, starting with empty log", "WARNING")
+        log_data = []
+
+    # Check if the last entry has the same URL
+    if log_data and log_data[-1].get('server_url') == server_url:
+        log_and_print(f"Skipping log append: Same server URL ({server_url}) as last entry", "INFO")
+        return
+
+    # Append new entry
+    log_data.append(log_entry)
+
+    # Write back to JSON file
+    try:
+        os.makedirs(os.path.dirname(json_log_path), exist_ok=True)
+        with open(json_log_path, 'w', encoding='utf-8') as f:
+            json.dump(log_data, f, indent=2)
+        log_and_print(f"Logged server usage ({server_type}: {server_url}) to {json_log_path}", "SUCCESS")
+    except Exception as e:
+        log_and_print(f"Failed to write to JSON log file: {str(e)}", "ERROR")
 
 def signal_handler(sig, frame):
     """Handle script interruption (Ctrl+C)."""
@@ -118,7 +162,7 @@ def check_server_availability(url):
         log_and_print(f"Server check response for {url}: Status {response.status_code}", "INFO")
         return response.status_code == 200
     except requests.RequestException as e:
-        log_and_print(f"Server availability check failed for {url}: {str(e)}", "WARNING")
+        log_and_print(f"Server availability check failed for {url}: {str(e)}", "INFO")
         return False
 
 def initialize_browser():
@@ -137,9 +181,10 @@ def initialize_browser():
             for cookie in cookies:
                 session.cookies.set(cookie['name'], cookie['value'])
             log_and_print("Updated HTTP session cookies", "SUCCESS")
+            append_to_json_log("Current", current_servers['query_page'])
             return True
         except Exception as e:
-            log_and_print(f"Failed to refresh page: {str(e)}, reinitializing browser", "WARNING")
+            log_and_print(f"Failed to refresh page: {str(e)}, reinitializing browser", "INFO")
             driver.quit()
             driver = None
             return initialize_browser()
@@ -169,22 +214,25 @@ def initialize_browser():
         driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
         log_and_print("ChromeDriver initialized successfully", "SUCCESS")
     except Exception as e:
-        error_msg = f"Failed to initialize ChromeDriver: {str(e)}"
-        log_and_print(error_msg, "ERROR")
+        log_and_print(f"Failed to initialize ChromeDriver: {str(e)}", "ERROR")
         return False
 
     log_and_print("--- Step 3: Authenticating and Accessing Query Page ---", "TITLE")
-    server_attempts = [(primary_servers, "Primary"), (backup_servers, "Backup")]
+    server_attempts = [
+        (primary_servers, "Primary"),
+        (backup_servers, "Backup"),
+        (server3, "Server3")
+    ]
     for servers, server_type in server_attempts:
         current_servers = servers
         log_and_print(f"Attempting to connect to {server_type} server: {servers['query_page']}", "INFO")
         
-        # Skip availability check for backup server if primary fails, since manual access is confirmed
+        # Skip availability check for backup and server3 due to confirmed manual access
         if server_type == "Primary" and not check_server_availability(servers['query_page']):
-            log_and_print(f"{server_type} server is not available", "ERROR")
+            log_and_print(f"{server_type} server is not available, trying next server", "INFO")
             continue
-        elif server_type == "Backup":
-            log_and_print("Skipping availability check for backup server due to confirmed manual access", "INFO")
+        elif server_type in ["Backup", "Server3"]:
+            log_and_print(f"Skipping availability check for {server_type} server due to confirmed manual access", "INFO")
 
         max_retries = 3
         for attempt in range(1, max_retries + 1):
@@ -192,9 +240,9 @@ def initialize_browser():
                 driver.get(servers['query_page'])
                 page_title = driver.title
                 if "suspended" in page_title.lower() or "error" in page_title.lower():
-                    log_and_print(f"{server_type} server redirected to an invalid page: {page_title}", "ERROR")
-                    if server_type == "Backup":
-                        log_and_print("Both servers are invalid, aborting initialization", "ERROR")
+                    log_and_print(f"{server_type} server redirected to an invalid page: {page_title}", "INFO")
+                    if server_type == "Server3":
+                        log_and_print("All servers (Primary, Backup, Server3) are unavailable", "WARNING")
                         return False
                     break
 
@@ -209,6 +257,7 @@ def initialize_browser():
                     EC.presence_of_element_located((By.ID, "sql-query"))
                 )
                 log_and_print(f"Authentication successful on {server_type} server", "SUCCESS")
+                append_to_json_log(server_type, servers['query_page'])
                 
                 session = requests.Session()
                 cookies = driver.get_cookies()
@@ -217,13 +266,12 @@ def initialize_browser():
                 log_and_print("Initialized HTTP session with cookies", "SUCCESS")
                 return True
             except Exception as e:
-                log_and_print(f"Attempt {attempt}/{max_retries} failed for {server_type} server: {str(e)}", "WARNING")
-                if attempt == max_retries:
-                    log_and_print(f"Failed to load {server_type} server after {max_retries} attempts", "ERROR")
-                    if server_type == "Backup":
-                        log_and_print("Backup server also failed, aborting initialization", "ERROR")
-                        return False
+                log_and_print(f"Attempt {attempt}/{max_retries} failed for {server_type} server: {str(e)}", "INFO")
+                if attempt == max_retries and server_type == "Server3":
+                    log_and_print("All servers (Primary, Backup, Server3) failed after maximum attempts", "WARNING")
+                    return False
                 time.sleep(2)
+                break  # Move to next server
 
 def execute_query(sql_query):
     """
@@ -239,10 +287,14 @@ def execute_query(sql_query):
         log_and_print("===== Database Query Execution =====", "TITLE")
 
         if not initialize_browser():
-            return {'status': 'error', 'message': 'Failed to initialize browser', 'results': []}
+            return {'status': 'error', 'message': 'Failed to initialize browser, all servers unavailable', 'results': []}
 
         log_and_print("--- Step 4: Attempting Direct POST Request ---", "TITLE")
-        server_attempts = [(current_servers, "Current"), (backup_servers if current_servers == primary_servers else primary_servers, "Alternate")]
+        server_attempts = [
+            (current_servers, "Current"),
+            (backup_servers if current_servers != backup_servers else primary_servers, "Backup"),
+            (server3, "Server3")
+        ]
         for servers, server_type in server_attempts:
             log_and_print(f"Executing query via POST on {server_type} server: {sql_query}", "INFO")
             try:
@@ -259,14 +311,14 @@ def execute_query(sql_query):
                 try:
                     response_data = response.json()
                 except ValueError as e:
-                    log_and_print(f"Invalid JSON response from {server_type} server: {str(e)}", "ERROR")
+                    log_and_print(f"Invalid JSON response from {server_type} server: {str(e)}", "INFO")
                     debug_path = r"C:\xampp\htdocs\CIPHER\cipher trader\__pycache__\debugs"
                     os.makedirs(debug_path, exist_ok=True)
                     with open(os.path.join(debug_path, f"direct_post_error_{server_type.lower()}.html"), "w", encoding="utf-8") as f:
                         f.write(response.text)
                     log_and_print(f"Saved direct POST error response to {debug_path}\\direct_post_error_{server_type.lower()}.html", "INFO")
-                    if server_type == "Alternate":
-                        log_and_print("Alternate server POST also failed, falling back to Selenium", "WARNING")
+                    if server_type == "Server3":
+                        log_and_print("All servers (Primary, Backup, Server3) failed POST, falling back to Selenium", "WARNING")
                     continue
 
                 log_and_print(f"Server response: {json.dumps(response_data, indent=2)}", "DEBUG")
@@ -282,24 +334,26 @@ def execute_query(sql_query):
                         log_and_print(f"Non-SELECT query affected {results['affected_rows']} rows on {server_type} server", "SUCCESS")
                     else:
                         log_and_print("Query executed successfully, but no results returned", "INFO")
+                    append_to_json_log(server_type, servers['fetch'])
                     return {
                         'status': 'success',
                         'message': response_data.get('message', 'Query executed successfully'),
                         'results': results
                     }
                 else:
-                    log_and_print(f"Direct POST failed on {server_type} server: {response_data.get('message', 'Unknown error')}", "ERROR")
+                    log_and_print(f"Direct POST failed on {server_type} server: {response_data.get('message', 'Unknown error')}", "INFO")
                     debug_path = r"C:\xampp\htdocs\CIPHER\cipher trader\__pycache__\debugs"
                     os.makedirs(debug_path, exist_ok=True)
                     with open(os.path.join(debug_path, f"direct_post_error_{server_type.lower()}.json"), "w", encoding="utf-8") as f:
                         f.write(json.dumps(response_data, indent=2))
                     log_and_print(f"Saved direct POST error response to {debug_path}\\direct_post_error_{server_type.lower()}.json", "INFO")
-                    if server_type == "Alternate":
-                        log_and_print("Alternate server POST also failed, falling back to Selenium", "WARNING")
+                    if server_type == "Server3":
+                        log_and_print("All servers (Primary, Backup, Server3) failed POST, falling back to Selenium", "WARNING")
+                    continue
             except Exception as e:
-                log_and_print(f"Direct POST request failed on {server_type} server: {str(e)}", "WARNING")
-                if server_type == "Alternate":
-                    log_and_print("Alternate server POST also failed, falling back to Selenium", "WARNING")
+                log_and_print(f"Direct POST request failed on {server_type} server: {str(e)}", "INFO")
+                if server_type == "Server3":
+                    log_and_print("All servers (Primary, Backup, Server3) failed POST, falling back to Selenium", "WARNING")
                 continue
 
         log_and_print("--- Step 4: Executing SQL Query via Selenium ---", "TITLE")
@@ -323,6 +377,7 @@ def execute_query(sql_query):
             time.sleep(1)
             execute_button.click()
             log_and_print("Clicked execute query button", "SUCCESS")
+            append_to_json_log("Selenium", current_servers['query_page'])
         except Exception as e:
             error_msg = f"Failed to enter or execute query: {str(e)}"
             log_and_print(error_msg, "ERROR")

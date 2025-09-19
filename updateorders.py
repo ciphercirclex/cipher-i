@@ -2,10 +2,10 @@ import json
 import os
 import multiprocessing
 import time
-from datetime import datetime, timezone,  timedelta
 from typing import Dict, Optional, List, Tuple
 import pandas as pd
 import MetaTrader5 as mt5
+from datetime import datetime, timezone,  timedelta
 import pytz
 from colorama import Fore, Style, init
 import logging
@@ -3457,6 +3457,7 @@ def insertpendingorderstodb(json_path: str = os.path.join(BASE_OUTPUT_FOLDER, "l
             timeframe = DB_TIMEFRAME_MAPPING.get(order.get('timeframe', 'N/A'), order.get('timeframe', 'N/A'))
             order_type = order.get('order_type', 'N/A')
             entry_price = float(order.get('entry_price', 0.0))
+            exit_price = float(order.get('exit_price', 0.0))
             ratio0_5_price = float(order.get('1:0.5_price', 0.0))
             ratio_1_price = float(order.get('1:1_price', 0.0))
             ratio_2_price = float(order.get('1:2_price', 0.0))
@@ -3465,6 +3466,7 @@ def insertpendingorderstodb(json_path: str = os.path.join(BASE_OUTPUT_FOLDER, "l
             # Validate numeric fields
             for field_name, value in [
                 ('entry_price', entry_price),
+                ('exit_price', exit_price),
                 ('1:0.5_price', ratio0_5_price),
                 ('1:1_price', ratio_1_price),
                 ('1:2_price', ratio_2_price),
@@ -3593,7 +3595,7 @@ def insertpendingorderstodb(json_path: str = os.path.join(BASE_OUTPUT_FOLDER, "l
     BATCH_SIZE = 80
     sql_query_base = """
         INSERT INTO cipherbouncestream_signals (
-            pair, timeframe, order_type, entry_price, 
+            pair, timeframe, order_type, entry_price, exit_price,
             ratio_0_5_price, ratio_1_price, ratio_2_price, 
             profit_price
         ) VALUES 
@@ -3606,6 +3608,7 @@ def insertpendingorderstodb(json_path: str = os.path.join(BASE_OUTPUT_FOLDER, "l
             timeframe = DB_TIMEFRAME_MAPPING.get(order.get('timeframe', 'N/A'), order.get('timeframe', 'N/A'))
             order_type = order.get('order_type', 'N/A')
             entry_price = float(order.get('entry_price', 0.0))
+            exit_price = float(order.get('exit_price', 0.0))
             ratio0_5_price = float(order.get('1:0.5_price', 0.0))
             ratio_1_price = float(order.get('1:1_price', 0.0))
             ratio_2_price = float(order.get('1:2_price', 0.0))
@@ -3614,6 +3617,7 @@ def insertpendingorderstodb(json_path: str = os.path.join(BASE_OUTPUT_FOLDER, "l
             # Re-validate numeric fields
             for field_name, value in [
                 ('entry_price', entry_price),
+                ('exit_price', exit_price),
                 ('1:0.5_price', ratio0_5_price),
                 ('1:1_price', ratio_1_price),
                 ('1:2_price', ratio_2_price),
@@ -3629,7 +3633,7 @@ def insertpendingorderstodb(json_path: str = os.path.join(BASE_OUTPUT_FOLDER, "l
                 timeframe_escaped = timeframe.replace("'", "''")
                 order_type_escaped = order_type.replace("'", "''")
                 value_string = (
-                    f"('{pair_escaped}', '{timeframe_escaped}', '{order_type_escaped}', {entry_price}, "
+                    f"('{pair_escaped}', '{timeframe_escaped}', '{order_type_escaped}', {entry_price}, {exit_price}, "
                     f"{ratio0_5_price}, {ratio_1_price}, {ratio_2_price}, {profit_price})"
                 )
                 value_strings.append(value_string)
