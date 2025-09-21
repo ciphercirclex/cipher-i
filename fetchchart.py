@@ -231,76 +231,204 @@ def clear_all_market_files():
 def tradinghoursordays(market):
     """Check if the market is within its trading hours or days."""
     current_time = datetime.now(pytz.UTC)
-    current_day = current_time.weekday()
+    current_day = current_time.weekday()  # 0=Monday, 6=Sunday
     current_hour = current_time.hour
-    logger.debug(f"[Process-{market}] Checking trading hours for {market}. Current UTC time: {current_time}, Day: {current_day}, Hour: {current_hour}")
+    current_minute = current_time.minute
+    logger.debug(f"[Process-{market}] Checking trading hours for {market}. Current UTC time: {current_time}, Day: {current_day}, Hour: {current_hour}:{current_minute:02d}")
 
-    if market in SYNTHETIC_INDICES:
-        return True  # Synthetic indices trade 24/7
-    elif market in FOREX_MARKETS:
-        start_time = datetime.now(pytz.UTC).replace(hour=22, minute=0, second=0, microsecond=0)
+    # Markets that trade 24/7 (including weekends)
+    twenty_four_seven_markets = (
+        SYNTHETIC_INDICES + DRIFT_SWITCHING_INDICES + MULTI_STEP_INDICES +
+        SKEWED_STEP_INDICES + TREK_INDICES +
+        ["DEX 900 DOWN Index", "DEX 900 UP Index", "DEX 600 UP Index",
+         "DEX 600 DOWN Index", "DEX 1500 UP Index", "DEX 1500 DOWN Index",
+         "VolSwitch Low Vol Index", "VolSwitch Medium Vol Index", "VolSwitch High Vol Index"]
+    )
+    if market in twenty_four_seven_markets:
+        logger.debug(f"[Process-{market}] {market} is a 24/7 market")
+        return True
+
+    # Forex markets: Sunday 22:00 UTC to Friday 22:00 UTC
+    if market in FOREX_MARKETS:
         if current_day == 6:  # Sunday
-            if current_time < start_time:
+            if current_time < datetime.now(pytz.UTC).replace(hour=22, minute=0, second=0, microsecond=0):
+                logger.debug(f"[Process-{market}] Forex market {market} closed on Sunday before 22:00 UTC")
                 return False
             return True
         elif current_day == 4:  # Friday
-            if current_time >= start_time:
+            if current_time >= datetime.now(pytz.UTC).replace(hour=22, minute=0, second=0, microsecond=0):
+                logger.debug(f"[Process-{market}] Forex market {market} closed on Friday after 22:00 UTC")
                 return False
             return True
         elif current_day == 5:  # Saturday
+            logger.debug(f"[Process-{market}] Forex market {market} closed on Saturday")
             return False
+        logger.debug(f"[Process-{market}] Forex market {market} is open")
         return True
-    elif market in INDEX_MARKETS:
-        if current_day in [5, 6]:  # Closed on weekends
+
+    # Index markets and Tactical Indices: Monday–Friday, 1:00 AM–10:00 PM UTC
+    if market in INDEX_MARKETS or market in TACTICAL_INDICES:
+        if current_day in [5, 6]:  # Closed on Saturday and Sunday
+            logger.debug(f"[Process-{market}] {market} (Index or Tactical Index) closed on weekend")
             return False
-        if current_hour < 1 or current_hour >= 22:  # Typical index hours (e.g., 1:00 AM–10:00 PM UTC)
+        if current_hour < 1 or current_hour >= 22:  # 1:00 AM–10:00 PM UTC
+            logger.debug(f"[Process-{market}] {market} (Index or Tactical Index) closed outside 01:00–22:00 UTC")
             return False
+        logger.debug(f"[Process-{market}] {market} (Index or Tactical Index) is open")
         return True
-    elif market in COMMODITIES:
-        if current_day in [5, 6]:  # Closed on weekends
+
+    # Commodities: Specific hours, Monday–Friday
+    if market in COMMODITIES:
+        if current_day in [5, 6]:  # Closed on Saturday and Sunday
+            logger.debug(f"[Process-{market}] Commodity {market} closed on weekend")
             return False
-        if market in ["CoffeeRobu", "CoffeeArab"]:  # ICE Robusta/Arabica Coffee: ~4:00 AM–12:30 PM UTC
-            if current_hour < 4 or current_hour >= 13:
+        if market in ["CoffeeRobu", "CoffeeArab"]:  # ~4:00 AM–12:30 PM UTC
+            if current_hour < 4 or (current_hour >= 12 and current_minute > 30) or current_hour >= 13:
+                logger.debug(f"[Process-{market}] Coffee {market} closed outside 04:00–12:30 UTC")
                 return False
-        elif market in ["Cocoa"]:  # ICE Cocoa: ~4:45 AM–1:20 PM UTC
-            if current_hour < 4 or current_hour >= 14:
+        elif market in ["Cocoa"]:  # ~4:45 AM–1:20 PM UTC
+            if current_hour < 4 or (current_hour == 4 and current_minute < 45) or \
+               (current_hour >= 13 and current_minute > 20) or current_hour >= 14:
+                logger.debug(f"[Process-{market}] Cocoa closed outside 04:45–13:20 UTC")
                 return False
-        elif market in ["Sugar"]:  # ICE Sugar: ~3:30 AM–1:00 PM UTC
-            if current_hour < 3 or current_hour >= 13:
+        elif market in ["Sugar"]:  # ~3:30 AM–1:00 PM UTC
+            if current_hour < 3 or (current_hour == 3 and current_minute < 30) or \
+               current_hour >= 13:
+                logger.debug(f"[Process-{market}] Sugar closed outside 03:30–13:00 UTC")
                 return False
-        elif market in ["Cotton"]:  # ICE Cotton: ~2:00 AM–2:20 PM UTC
-            if current_hour < 2 or current_hour >= 15:
+        elif market in ["Cotton"]:  # ~2:00 AM–2:20 PM UTC
+            if current_hour < 2 or (current_hour >= 14 and current_minute > 20) or current_hour >= 15:
+                logger.debug(f"[Process-{market}] Cotton closed outside 02:00–14:20 UTC")
                 return False
-        elif market in ["NGAS", "UK Brent Oil", "US Oil"]:  # Energies: ~1:00 AM–10:00 PM UTC
+        elif market in ["NGAS", "UK Brent Oil", "US Oil"]:  # ~1:00 AM–10:00 PM UTC
             if current_hour < 1 or current_hour >= 22:
+                logger.debug(f"[Process-{market}] Energy {market} closed outside 01:00–22:00 UTC")
                 return False
         elif market == "XAUUSD":  # Gold: ~1:00 AM–10:00 PM UTC
             if current_hour < 1 or current_hour >= 22:
+                logger.debug(f"[Process-{market}] Gold closed outside 01:00–22:00 UTC")
                 return False
+        logger.debug(f"[Process-{market}] Commodity {market} is open")
         return True
-    elif market in CRYPTO:
-        # Crypto often trades 24/7, but some brokers pause on weekends or specific hours
-        if current_day in [5, 6]:  # Conservative check for broker-specific pauses
+
+    # Crypto: Typically closed on weekends (broker-specific)
+    if market in CRYPTO:
+        if current_day in [5, 6]:  # Saturday and Sunday
+            logger.debug(f"[Process-{market}] Crypto {market} closed on weekend (broker-specific)")
             return False
+        logger.debug(f"[Process-{market}] Crypto {market} is open")
         return True
-    elif market in BASKET_INDICES:
-        if current_day in [5, 6]:  # Assume similar to indices
+
+    # Basket Indices: Monday–Friday, 1:00 AM–10:00 PM UTC
+    if market in BASKET_INDICES:
+        if current_day in [5, 6]:  # Closed on Saturday and Sunday
+            logger.debug(f"[Process-{market}] Basket index {market} closed on weekend")
             return False
-        if current_hour < 1 or current_hour >= 22:
+        if current_hour < 1 or current_hour >= 22:  # 1:00 AM–10:00 PM UTC
+            logger.debug(f"[Process-{market}] Basket index {market} closed outside 01:00–22:00 UTC")
             return False
+        logger.debug(f"[Process-{market}] Basket index {market} is open")
         return True
-    elif market in DRIFT_SWITCHING_INDICES or market in MULTI_STEP_INDICES or \
-         market in SKEWED_STEP_INDICES or market in TREK_INDICES or \
-         market in TACTICAL_INDICES or market in ["DEX 900 DOWN Index", "DEX 900 UP Index",
-                                                 "DEX 600 UP Index", "DEX 600 DOWN Index",
-                                                 "DEX 1500 UP Index", "DEX 1500 DOWN Index",
-                                                 "VolSwitch Low Vol Index", "VolSwitch Medium Vol Index",
-                                                 "VolSwitch High Vol Index"]:
-        return True  # Assume 24/7 for specialized indices, adjust if broker specifies otherwise
-    else:
-        logger.warning(f"[Process-{market}] Unknown market type for {market}, assuming closed")
-        return False  # Conservative default to avoid fetching during closed hours
+
+    # Unknown markets: Conservative default to closed
+    logger.warning(f"[Process-{market}] Unknown market type for {market}, assuming closed")
+    return False
+
+def categorize_markets_by_trading_status(markets, destination_path, timeframes):
+    """
+    Categorize markets into open and closed based on trading hours, and update status.json for closed markets.
     
+    Args:
+        markets (list): List of market symbols.
+        destination_path (str): Path to store status files.
+        timeframes (list): List of timeframes to update status for closed markets.
+    
+    Returns:
+        tuple: (open_markets, closed_markets)
+            - open_markets (list): Markets that are open or trade 24/7.
+            - closed_markets (list): Markets that are currently closed.
+    """
+    logger.debug("Categorizing markets by trading status")
+    open_markets = []
+    closed_markets = []
+    current_day = datetime.now(pytz.UTC).weekday()  # 0=Monday, 6=Sunday
+
+    # On weekends (Saturday/Sunday), categorize markets directly
+    if current_day in [5, 6]:
+        logger.debug("Weekend detected (Saturday/Sunday), categorizing markets accordingly")
+        # 24/7 markets (open on weekends)
+        twenty_four_seven_markets = (
+            SYNTHETIC_INDICES + DRIFT_SWITCHING_INDICES + MULTI_STEP_INDICES +
+            SKEWED_STEP_INDICES + TREK_INDICES +
+            ["DEX 900 DOWN Index", "DEX 900 UP Index", "DEX 600 UP Index",
+             "DEX 600 DOWN Index", "DEX 1500 UP Index", "DEX 1500 DOWN Index",
+             "VolSwitch Low Vol Index", "VolSwitch Medium Vol Index", "VolSwitch High Vol Index"]
+        )
+        # Non-24/7 markets (closed on weekends)
+        non_twenty_four_seven_markets = (
+            FOREX_MARKETS + INDEX_MARKETS + COMMODITIES + CRYPTO +
+            BASKET_INDICES + TACTICAL_INDICES
+        )
+
+        for market in markets:
+            try:
+                if market in twenty_four_seven_markets:
+                    open_markets.append(market)
+                    logger.debug(f"Market {market} is open (24/7 market)")
+                elif market in non_twenty_four_seven_markets:
+                    closed_markets.append(market)
+                    logger.debug(f"Market {market} is closed (non-24/7 market on weekend)")
+                    # Update status.json for all timeframes
+                    for tf in timeframes:
+                        try:
+                            save_status(market, tf, destination_path, "market_closed")
+                        except Exception as e:
+                            logger.error(f"[Process-{market}] Error updating status.json for {market} ({tf}): {e}")
+                else:
+                    logger.warning(f"[Process-{market}] Unknown market {market}, assuming closed")
+                    closed_markets.append(market)
+                    for tf in timeframes:
+                        try:
+                            save_status(market, tf, destination_path, "market_closed_unknown")
+                        except Exception as e:
+                            logger.error(f"[Process-{market}] Error updating status.json for {market} ({tf}): {e}")
+            except Exception as e:
+                logger.error(f"[Process-{market}] Error processing {market}: {e}")
+                closed_markets.append(market)
+                for tf in timeframes:
+                    try:
+                        save_status(market, tf, destination_path, "market_closed_error")
+                    except Exception as e:
+                        logger.error(f"[Process-{market}] Error updating status.json for {market} ({tf}): {e}")
+    else:
+        # On weekdays, use tradinghoursordays to check specific hours
+        for market in markets:
+            try:
+                if tradinghoursordays(market):
+                    open_markets.append(market)
+                    logger.debug(f"Market {market} is open")
+                else:
+                    closed_markets.append(market)
+                    logger.debug(f"Market {market} is closed")
+                    # Update status.json for all timeframes
+                    for tf in timeframes:
+                        try:
+                            save_status(market, tf, destination_path, "market_closed")
+                        except Exception as e:
+                            logger.error(f"[Process-{market}] Error updating status.json for {market} ({tf}): {e}")
+            except Exception as e:
+                logger.error(f"[Process-{market}] Error checking trading status for {market}: {e}")
+                closed_markets.append(market)
+                for tf in timeframes:
+                    try:
+                        save_status(market, tf, destination_path, "market_closed_error")
+                    except Exception as e:
+                        logger.error(f"[Process-{market}] Error updating status.json for {market} ({tf}): {e}")
+
+    logger.debug(f"Open markets: {open_markets}")
+    logger.debug(f"Closed markets: {closed_markets}")
+    return open_markets, closed_markets
+
 def initialize_mt5(market):
     """Initialize MT5 connection with retries and symbol verification."""
     logger.debug(f"[Process-{market}] Initializing MT5 for {market}")
@@ -1563,34 +1691,41 @@ def is_pair_completed(market, timeframe):
     return False
 
 def main():
-    """Main loop with symbol pre-check and verification.json creation, retrying until all eligible pairs are chart_identified or market_closed."""
+    """Main loop with market categorization, symbol pre-check, and verification.json creation."""
     logger.debug("Starting main loop")
     clear_all_market_files()
     
-    # Check all symbols
+    # Check all symbols for availability in MT5
     if not test_all_symbols():
         logger.error("Symbol availability check failed. Creating verification.json for all markets.")
         for market in MARKETS:
             create_verification_json(market, DESTINATION_PATH)
-        marketsstatus(DESTINATION_PATH, MARKETS, TIMEFRAMES)  # Generate status report even on symbol check failure
+        marketsstatus(DESTINATION_PATH, MARKETS, TIMEFRAMES)
         return False
     
-    if not MARKETS or not TIMEFRAMES or not FOREX_MARKETS or not SYNTHETIC_INDICES or not INDEX_MARKETS or not all([LOGIN_ID, PASSWORD, SERVER, BASE_URL, TERMINAL_PATH]):
+    # Validate required data
+    if not MARKETS or not TIMEFRAMES or not FOREX_MARKETS or not SYNTHETIC_INDICES or \
+       not INDEX_MARKETS or not all([LOGIN_ID, PASSWORD, SERVER, BASE_URL, TERMINAL_PATH]):
         logger.error("Required lists or credentials missing. Exiting.")
         for market in MARKETS:
             create_verification_json(market, DESTINATION_PATH)
-        marketsstatus(DESTINATION_PATH, MARKETS, TIMEFRAMES)  # Generate status report even on missing data
+        marketsstatus(DESTINATION_PATH, MARKETS, TIMEFRAMES)
         return False
     
+    # Categorize markets by trading status
+    open_markets, closed_markets = categorize_markets_by_trading_status(MARKETS, DESTINATION_PATH, TIMEFRAMES)
+    
+    # Get eligible market-timeframe pairs for open markets only
     eligible_pairs = get_eligible_market_timeframes()
+    eligible_pairs = [(market, tf) for market, tf in eligible_pairs if market in open_markets]
     markets_to_process = list(set(pair[0] for pair in eligible_pairs))
     processed_pairs = []
     
     if not markets_to_process:
-        logger.debug("No markets with elligible_status 'order_free' found")
+        logger.debug("No open markets with elligible_status 'order_free' found")
         for market in MARKETS:
             create_verification_json(market, DESTINATION_PATH)
-        marketsstatus(DESTINATION_PATH, MARKETS, TIMEFRAMES)  # Generate status report for all markets
+        marketsstatus(DESTINATION_PATH, MARKETS, TIMEFRAMES)
         return True
     
     batch_size = 10
@@ -1616,20 +1751,19 @@ def main():
             if len(failed_markets) >= 5:
                 handle_network_issue()
             
-            # Refresh eligible pairs to ensure we capture any changes
+            # Refresh eligible pairs for open markets
             eligible_pairs = get_eligible_market_timeframes()
-            # Update markets to process, only including those with incomplete pairs
+            eligible_pairs = [(market, tf) for market, tf in eligible_pairs if market in open_markets]
             markets_to_process = list(set(
                 pair[0] for pair in eligible_pairs
                 if pair not in processed_pairs and not is_pair_completed(pair[0], pair[1])
             ))
             
-            # Log current status
             logger.debug(f"Remaining markets to process: {markets_to_process}")
             logger.debug(f"Processed pairs: {processed_pairs}")
             
             if not markets_to_process:
-                logger.debug("All eligible market-timeframe pairs are either chart_identified or market_closed")
+                logger.debug("All eligible market-timeframe pairs for open markets are chart_identified or market_closed")
                 break
                 
         except Exception as e:
@@ -1640,17 +1774,18 @@ def main():
             if len(markets_to_process) >= 5:
                 handle_network_issue()
             eligible_pairs = get_eligible_market_timeframes()
+            eligible_pairs = [(market, tf) for market, tf in eligible_pairs if market in open_markets]
             markets_to_process = list(set(
                 pair[0] for pair in eligible_pairs
                 if pair not in processed_pairs and not is_pair_completed(pair[0], pair[1])
             ))
             time.sleep(10)
     
-    # Ensure verification.json is created for all markets
+    # Ensure verification.json is created for all markets (open and closed)
     for market in MARKETS:
         create_verification_json(market, DESTINATION_PATH)
     
-    # Generate final status report for all markets and timeframes, regardless of elligible_status
+    # Generate final status report for all markets
     marketsstatus(DESTINATION_PATH, MARKETS, TIMEFRAMES)
     
     # Log and print final processed pairs
@@ -1675,12 +1810,12 @@ def main():
                 logger.warning(f"[Process-{market}] status.json missing for {market} ({tf})")
     
     if all_completed:
-        logger.debug("Main loop completed: all eligible market-timeframe pairs are chart_identified ")
+        logger.debug("Main loop completed: all eligible market-timeframe pairs for open markets are chart_identified")
         return True
     else:
-        logger.error("Main loop completed but not all eligible market-timeframe pairs are chart_identified")
+        logger.error("Main loop completed but not all eligible market-timeframe pairs for open markets are chart_identified")
         return False
-    
+
 if __name__ == "__main__":
     try:
         clear_all_market_files()
