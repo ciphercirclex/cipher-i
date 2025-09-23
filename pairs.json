@@ -1,0 +1,39 @@
+{
+  "MARKETS": "Volatility 75 Index, Step Index, Drift Switch Index 30, Drift Switch Index 20, Drift Switch Index 10, Volatility 25 Index, XAUUSD, US Tech 100, Wall Street 30, GBPUSD, EURUSD, USDJPY, AUDUSD, USDCAD, USDCHF, NZDUSD, AUDNZD, CADCHF, Volatility 10 Index, Volatility 50 Index, Volatility 100 Index, Volatility 10 (1s) Index, Volatility 15 (1s) Index, Volatility 25 (1s) Index, Volatility 30 (1s) Index, Volatility 50 (1s) Index, Volatility 75 (1s) Index, Volatility 90 (1s) Index, Volatility 100 (1s) Index, ADAUSD, ALGUSD, AVAUSD, BATUSD, BCHUSD, BNBUSD, BTCETH, BTCLTC, BTCUSD, DOGUSD, DOTUSD, DSHUSD, ETCUSD, ETHUSD, FILUSD, IOTUSD, LNKUSD, LTCUSD, NEOUSD, SOLUSD, TRXUSD, UNIUSD, XLMUSD, XMRUSD, XRPUSD, XTZUSD, ZECUSD, AUD Basket, EUR Basket, GBP Basket, USD Basket, Gold Basket, NGAS, Volatility 150 (1s) Index, Volatility 250 (1s) Index, DEX 900 DOWN Index, DEX 900 UP Index, DEX 600 UP Index, DEX 600 DOWN Index, DEX 1500 UP Index, DEX 1500 DOWN Index, UK Brent Oil, US Oil, Australia 200, China H Shares, Europe 50, France 40, Germany 40, Hong Kong 50, Japan 225, Netherlands 25, Spain 35, Swiss 20, UK 100, US Mid Cap 400, US SP 500, US Small Cap 2000, Step Index 200, Step Index 300, Step Index 400, Step Index 500, CoffeeRobu, CoffeeArab, Cocoa, Sugar, Cotton, Multi Step 2 Index, Multi Step 3 Index, Multi Step 4 Index, Skew Step Index 5 Up, Skew Step Index 5 Down, Skew Step Index 4 Up, Skew Step Index 4 Down, Silver RSI Rebound Index, Silver RSI Pullback Index, Silver RSI Trend Up Index, Silver RSI Trend Down Index, Gold RSI Rebound Index, Gold RSI Pullback Index, Gold RSI Trend Up Index, Gold RSI Trend Down Index, AAVUSD, APEUSD, SHBUSD, NERUSD, TONUSD, FETUSD, APTUSD, COMUSD, IMXUSD, SANUSD, TRUUSD, MLNUSD, Trek Up Index, Trek Down Index, VolSwitch Low Vol Index, VolSwitch Medium Vol Index, VolSwitch High Vol Index",
+  "FOREX_MARKETS": [
+    "XAUUSD",
+    "GBPUSD",
+    "EURUSD",
+    "USDJPY",
+    "AUDUSD",
+    "USDCAD",
+    "USDCHF",
+    "NZDUSD"
+  ],
+  "SYNTHETIC_INDICES": [
+    "Volatility 75 Index",
+    "Step Index",
+    "Drift Switch Index 30",
+    "Drift Switch Index 20",
+    "Drift Switch Index 10",
+    "Volatility 25 Index"
+  ],
+  "INDEX_MARKETS": [
+    "US Tech 100",
+    "Wall Street 30"
+  ],
+  "TIMEFRAMES": [
+    "M5",
+    "M15",
+    "M30",
+    "H1",
+    "H4"
+  ],
+  "CREDENTIALS": {
+    "LOGIN_ID": "101347351",
+    "PASSWORD": "@Techknowdge12#",
+    "SERVER": "DerivSVG-Server-02",
+    "BASE_URL": "https://mt5-real02-web-svg.deriv.com/terminal?login=101347351&server=DerivSVG-Server-02",
+    "TERMINAL_PATH": "C:\\Program Files\\MetaTrader 5\\terminal64.exe"
+  }
+}
