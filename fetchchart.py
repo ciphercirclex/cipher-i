@@ -33,17 +33,16 @@ for name in ['webdriver_manager', 'selenium', 'urllib3', 'selenium.webdriver', '
 
 # Configuration
 MARKETS_JSON_PATH = r"C:\xampp\htdocs\CIPHER\cipher i\programmes\chart\base.json"
+BATCH_PROCESSEDCHART_JSON = r"C:\xampp\htdocs\CIPHER\cipher i\programmes\chart\chartprocessed.json"
 
 # Function to load markets, timeframes, and credentials from JSON
 def load_markets_and_credentials(json_path):
-    """Load markets, timeframes, credentials, and additional subjects from base.json file."""
     try:
         if not os.path.exists(json_path):
             raise FileNotFoundError(f"Markets JSON file not found at: {json_path}")
         with open(json_path, 'r') as f:
             data = json.load(f)
         
-        # Load all subjects from JSON
         markets = data.get("MARKETS", [])
         forex_markets = data.get("FOREX_MARKETS", [])
         forex_majors = data.get("FOREX_MAJORS", [])
@@ -58,21 +57,19 @@ def load_markets_and_credentials(json_path):
         crypto = data.get("CRYPTO", [])
         index_markets = data.get("INDEX_MARKETS", [])
         commodities = data.get("COMMODITIES", [])
+        stocks = data.get("STOCKS", [])  # Load STOCKS field
         timeframes = data.get("TIMEFRAMES", [])
         credentials = data.get("CREDENTIALS", {})
         
-        # Extract credentials
         login_id = credentials.get("LOGIN_ID", "")
         password = credentials.get("PASSWORD", "")
         server = credentials.get("SERVER", "")
         base_url = credentials.get("BASE_URL", "")
         terminal_path = credentials.get("TERMINAL_PATH", "")
         
-        # Validate required fields
         if not all([markets, timeframes, login_id, password, server, base_url, terminal_path]):
             raise ValueError("MARKETS, TIMEFRAMES, or CREDENTIALS not found in base.json or are empty")
         
-        # Log loaded data (excluding sensitive credentials)
         logger.debug(f"Loaded MARKETS: {markets}")
         logger.debug(f"Loaded FOREX_MARKETS: {forex_markets}")
         logger.debug(f"Loaded FOREX_MAJORS: {forex_majors}")
@@ -87,25 +84,24 @@ def load_markets_and_credentials(json_path):
         logger.debug(f"Loaded CRYPTO: {crypto}")
         logger.debug(f"Loaded INDEX_MARKETS: {index_markets}")
         logger.debug(f"Loaded COMMODITIES: {commodities}")
+        logger.debug(f"Loaded STOCKS: {stocks}")
         logger.debug(f"Loaded TIMEFRAMES: {timeframes}")
         logger.debug("Loaded CREDENTIALS: [Sensitive data not logged]")
         
-        # Return all loaded data
         return (markets, forex_markets, forex_majors, forex_minors, synthetic_indices,
                 drift_switching_indices, multi_step_indices, skewed_step_indices,
                 trek_indices, tactical_indices, basket_indices, crypto, index_markets,
-                commodities, timeframes, login_id, password, server, base_url, terminal_path)
+                commodities, stocks, timeframes, login_id, password, server, base_url, terminal_path)
     
     except Exception as e:
         logger.error(f"Error loading base.json: {e}")
-        # Return empty/default values for all fields in case of error
-        return [], [], [], [], [], [], [], [], [], [], [], [], [], [], [], "", "", "", "", ""
+        return [], [], [], [], [], [], [], [], [], [], [], [], [], [], [], [], "", "", "", "", ""
 
 # Load all subjects and credentials from JSON
 (MARKETS, FOREX_MARKETS, FOREX_MAJORS, FOREX_MINORS, SYNTHETIC_INDICES,
  DRIFT_SWITCHING_INDICES, MULTI_STEP_INDICES, SKEWED_STEP_INDICES, TREK_INDICES,
- TACTICAL_INDICES, BASKET_INDICES, CRYPTO, INDEX_MARKETS, COMMODITIES, TIMEFRAMES,
- LOGIN_ID, PASSWORD, SERVER, BASE_URL, TERMINAL_PATH) = load_markets_and_credentials(MARKETS_JSON_PATH)
+ TACTICAL_INDICES, BASKET_INDICES, CRYPTO, INDEX_MARKETS, COMMODITIES, STOCKS,
+ TIMEFRAMES, LOGIN_ID, PASSWORD, SERVER, BASE_URL, TERMINAL_PATH) = load_markets_and_credentials(MARKETS_JSON_PATH)
 
 MT5_TIMEFRAMES = {
     "M5": mt5.TIMEFRAME_M5,
@@ -143,6 +139,7 @@ def normalize_timeframe(timeframe):
         '1 hour': 'h1',
         'h4': 'h4',
         '4h': 'h4',
+        '4hour': 'h4',
         '4hours': 'h4',
         '4 hours': 'h4'
     }
@@ -151,12 +148,11 @@ def normalize_timeframe(timeframe):
     return normalized
 
 def get_eligible_market_timeframes():
-    """Retrieve market-timeframe pairs with elligible_status 'order_free'."""
     eligible_pairs = []
     for market in MARKETS:
         market_folder = os.path.join(DESTINATION_PATH, market.replace(" ", "_"))
         for tf in TIMEFRAMES:
-            normalized_tf = normalize_timeframe(tf)  # Normalize timeframe for folder path
+            normalized_tf = normalize_timeframe(tf)
             status_file = os.path.join(market_folder, normalized_tf, "status.json")
             try:
                 if os.path.exists(status_file):
@@ -164,13 +160,11 @@ def get_eligible_market_timeframes():
                         status_data = json.load(f)
                         elligible_status = status_data.get("elligible_status", "")
                         if elligible_status == "order_free":
-                            eligible_pairs.append((market, tf))  # Use original timeframe in pair
+                            eligible_pairs.append((market, tf))
                 else:
-                    # If status.json doesn't exist, assume eligible to allow processing
                     eligible_pairs.append((market, tf))
             except Exception as e:
                 logger.warning(f"Error reading status.json for {market} ({tf}): {e}")
-                # If status.json is unreadable, assume eligible to allow processing
                 eligible_pairs.append((market, tf))
     logger.debug(f"Eligible market-timeframe pairs: {eligible_pairs}")
     return eligible_pairs
@@ -236,6 +230,14 @@ def tradinghoursordays(market):
     current_minute = current_time.minute
     logger.debug(f"[Process-{market}] Checking trading hours for {market}. Current UTC time: {current_time}, Day: {current_day}, Hour: {current_hour}:{current_minute:02d}")
 
+    # Define stock markets (newly added stocks and ETFs)
+    stock_markets = [
+        "AAL", "AGG.US", "AIG", "AIR", "AIRF", "AMZN", "ARKK.US", "BAC", "BAY",
+        "BIIB", "BMW", "C", "COMUSD", "CONG", "CSCO", "DAL", "DBK", "DIA.US",
+        "DIS", "EBAY", "EEM.US", "ERX.US", "FDX", "FOX", "META", "CRM", "TSLA",
+        "ABNB", "ADS", "AMD", "BA", "BABA"
+    ]
+
     # Markets that trade 24/7 (including weekends)
     twenty_four_seven_markets = (
         SYNTHETIC_INDICES + DRIFT_SWITCHING_INDICES + MULTI_STEP_INDICES +
@@ -266,8 +268,20 @@ def tradinghoursordays(market):
         logger.debug(f"[Process-{market}] Forex market {market} is open")
         return True
 
-    # Index markets and Tactical Indices: Monday–Friday, 1:00 AM–10:00 PM UTC
-    if market in INDEX_MARKETS or market in TACTICAL_INDICES:
+    # Stock markets: Monday–Friday, 2:30 PM–9:00 PM UTC (9:30 AM–4:00 PM EST)
+    if market in stock_markets:
+        if current_day in [5, 6]:  # Closed on Saturday and Sunday
+            logger.debug(f"[Process-{market}] Stock market {market} closed on weekend")
+            return False
+        if (current_hour < 14 or (current_hour == 14 and current_minute < 30)) or \
+           current_hour >= 21:  # 2:30 PM–9:00 PM UTC
+            logger.debug(f"[Process-{market}] Stock market {market} closed outside 14:30–21:00 UTC")
+            return False
+        logger.debug(f"[Process-{market}] Stock market {market} is open")
+        return True
+
+    # Index markets (excluding stocks) and Tactical Indices: Monday–Friday, 1:00 AM–10:00 PM UTC
+    if market in INDEX_MARKETS and market not in stock_markets:
         if current_day in [5, 6]:  # Closed on Saturday and Sunday
             logger.debug(f"[Process-{market}] {market} (Index or Tactical Index) closed on weekend")
             return False
@@ -300,7 +314,7 @@ def tradinghoursordays(market):
             if current_hour < 2 or (current_hour >= 14 and current_minute > 20) or current_hour >= 15:
                 logger.debug(f"[Process-{market}] Cotton closed outside 02:00–14:20 UTC")
                 return False
-        elif market in ["NGAS", "UK Brent Oil", "US Oil"]:  # ~1:00 AM–10:00 PM UTC
+        elif market in ["NGAS", "UK Brent Oil", "US Oil", "USOIL"]:  # ~1:00 AM–10:00 PM UTC
             if current_hour < 1 or current_hour >= 22:
                 logger.debug(f"[Process-{market}] Energy {market} closed outside 01:00–22:00 UTC")
                 return False
@@ -1691,10 +1705,26 @@ def is_pair_completed(market, timeframe):
     return False
 
 def main():
-    """Main loop with market categorization, symbol pre-check, and verification.json creation."""
+    """Main loop with market categorization, symbol pre-check, verification.json creation, and prioritized market processing."""
     logger.debug("Starting main loop")
     clear_all_market_files()
     
+    # Initialize or overwrite the batch processed JSON file
+    BATCH_PROCESSEDCHART_JSON = r"C:\xampp\htdocs\CIPHER\cipher i\programmes\chart\chartprocessed.json"
+    batch_data = {"batch_processed": {}}
+    try:
+        os.makedirs(os.path.dirname(BATCH_PROCESSEDCHART_JSON), exist_ok=True)  # Ensure directory exists
+        with open(BATCH_PROCESSEDCHART_JSON, 'w') as f:
+            json.dump(batch_data, f, indent=4)
+        logger.debug(f"Initialized/overwritten {BATCH_PROCESSEDCHART_JSON} for real-time batch tracking")
+    except Exception as e:
+        logger.error(f"Error initializing {BATCH_PROCESSEDCHART_JSON}: {e}")
+        return False
+
+    # Initialize status.json files for all markets and timeframes
+    timeframes_to_process = "M5,M15,M30,H1,H4"  # Adjust as needed
+    timeframeselligibilityupdater(timeframe=timeframes_to_process, elligible_status="order_free")
+
     # Check all symbols for availability in MT5
     if not test_all_symbols():
         logger.error("Symbol availability check failed. Creating verification.json for all markets.")
@@ -1718,7 +1748,23 @@ def main():
     # Get eligible market-timeframe pairs for open markets only
     eligible_pairs = get_eligible_market_timeframes()
     eligible_pairs = [(market, tf) for market, tf in eligible_pairs if market in open_markets]
-    markets_to_process = list(set(pair[0] for pair in eligible_pairs))
+    
+    # Prioritize markets: Forex -> Synthetics -> Crypto -> Others
+    def market_priority(market):
+        if market in FOREX_MARKETS:
+            return 1  # Highest priority
+        elif market in SYNTHETIC_INDICES:
+            return 2
+        elif market in CRYPTO:
+            return 3
+        else:
+            return 4  # Indices, commodities, basket indices, tactical indices, stocks
+    
+    # Sort markets by priority
+    markets_to_process = sorted(
+        list(set(pair[0] for pair in eligible_pairs)),
+        key=market_priority
+    )
     processed_pairs = []
     
     if not markets_to_process:
@@ -1728,17 +1774,17 @@ def main():
         marketsstatus(DESTINATION_PATH, MARKETS, TIMEFRAMES)
         return True
     
-    batch_size = 10
+    batch_size = 5
     batch_attempts = 0
     
     while markets_to_process:
         batch_attempts += 1
-        logger.debug(f"Batch attempt {batch_attempts} for markets: {markets_to_process}")
+        logger.debug(f"Starting batch {batch_attempts} for markets: {markets_to_process}")
         current_batch = markets_to_process[:batch_size]
         failed_markets = []
         processes = []
         try:
-            logger.debug(f"Processing batch: {current_batch}")
+            logger.debug(f"Processing batch {batch_attempts}: {current_batch}")
             for market in current_batch:
                 process = multiprocessing.Process(target=run_script_for_market, args=(market, eligible_pairs, processed_pairs))
                 processes.append((market, process))
@@ -1746,28 +1792,51 @@ def main():
             for market, process in processes:
                 process.join()
                 if process.exitcode != 0:
-                    logger.error(f"[Process-{market}] Process failed")
+                    logger.error(f"[Process-{market}] Process failed in batch {batch_attempts}")
                     failed_markets.append(market)
             if len(failed_markets) >= 5:
                 handle_network_issue()
             
+            # Update batch processed JSON in real-time
+            markets_processed_in_batch = len(current_batch) - len(failed_markets)
+            remaining_markets = len(markets_to_process) - len(current_batch) + len(failed_markets)
+            try:
+                # Read existing batch data
+                with open(BATCH_PROCESSEDCHART_JSON, 'r') as f:
+                    batch_data = json.load(f)
+                # Append new batch info
+                batch_key = f"batch{batch_attempts}"
+                batch_data["batch_processed"][batch_key] = {
+                    "processed": markets_processed_in_batch,
+                    "remaining": remaining_markets
+                }
+                # Write updated batch data
+                with open(BATCH_PROCESSEDCHART_JSON, 'w') as f:
+                    json.dump(batch_data, f, indent=4)
+                logger.debug(f"Real-time update to {BATCH_PROCESSEDCHART_JSON} for {batch_key}: processed={markets_processed_in_batch}, remaining={remaining_markets}")
+            except Exception as e:
+                logger.error(f"Error updating {BATCH_PROCESSEDCHART_JSON} for batch {batch_attempts}: {e}")
+            
             # Refresh eligible pairs for open markets
             eligible_pairs = get_eligible_market_timeframes()
             eligible_pairs = [(market, tf) for market, tf in eligible_pairs if market in open_markets]
-            markets_to_process = list(set(
-                pair[0] for pair in eligible_pairs
-                if pair not in processed_pairs and not is_pair_completed(pair[0], pair[1])
-            ))
+            markets_to_process = sorted(
+                list(set(
+                    pair[0] for pair in eligible_pairs
+                    if pair not in processed_pairs and not is_pair_completed(pair[0], pair[1])
+                )),
+                key=market_priority
+            )
             
-            logger.debug(f"Remaining markets to process: {markets_to_process}")
-            logger.debug(f"Processed pairs: {processed_pairs}")
+            logger.debug(f"Remaining markets to process after batch {batch_attempts}: {markets_to_process}")
+            logger.debug(f"Processed pairs after batch {batch_attempts}: {processed_pairs}")
             
             if not markets_to_process:
-                logger.debug("All eligible market-timeframe pairs for open markets are chart_identified or market_closed")
+                logger.debug(f"All eligible market-timeframe pairs for open markets are chart_identified or market_closed after batch {batch_attempts}")
                 break
                 
         except Exception as e:
-            logger.error(f"Main loop error: {e}")
+            logger.error(f"Main loop error in batch {batch_attempts}: {e}")
             for _, process in processes:
                 if process.is_alive():
                     process.terminate()
@@ -1775,10 +1844,13 @@ def main():
                 handle_network_issue()
             eligible_pairs = get_eligible_market_timeframes()
             eligible_pairs = [(market, tf) for market, tf in eligible_pairs if market in open_markets]
-            markets_to_process = list(set(
-                pair[0] for pair in eligible_pairs
-                if pair not in processed_pairs and not is_pair_completed(pair[0], pair[1])
-            ))
+            markets_to_process = sorted(
+                list(set(
+                    pair[0] for pair in eligible_pairs
+                    if pair not in processed_pairs and not is_pair_completed(pair[0], pair[1])
+                )),
+                key=market_priority
+            )
             time.sleep(10)
     
     # Ensure verification.json is created for all markets (open and closed)
@@ -1809,13 +1881,21 @@ def main():
             else:
                 logger.warning(f"[Process-{market}] status.json missing for {market} ({tf})")
     
+    # Log final batch JSON state
+    try:
+        with open(BATCH_PROCESSEDCHART_JSON, 'r') as f:
+            final_batch_data = json.load(f)
+        logger.debug(f"Final state of {BATCH_PROCESSEDCHART_JSON}: {json.dumps(final_batch_data, indent=4)}")
+    except Exception as e:
+        logger.error(f"Error reading final state of {BATCH_PROCESSEDCHART_JSON}: {e}")
+    
     if all_completed:
         logger.debug("Main loop completed: all eligible market-timeframe pairs for open markets are chart_identified")
         return True
     else:
         logger.error("Main loop completed but not all eligible market-timeframe pairs for open markets are chart_identified")
         return False
-
+     
 if __name__ == "__main__":
     try:
         clear_all_market_files()

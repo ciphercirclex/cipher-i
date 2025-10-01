@@ -43,6 +43,7 @@ def normalize_timeframe(timeframe):
         '1 hour': 'h1',
         'h4': 'h4',
         '4h': 'h4',
+        '4hour': 'h4',
         '4hours': 'h4',
         '4 hours': 'h4'
     }
@@ -2452,7 +2453,6 @@ def main():
             global MARKETS, TIMEFRAMES
             MARKETS, TIMEFRAMES = load_markets_and_timeframes(MARKETS_JSON_PATH)
             
-            # Check M15 candle time left globally (using a default market, e.g., first in MARKETS)
             if not MARKETS or not TIMEFRAMES:
                 print("No markets defined in MARKETS list. Exiting.")
                 return
@@ -2466,19 +2466,19 @@ def main():
                 return
             
             print(f"M15 candle time left: {time_left:.2f} minutes. Proceeding with execution.")
-
-            # Clear the base output folder before processing
-            #clear_image_and_json_files() # Uncomment if you want to clear the output folder
             
-            # Process markets with 'chart identified' or 'chart_identified' status
             print(f"Markets to check: {MARKETS}")
             
             # Create a list of market and timeframe combinations with valid status
             tasks = []
+            status_chart_identified_count = 0
             for market in MARKETS:
                 for timeframe in TIMEFRAMES:
                     if check_status_json(market, timeframe):
                         tasks.append((market, timeframe))
+                        status_chart_identified_count += 1
+                    else:
+                        print(f"Skipped {market}, {timeframe}: Invalid status in status.json")
             
             if not tasks:
                 print("No market-timeframe combinations with 'chart identified' or 'chart_identified' status found. Exiting.")
@@ -2486,12 +2486,37 @@ def main():
             
             print(f"Processing {len(tasks)} market-timeframe combinations with 'chart identified' or 'chart_identified' status")
             
+            # Count markets with valid verification.json and collect non-verified markets
+            verification_valid_count = 0
+            non_verified_markets = []  # List to store markets without valid verification.json
+            for market in MARKETS:
+                if check_market_verification(market):
+                    valid_timeframes = [tf for tf in TIMEFRAMES if check_status_json(market, tf)]
+                    verification_valid_count += len(valid_timeframes)
+                    print(f"Market {market} has {len(valid_timeframes)} valid timeframes in verification.json")
+                else:
+                    non_verified_markets.append(market)  # Add market to non-verified list
+                    print(f"Market {market} failed verification check")
+            
+            # Save non-verified markets to nonverifiedmarkets.json
+            non_verified_json_path = os.path.join(BASE_OUTPUT_FOLDER, "nonverifiedmarkets.json")
+            os.makedirs(BASE_OUTPUT_FOLDER, exist_ok=True)  # Ensure output folder exists
+            non_verified_data = {"markets_with_no_verificationjson": non_verified_markets}
+            try:
+                with open(non_verified_json_path, 'w') as f:
+                    json.dump(non_verified_data, f, indent=4)
+                print(f"Saved non-verified markets to {non_verified_json_path}")
+            except Exception as e:
+                print(f"Error saving nonverifiedmarkets.json: {e}")
+            
             # Use multiprocessing to process valid market-timeframe combinations in parallel
             with multiprocessing.Pool(processes=multiprocessing.cpu_count()) as pool:
                 results = pool.starmap(process_market_timeframe, tasks)
             
             # Print summary of processing
             success_count = sum(1 for result in results if result)
+            print(f"Status with chart identified: {status_chart_identified_count}")
+            print(f"Verification JSON valid: {verification_valid_count}")
             print(f"Processing completed: {success_count}/{len(tasks)} market-timeframe combinations processed successfully")
             
         except Exception as e:
