@@ -65,6 +65,7 @@ CREDENTIALS = {}
 # Base paths
 BASE_PROCESSING_FOLDER = r"C:\xampp\htdocs\CIPHER\cipher i\programmes\chart\processing"
 BASE_OUTPUT_FOLDER = r"C:\xampp\htdocs\CIPHER\cipher i\programmes\chart\orders"
+BASE_ERROR_FOLDER = r"C:\xampp\htdocs\CIPHER\cipher i\programmes\chart\orders\debugs"
 FETCHCHART_DESTINATION_PATH = r"C:\xampp\htdocs\CIPHER\cipher i\programmes\chart\fetched"
 MARKETS_JSON_PATH = r"C:\xampp\htdocs\CIPHER\cipher i\programmes\chart\base.json"
 
@@ -1187,12 +1188,46 @@ def candleafterbreakoutparent_to_currentprice(market: str, timeframe: str, json_
     # Define file paths
     pricecandle_json_path = os.path.join(json_dir, "pricecandle.json")
     output_json_path = os.path.join(json_dir, "candlesafterbreakoutparent.json")
+    invalid_markets_json_path = os.path.join(r"C:\xampp\htdocs\CIPHER\cipher i\programmes\chart\orders", "candleafterbreakoutcandle.json")
     
+    # Initialize invalid markets data
+    invalid_markets_data = {}
+    if os.path.exists(invalid_markets_json_path):
+        try:
+            with open(invalid_markets_json_path, 'r') as f:
+                invalid_markets_data = json.load(f)
+        except Exception as e:
+            log_and_print(f"Error loading existing {invalid_markets_json_path}: {e}", "ERROR")
+            status_report["warnings"].append(f"Error loading existing {invalid_markets_json_path}: {e}")
+            invalid_markets_data.setdefault("error_loading_invalid_markets_json", []).append(f"{market}_{timeframe.lower()}")
+
+    market_key = f"{market}_{timeframe.lower()}"
+    
+    def save_invalid_markets(error_key: str):
+        """Helper function to save invalid_markets_data to JSON with deduplication."""
+        if market_key not in invalid_markets_data.get(error_key, []):
+            invalid_markets_data.setdefault(error_key, []).append(market_key)
+        try:
+            with open(invalid_markets_json_path, 'w') as f:
+                json.dump(invalid_markets_data, f, indent=4)
+            log_and_print(f"Updated invalid markets data to {invalid_markets_json_path} for {error_key}", "INFO")
+        except Exception as e:
+            log_and_print(f"Error saving invalid markets to {invalid_markets_json_path}: {e}", "ERROR")
+            status_report["warnings"].append(f"Error saving invalid markets: {e}")
+            invalid_markets_data.setdefault("error_saving_invalid_markets_json", []).append(market_key)
+            try:
+                with open(invalid_markets_json_path, 'w') as f:
+                    json.dump(invalid_markets_data, f, indent=4)
+            except Exception as e2:
+                log_and_print(f"Critical error saving invalid markets after failure: {e2}", "ERROR")
+                status_report["warnings"].append(f"Critical error saving invalid markets: {e2}")
+
     # Check if pricecandle.json exists
     if not os.path.exists(pricecandle_json_path):
         error_message = f"pricecandle.json not found at {pricecandle_json_path} for {market} {timeframe}"
         log_and_print(error_message, "ERROR")
         status_report["message"] = error_message
+        save_invalid_markets("missing_pricecandle_json")
         return False, error_message, "failed", status_report
     
     try:
@@ -1200,6 +1235,13 @@ def candleafterbreakoutparent_to_currentprice(market: str, timeframe: str, json_
         with open(pricecandle_json_path, 'r') as f:
             pricecandle_data = json.load(f)
         
+        if not pricecandle_data or not isinstance(pricecandle_data, list):
+            error_message = f"pricecandle.json is empty or invalid for {market} {timeframe}"
+            log_and_print(error_message, "ERROR")
+            status_report["message"] = error_message
+            save_invalid_markets("invalid_pricecandle_json")
+            return False, error_message, "failed", status_report
+
         # Initialize MT5
         mt5.shutdown()
         for attempt in range(MAX_RETRIES):
@@ -1210,12 +1252,13 @@ def candleafterbreakoutparent_to_currentprice(market: str, timeframe: str, json_
             warning = f"Attempt {attempt + 1}/{MAX_RETRIES}: Failed to initialize MT5 for candles after Breakout_parent {market} {timeframe}. Error: {error_code}, {error_message}"
             log_and_print(warning, "ERROR")
             status_report["warnings"].append(warning)
+            if attempt == MAX_RETRIES - 1:
+                error_message = f"Failed to initialize MT5 terminal for candles after Breakout_parent {market} {timeframe} after {MAX_RETRIES} attempts"
+                log_and_print(error_message, "ERROR")
+                status_report["message"] = error_message
+                save_invalid_markets("mt5_initialization_failed")
+                return False, error_message, "failed", status_report
             time.sleep(RETRY_DELAY)
-        else:
-            error_message = f"Failed to initialize MT5 terminal for candles after Breakout_parent {market} {timeframe} after {MAX_RETRIES} attempts"
-            log_and_print(error_message, "ERROR")
-            status_report["message"] = error_message
-            return False, error_message, "failed", status_report
 
         # Wait for terminal to be fully ready
         for _ in range(5):
@@ -1230,6 +1273,7 @@ def candleafterbreakoutparent_to_currentprice(market: str, timeframe: str, json_
             error_message = f"MT5 terminal not ready for candles after Breakout_parent {market} {timeframe}"
             log_and_print(error_message, "ERROR")
             status_report["message"] = error_message
+            save_invalid_markets("mt5_terminal_not_ready")
             mt5.shutdown()
             return False, error_message, "failed", status_report
 
@@ -1242,19 +1286,20 @@ def candleafterbreakoutparent_to_currentprice(market: str, timeframe: str, json_
             warning = f"Attempt {attempt + 1}/{MAX_RETRIES}: Failed to log in to MT5 for candles after Breakout_parent {market} {timeframe}. Error: {error_code}, {error_message}"
             log_and_print(warning, "ERROR")
             status_report["warnings"].append(warning)
-            time.sleep(RETRY_DELAY)
-        else:
-            error_message = f"Failed to log in to MT5 for candles after Breakout_parent {market} {timeframe} after {MAX_RETRIES} attempts"
-            log_and_print(error_message, "ERROR")
-            status_report["message"] = error_message
-            mt5.shutdown()
-            return False, error_message, "failed", status_report
+            if attempt == MAX_RETRIES - 1:
+                error_message = f"Failed to log in to MT5 for candles after Breakout_parent {market} {timeframe} after {MAX_RETRIES} attempts"
+                log_and_print(error_message, "ERROR")
+                status_report["message"] = error_message
+                save_invalid_markets("mt5_login_failed")
+                mt5.shutdown()
+                return False, error_message, "failed", status_report
 
         # Select market symbol
         if not mt5.symbol_select(market, True):
             error_message = f"Failed to select market for candles after Breakout_parent: {market}, error: {mt5.last_error()}"
             log_and_print(error_message, "ERROR")
             status_report["message"] = error_message
+            save_invalid_markets("market_selection_failed")
             mt5.shutdown()
             return False, error_message, "failed", status_report
 
@@ -1264,6 +1309,7 @@ def candleafterbreakoutparent_to_currentprice(market: str, timeframe: str, json_
             error_message = f"Invalid timeframe {timeframe} for candles after Breakout_parent {market}"
             log_and_print(error_message, "ERROR")
             status_report["message"] = error_message
+            save_invalid_markets("invalid_timeframe")
             mt5.shutdown()
             return False, error_message, "failed", status_report
 
@@ -1271,27 +1317,44 @@ def candleafterbreakoutparent_to_currentprice(market: str, timeframe: str, json_
         candles_data = []
         trendlines_processed = 0
         total_candles_fetched = 0
+        valid_trendlines = False
         
         # Process each trendline in pricecandle.json
         for trendline in pricecandle_data:
+            if not isinstance(trendline, dict):
+                warning = f"Invalid trendline format in pricecandle.json for {market} {timeframe}"
+                log_and_print(warning, "WARNING")
+                status_report["warnings"].append(warning)
+                save_invalid_markets("invalid_trendline_format")
+                continue
+
             breakout_parent = trendline.get("Breakout_parent", {})
             breakout_parent_pos = breakout_parent.get("position_number")
             breakout_candle = breakout_parent.get("candle_rightafter_Breakoutparent", {})
             order_type = trendline.get("receiver", {}).get("order_type", "").lower()
             order_holder = trendline.get("order_holder", {})
             
+            if not isinstance(breakout_parent, dict) or not isinstance(breakout_candle, dict) or not isinstance(order_holder, dict):
+                warning = f"Invalid structure for Breakout_parent, candle_rightafter_Breakoutparent, or order_holder in {market} {timeframe}"
+                log_and_print(warning, "WARNING")
+                status_report["warnings"].append(warning)
+                save_invalid_markets("invalid_trendline_structure")
+                continue
+
             if breakout_parent_pos is None or breakout_candle.get("position_number") is None:
                 warning = f"No valid Breakout_parent or candle_rightafter_Breakoutparent for trendline in {market} {timeframe}"
                 log_and_print(warning, "WARNING")
                 status_report["warnings"].append(warning)
+                save_invalid_markets("invalid_trendline_data")
                 continue
 
             # Get the position number of the candle right after Breakout_parent
             start_pos = breakout_candle.get("position_number")
-            if start_pos is None:
+            if start_pos is None or not isinstance(start_pos, (int, float)):
                 warning = f"Invalid position number for candle_rightafter_Breakoutparent in {market} {timeframe}"
                 log_and_print(warning, "WARNING")
                 status_report["warnings"].append(warning)
+                save_invalid_markets("invalid_position_number")
                 continue
 
             # Validate order_type
@@ -1299,6 +1362,7 @@ def candleafterbreakoutparent_to_currentprice(market: str, timeframe: str, json_
                 warning = f"Invalid order_type {order_type} for trendline in {market} {timeframe}"
                 log_and_print(warning, "WARNING")
                 status_report["warnings"].append(warning)
+                save_invalid_markets("invalid_order_type")
                 order_type = None
                 order_holder_entry = None
             else:
@@ -1307,33 +1371,48 @@ def candleafterbreakoutparent_to_currentprice(market: str, timeframe: str, json_
                     warning = f"No valid order holder data for trendline in {market} {timeframe}"
                     log_and_print(warning, "WARNING")
                     status_report["warnings"].append(warning)
+                    save_invalid_markets("invalid_order_holder")
                     order_holder_entry = None
+                else:
+                    valid_trendlines = True  # Mark that at least one valid trendline was found
 
             # Fetch candles from start_pos to position 0
             try:
                 num_candles = start_pos - 1
-                if num_candles > 0:
+                if num_candles <= 0:
+                    warning = f"No candles to fetch (start_pos={start_pos}) for {market} {timeframe}"
+                    log_and_print(warning, "WARNING")
+                    status_report["warnings"].append(warning)
+                    save_invalid_markets("no_candles_to_fetch")
+                    candles = []
+                else:
                     candles = mt5.copy_rates_from_pos(market, mt5_timeframe, 1, num_candles)
                     if candles is None or len(candles) == 0:
                         warning = f"Failed to fetch candles from position {start_pos} to 1 for {market} {timeframe}, error: {mt5.last_error()}"
                         log_and_print(warning, "ERROR")
                         status_report["warnings"].append(warning)
+                        save_invalid_markets("candle_fetch_failed")
                         continue
-                else:
-                    candles = []
 
                 # Prepare candle data
                 trendline_candles = []
                 for i, candle in enumerate(candles):
                     position = start_pos - i
-                    trendline_candles.append({
-                        "position_number": position,
-                        "Time": str(pd.to_datetime(candle['time'], unit='s')),
-                        "Open": float(candle['open']),
-                        "High": float(candle['high']),
-                        "Low": float(candle['low']),
-                        "Close": float(candle['close'])
-                    })
+                    try:
+                        trendline_candles.append({
+                            "position_number": position,
+                            "Time": str(pd.to_datetime(candle['time'], unit='s')),
+                            "Open": float(candle['open']),
+                            "High": float(candle['high']),
+                            "Low": float(candle['low']),
+                            "Close": float(candle['close'])
+                        })
+                    except (KeyError, ValueError) as e:
+                        warning = f"Invalid candle data at position {position} for {market} {timeframe}: {e}"
+                        log_and_print(warning, "WARNING")
+                        status_report["warnings"].append(warning)
+                        save_invalid_markets("invalid_candle_data")
+                        continue
 
                 # Fetch current (incomplete) candle (position 0)
                 current_candle = mt5.copy_rates_from_pos(market, mt5_timeframe, 0, 1)
@@ -1341,17 +1420,29 @@ def candleafterbreakoutparent_to_currentprice(market: str, timeframe: str, json_
                     warning = f"Failed to fetch current candle for {market} {timeframe}, error: {mt5.last_error()}"
                     log_and_print(warning, "WARNING")
                     status_report["warnings"].append(warning)
+                    save_invalid_markets("current_candle_fetch_failed")
                     current_candle_data = {
                         "position_number": 0,
                         "Time": None,
                         "Open": None
                     }
                 else:
-                    current_candle_data = {
-                        "position_number": 0,
-                        "Time": str(pd.to_datetime(current_candle[0]['time'], unit='s')),
-                        "Open": float(current_candle[0]['open'])
-                    }
+                    try:
+                        current_candle_data = {
+                            "position_number": 0,
+                            "Time": str(pd.to_datetime(current_candle[0]['time'], unit='s')),
+                            "Open": float(current_candle[0]['open'])
+                        }
+                    except (KeyError, ValueError) as e:
+                        warning = f"Invalid current candle data for {market} {timeframe}: {e}"
+                        log_and_print(warning, "WARNING")
+                        status_report["warnings"].append(warning)
+                        save_invalid_markets("invalid_current_candle_data")
+                        current_candle_data = {
+                            "position_number": 0,
+                            "Time": None,
+                            "Open": None
+                        }
 
                 trendline_candles.append(current_candle_data)
                 
@@ -1374,16 +1465,26 @@ def candleafterbreakoutparent_to_currentprice(market: str, timeframe: str, json_
                 warning = f"Error fetching candles for trendline in {market} {timeframe}: {e}"
                 log_and_print(warning, "ERROR")
                 status_report["warnings"].append(warning)
+                save_invalid_markets("trendline_processing_error")
                 continue
 
-        # Update status report
-        status_report["trendlines_processed"] = trendlines_processed
-        status_report["total_candles_fetched"] = total_candles_fetched
+        # Check if no valid trendlines were processed
+        if not valid_trendlines and trendlines_processed == 0:
+            warning = f"No valid trendlines found for {market} {timeframe}"
+            log_and_print(warning, "WARNING")
+            status_report["warnings"].append(warning)
+            save_invalid_markets("no_valid_trendlines")
 
         # Save to candlesafterbreakoutparent.json
         if os.path.exists(output_json_path):
-            os.remove(output_json_path)
-            log_and_print(f"Existing {output_json_path} deleted", "INFO")
+            try:
+                os.remove(output_json_path)
+                log_and_print(f"Existing {output_json_path} deleted", "INFO")
+            except Exception as e:
+                warning = f"Error deleting existing {output_json_path} for {market} {timeframe}: {e}"
+                log_and_print(warning, "ERROR")
+                status_report["warnings"].append(warning)
+                save_invalid_markets("error_deleting_output_json")
 
         if not candles_data:
             log_and_print(f"No candles data to save for {market} {timeframe}. Saving empty candlesafterbreakoutparent.json", "INFO")
@@ -1393,12 +1494,14 @@ def candleafterbreakoutparent_to_currentprice(market: str, timeframe: str, json_
                 log_and_print(f"Empty candlesafterbreakoutparent.json saved to {output_json_path} for {market} {timeframe}", "INFO")
                 status_report["status"] = "success"
                 status_report["message"] = f"No candles data fetched; saved empty candlesafterbreakoutparent.json"
+                save_invalid_markets("no_candles_data")
                 mt5.shutdown()
                 return True, None, "success", status_report
             except Exception as e:
                 error_message = f"Error saving empty candlesafterbreakoutparent.json for {market} {timeframe}: {e}"
                 log_and_print(error_message, "ERROR")
                 status_report["message"] = error_message
+                save_invalid_markets("save_empty_candles_failed")
                 mt5.shutdown()
                 return False, error_message, "failed", status_report
 
@@ -1408,12 +1511,14 @@ def candleafterbreakoutparent_to_currentprice(market: str, timeframe: str, json_
             log_and_print(f"Candles after Breakout_parent saved to {output_json_path} for {market} {timeframe}", "SUCCESS")
             status_report["status"] = "success"
             status_report["message"] = f"Fetched {total_candles_fetched} candles for {trendlines_processed} trendlines"
+            save_invalid_markets("success")  # Log successful markets
             mt5.shutdown()
             return True, None, "success", status_report
         except Exception as e:
             error_message = f"Error saving candlesafterbreakoutparent.json for {market} {timeframe}: {e}"
             log_and_print(error_message, "ERROR")
             status_report["message"] = error_message
+            save_invalid_markets("save_candles_failed")
             mt5.shutdown()
             return False, error_message, "failed", status_report
 
@@ -1421,243 +1526,19 @@ def candleafterbreakoutparent_to_currentprice(market: str, timeframe: str, json_
         error_message = f"Error processing candles after Breakout_parent for {market} {timeframe}: {e}"
         log_and_print(error_message, "ERROR")
         status_report["message"] = error_message
+        save_invalid_markets("general_processing_error")
         mt5.shutdown()
         return False, error_message, "failed", status_report
     
-def executioncandle_after_breakoutparent(market: str, timeframe: str, json_dir: str) -> Tuple[bool, Optional[str], str, Dict]:
-    """Search candlesafterbreakoutparent.json for a candle matching the order_holder_entry price, update pricecandle.json, and return status report."""
-    status_report = {
-        "market": market,
-        "timeframe": timeframe,
-        "status": "failed",
-        "message": "",
-        "trendlines_processed": 0,
-        "executioner_candles_found": 0,
-        "executioner_candles_not_found": 0,
-        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "warnings": []
-    }
-    
-    log_and_print(f"Searching for executioner candle for market={market}, timeframe={timeframe}", "INFO")
-    
-    # Define file paths
-    pricecandle_json_path = os.path.join(json_dir, "pricecandle.json")
-    candlesafterbreakoutparent_json_path = os.path.join(json_dir, "candlesafterbreakoutparent.json")
-    
-    # Check if required JSON files exist
-    if not os.path.exists(pricecandle_json_path):
-        error_message = f"pricecandle.json not found at {pricecandle_json_path} for {market} {timeframe}"
-        log_and_print(error_message, "ERROR")
-        status_report["message"] = error_message
-        return False, error_message, "failed", status_report
-    if not os.path.exists(candlesafterbreakoutparent_json_path):
-        error_message = f"candlesafterbreakoutparent.json not found at {candlesafterbreakoutparent_json_path} for {market} {timeframe}"
-        log_and_print(error_message, "ERROR")
-        status_report["message"] = error_message
-        return False, error_message, "failed", status_report
-    
-    try:
-        # Load pricecandle.json
-        with open(pricecandle_json_path, 'r') as f:
-            pricecandle_data = json.load(f)
-        
-        # Load candlesafterbreakoutparent.json
-        with open(candlesafterbreakoutparent_json_path, 'r') as f:
-            candlesafterbreakoutparent_data = json.load(f)
-        
-        # Prepare updated pricecandle data
-        updated_pricecandle_data = []
-        executioner_candles_found = 0
-        executioner_candles_not_found = 0
-        trendlines_processed = 0
-        
-        # Process each trendline in pricecandle.json
-        for pricecandle_trendline in pricecandle_data:
-            trendline_type = pricecandle_trendline.get("type")
-            breakout_parent_pos = pricecandle_trendline.get("Breakout_parent", {}).get("position_number")
-            matching_cabp_trendline = None
-            
-            # Find matching trendline in candlesafterbreakoutparent.json
-            for cabp_trendline in candlesafterbreakoutparent_data:
-                cabp_trendline_info = cabp_trendline.get("trendline", {})
-                if (cabp_trendline_info.get("type") == trendline_type and 
-                    cabp_trendline_info.get("Breakout_parent_position") == breakout_parent_pos):
-                    matching_cabp_trendline = cabp_trendline
-                    break
-            
-            if not matching_cabp_trendline:
-                warning = f"No matching trendline found in candlesafterbreakoutparent.json for {trendline_type} with Breakout_parent_position {breakout_parent_pos} in {market} {timeframe}"
-                log_and_print(warning, "WARNING")
-                status_report["warnings"].append(warning)
-                pricecandle_trendline["executioner candle"] = {"status": "No executioner candle"}
-                pricecandle_trendline.setdefault("contract status summary", {})["contract status"] = "pending"
-                updated_pricecandle_data.append(pricecandle_trendline)
-                executioner_candles_not_found += 1
-                trendlines_processed += 1
-                continue
-            
-            # Get order_type and Order_holder_entry
-            order_type = matching_cabp_trendline.get("trendline", {}).get("order_type", "").lower()
-            order_holder_entry = matching_cabp_trendline.get("trendline", {}).get("Order_holder_entry")
-            
-            # Validate order_type and order_holder_entry
-            if order_type not in ["long", "short"] or order_holder_entry is None:
-                warning = f"Invalid order_type {order_type} or missing Order_holder_entry for trendline {trendline_type} in {market} {timeframe}"
-                log_and_print(warning, "WARNING")
-                status_report["warnings"].append(warning)
-                pricecandle_trendline["executioner candle"] = {"status": "No executioner candle"}
-                pricecandle_trendline.setdefault("contract status summary", {})["contract status"] = "pending"
-                updated_pricecandle_data.append(pricecandle_trendline)
-                executioner_candles_not_found += 1
-                trendlines_processed += 1
-                continue
-            
-            # Validate order_holder_entry against pricecandle.json
-            order_holder = pricecandle_trendline.get("order_holder", {})
-            expected_entry = float(order_holder.get("High" if order_type == "long" else "Low", 0))
-            price_tolerance = 1e-3
-            if expected_entry == 0 or abs(float(order_holder_entry) - expected_entry) > price_tolerance:
-                warning = f"Mismatch in Order_holder_entry for trendline {trendline_type} in {market} {timeframe}. Expected: {expected_entry}, Got: {order_holder_entry}, Diff: {abs(float(order_holder_entry) - expected_entry)}"
-                log_and_print(warning, "INFO")
-                status_report["warnings"].append(warning)
-                pricecandle_trendline["executioner candle"] = {"status": "No executioner candle due to Order_holder_entry mismatch"}
-                pricecandle_trendline.setdefault("contract status summary", {})["contract status"] = "pending"
-                updated_pricecandle_data.append(pricecandle_trendline)
-                executioner_candles_not_found += 1
-                trendlines_processed += 1
-                continue
-            
-            # Search for a matching candle
-            matching_candle = None
-            for candle in matching_cabp_trendline.get("candles", []):
-                high_price = candle.get("High")
-                low_price = candle.get("Low")
-                close_price = candle.get("Close")
-                
-                if order_type == "long" and low_price is not None and close_price is not None and order_holder_entry is not None:
-                    if low_price <= order_holder_entry + price_tolerance and close_price <= order_holder_entry:
-                        log_and_print(
-                            f"Buy_limit (long) order execution confirmed: low_price={low_price}, close_price={close_price}, order_holder_entry={order_holder_entry} for position {candle.get('position_number')} in {market} {timeframe}", "DEBUG"
-                        )
-                        matching_candle = {
-                            "status": "Candle found at order holder entry level",
-                            "position_number": candle.get("position_number"),
-                            "Time": candle.get("Time"),
-                            "Open": candle.get("Open"),
-                            "High": high_price,
-                            "Low": low_price,
-                            "Close": close_price
-                        }
-                        break
-                elif order_type == "short" and high_price is not None and close_price is not None and order_holder_entry is not None:
-                    if high_price >= order_holder_entry - price_tolerance and close_price >= order_holder_entry:
-                        log_and_print(
-                            f"Sell_limit (short) order execution confirmed: high_price={high_price}, close_price={close_price}, order_holder_entry={order_holder_entry} for position {candle.get('position_number')} in {market} {timeframe}", "DEBUG"
-                        )
-                        matching_candle = {
-                            "status": "Candle found at order holder entry level",
-                            "position_number": candle.get("position_number"),
-                            "Time": candle.get("Time"),
-                            "Open": candle.get("Open"),
-                            "High": high_price,
-                            "Low": low_price,
-                            "Close": close_price
-                        }
-                        break
-            
-            # Handle the current price candle (position 0) separately
-            if not matching_candle:
-                current_candle = next((c for c in matching_cabp_trendline.get("candles", []) if c.get("position_number") == 0), None)
-                if current_candle:
-                    high_price = current_candle.get("High")
-                    low_price = current_candle.get("Low")
-                    close_price = current_candle.get("Close")
-                    if order_type == "long" and low_price is not None and order_holder_entry is not None:
-                        if low_price <= order_holder_entry + price_tolerance and (close_price is None or close_price <= order_holder_entry):
-                            log_and_print(
-                                f"Buy_limit (long) order execution confirmed (current candle): low_price={low_price}, close_price={close_price}, order_holder_entry={order_holder_entry} for position 0 in {market} {timeframe}", "DEBUG"
-                            )
-                            matching_candle = {
-                                "status": "Candle found at order holder entry level",
-                                "position_number": 0,
-                                "Time": current_candle.get("Time"),
-                                "Open": current_candle.get("Open"),
-                                "High": high_price,
-                                "Low": low_price,
-                                "Close": close_price if close_price is not None else None
-                            }
-                    elif order_type == "short" and high_price is not None and order_holder_entry is not None:
-                        if high_price >= order_holder_entry - price_tolerance and (close_price is None or close_price >= order_holder_entry):
-                            log_and_print(
-                                f"Sell_limit (short) order execution confirmed (current candle): high_price={high_price}, close_price={close_price}, order_holder_entry={order_holder_entry} for position 0 in {market} {timeframe}", "DEBUG"
-                            )
-                            matching_candle = {
-                                "status": "Candle found at order holder entry level",
-                                "position_number": 0,
-                                "Time": current_candle.get("Time"),
-                                "Open": current_candle.get("Open"),
-                                "High": high_price,
-                                "Low": low_price,
-                                "Close": close_price if close_price is not None else None
-                            }
-            
-            # Update pricecandle_trendline
-            if matching_candle:
-                pricecandle_trendline["executioner candle"] = matching_candle
-                pricecandle_trendline.setdefault("contract status summary", {})["contract status"] = "executed"
-                log_and_print(
-                    f"Executioner candle found for trendline {trendline_type}: status={matching_candle['status']}, position={matching_candle['position_number']}, time={matching_candle['Time']} in {market} {timeframe}", "INFO"
-                )
-                executioner_candles_found += 1
-            else:
-                pricecandle_trendline["executioner candle"] = {"status": "No executioner candle"}
-                pricecandle_trendline.setdefault("contract status summary", {})["contract status"] = "pending"
-                log_and_print(
-                    f"No executioner candle found for trendline {trendline_type} in {market} {timeframe}. Order_type: {order_type}, Order_holder_entry: {order_holder_entry}", "INFO"
-                )
-                executioner_candles_not_found += 1
-            
-            updated_pricecandle_data.append(pricecandle_trendline)
-            trendlines_processed += 1
-        
-        # Update status report
-        status_report["trendlines_processed"] = trendlines_processed
-        status_report["executioner_candles_found"] = executioner_candles_found
-        status_report["executioner_candles_not_found"] = executioner_candles_not_found
-        
-        # Save updated pricecandle.json
-        if os.path.exists(pricecandle_json_path):
-            os.remove(pricecandle_json_path)
-            log_and_print(f"Existing {pricecandle_json_path} deleted", "INFO")
-        
-        try:
-            with open(pricecandle_json_path, 'w') as f:
-                json.dump(updated_pricecandle_data, f, indent=4)
-            log_and_print(f"Updated pricecandle.json with {executioner_candles_found} executioner candles found and {executioner_candles_not_found} not found for {market} {timeframe}", "SUCCESS")
-            status_report["status"] = "success"
-            status_report["message"] = f"Processed {trendlines_processed} trendlines: {executioner_candles_found} executioner candles found, {executioner_candles_not_found} not found"
-            return True, None, "success", status_report
-        except Exception as e:
-            error_message = f"Error saving updated pricecandle.json for {market} {timeframe}: {e}"
-            log_and_print(error_message, "ERROR")
-            status_report["message"] = error_message
-            return False, error_message, "failed", status_report
-    
-    except Exception as e:
-        error_message = f"Error processing executioner candle for {market} {timeframe}: {e}"
-        log_and_print(error_message, "ERROR")
-        status_report["message"] = error_message
-        return False, error_message, "failed", status_report
-     
 def fetchlotsizeandriskallowed(json_dir: str = BASE_OUTPUT_FOLDER) -> bool:
-    """Fetch all lot size and allowed risk data from ciphercontracts_lotsizeandrisk table and save to lotsizeandrisk.json."""
+    """Fetch all lot size and allowed risk data from ciphercontracts_lotsizeandrisk table and save to lotsizes.json."""
     log_and_print("Fetching all lot size and allowed risk data", "INFO")
     
     # Initialize error log list
     error_log = []
     
     # Define error log file path
-    error_json_path = os.path.join(BASE_PROCESSING_FOLDER, "fetchlotsizeandriskerror.json")
+    error_json_path = os.path.join(BASE_ERROR_FOLDER, "fetchlotsizeandriskerror.json")
     
     # Helper function to save errors to JSON
     def save_errors():
@@ -1741,7 +1622,7 @@ def fetchlotsizeandriskallowed(json_dir: str = BASE_OUTPUT_FOLDER) -> bool:
                 })
             
             # Define output path for single JSON file
-            output_json_path = os.path.join(json_dir, "lotsizeandrisk.json")
+            output_json_path = os.path.join(json_dir, "lotsizes.json")
             
             # Delete existing file if it exists
             if os.path.exists(output_json_path):
@@ -1800,10 +1681,11 @@ def fetchlotsizeandriskallowed(json_dir: str = BASE_OUTPUT_FOLDER) -> bool:
     save_errors()
     return False
 def executefetchlotsizeandrisk():
-    # Fetch lot size and allowed risk data once
-        if not fetchlotsizeandriskallowed():
-            log_and_print("Failed to fetch lot size and allowed risk data. Exiting.", "ERROR")
-            return
+    """Execute the fetchlotsizeandriskallowed function."""
+    if not fetchlotsizeandriskallowed():
+        log_and_print("Failed to fetch lot size and allowed risk data. Exiting.", "ERROR")
+        return False
+    return True
 
 def getorderholderpriceswithlotsizeandrisk(market: str, timeframe: str, json_dir: str) -> tuple[bool, dict]:
     """Fetch order holder prices, calculate exit and profit prices using lot size and allowed risk from centralized lotsizeandrisk.json, and save to calculatedprices.json."""
@@ -2288,7 +2170,7 @@ def getorderholderpriceswithlotsizeandrisk(market: str, timeframe: str, json_dir
         return False, status_report
 
 def PendingOrderUpdater(market: str, timeframe: str, json_dir: str) -> tuple[bool, dict]:
-    """Update pending orders in pricecandle.json based on calculatedprices.json and candle_data.json."""
+    """Update pending orders in pricecandle.json based on calculatedprices.json, handling duplicates."""
     log_and_print(f"Updating pending orders for market={market}, timeframe={timeframe}", "INFO")
     
     # Initialize status report
@@ -2306,7 +2188,6 @@ def PendingOrderUpdater(market: str, timeframe: str, json_dir: str) -> tuple[boo
     # Define file paths
     pricecandle_json_path = os.path.join(json_dir, "pricecandle.json")
     calculatedprices_json_path = os.path.join(json_dir, "calculatedprices.json")
-    candle_data_json_path = os.path.join(json_dir, "candle_data.json")
     
     # Check if required JSON files exist
     if not os.path.exists(pricecandle_json_path):
@@ -2316,10 +2197,6 @@ def PendingOrderUpdater(market: str, timeframe: str, json_dir: str) -> tuple[boo
     if not os.path.exists(calculatedprices_json_path):
         log_and_print(f"calculatedprices.json not found at {calculatedprices_json_path} for {market} {timeframe}", "ERROR")
         status_report["message"] = f"calculatedprices.json not found at {calculatedprices_json_path}"
-        return False, status_report
-    if not os.path.exists(candle_data_json_path):
-        log_and_print(f"candle_data.json not found at {candle_data_json_path} for {market} {timeframe}", "ERROR")
-        status_report["message"] = f"candle_data.json not found at {candle_data_json_path}"
         return False, status_report
     
     try:
@@ -2331,10 +2208,6 @@ def PendingOrderUpdater(market: str, timeframe: str, json_dir: str) -> tuple[boo
         with open(calculatedprices_json_path, 'r') as f:
             calculatedprices_data = json.load(f)
         
-        # Load candle_data.json
-        with open(candle_data_json_path, 'r') as f:
-            candle_data = json.load(f)
-        
         # Prepare updated pricecandle data
         updated_pricecandle_data = []
         duplicates_removed = 0
@@ -2343,11 +2216,10 @@ def PendingOrderUpdater(market: str, timeframe: str, json_dir: str) -> tuple[boo
         for pricecandle_trendline in pricecandle_data:
             order_type = pricecandle_trendline.get("receiver", {}).get("order_type", "").lower()
             order_holder = pricecandle_trendline.get("order_holder", {})
-            executioner_candle = pricecandle_trendline.get("executioner candle", {})
+            actual_price = order_holder.get("High" if order_type == "long" else "Low", 0)
             
             # Find matching calculatedprices entry
             matching_calculated = None
-            actual_price = order_holder.get("High" if order_type == "long" else "Low", 0)
             if order_type == "long":
                 for calc_entry in calculatedprices_data:
                     if (calc_entry.get("order_type") == "buy_limit" and 
@@ -2361,31 +2233,21 @@ def PendingOrderUpdater(market: str, timeframe: str, json_dir: str) -> tuple[boo
                         matching_calculated = calc_entry
                         break
             
-            # Handle case with no valid executioner candle
-            if executioner_candle.get("status") != "Candle found at order holder entry level":
-                log_and_print(f"No valid executioner candle for trendline {pricecandle_trendline.get('type')} in {market} {timeframe}", "INFO")
-                if not matching_calculated:
-                    log_and_print(
-                        f"Mismatch in Order_holder_entry for trendline {pricecandle_trendline.get('type')} in {market} {timeframe}. "
-                        f"Expected: {calc_entry.get('entry_price', 'N/A') if calc_entry else 'N/A'}, Got: {actual_price}. Skipping.",
-                        "INFO"
-                    )
-                    status_report["warnings"].append(f"Mismatch in Order_holder_entry for trendline {pricecandle_trendline.get('type')}")
-                    continue
-                # Update pending order
+            # Update pending order
+            if matching_calculated:
                 pricecandle_trendline["pending order"] = {
                     "status": f"{matching_calculated.get('order_type', 'unknown')} {matching_calculated.get('entry_price', 'N/A')}"
                 }
-                for key in ["executioner candle", "stoploss", "1:0.5 candle", "1:1 candle", "1:2 candle", "profit candle", "contract status summary"]:
-                    pricecandle_trendline.pop(key, None)
                 updated_pricecandle_data.append(pricecandle_trendline)
                 status_report["orders_updated"] += 1
+            else:
+                log_and_print(
+                    f"No matching calculated price for trendline {pricecandle_trendline.get('type')} in {market} {timeframe}. "
+                    f"Expected: {actual_price}. Skipping.",
+                    "INFO"
+                )
+                status_report["warnings"].append(f"No matching calculated price for trendline {pricecandle_trendline.get('type')}")
                 continue
-            
-            # If executioner candle exists, clear pending order
-            pricecandle_trendline.pop("pending order", None)
-            updated_pricecandle_data.append(pricecandle_trendline)
-            status_report["orders_updated"] += 1
         
         # Check for duplicates based on entry_price and keep the oldest
         final_pricecandle_data = []
@@ -2426,7 +2288,7 @@ def PendingOrderUpdater(market: str, timeframe: str, json_dir: str) -> tuple[boo
                     }
             final_pricecandle_data.append(trendline)
         
-        # Save final pricecandle.json
+        # Save updated pricecandle.json
         if os.path.exists(pricecandle_json_path):
             os.remove(pricecandle_json_path)
             log_and_print(f"Existing {pricecandle_json_path} deleted", "INFO")
@@ -2452,7 +2314,7 @@ def PendingOrderUpdater(market: str, timeframe: str, json_dir: str) -> tuple[boo
         status_report["message"] = f"Unexpected error: {str(e)}"
         return False, status_report
 def collect_all_pending_orders(market: str, timeframe: str, json_dir: str) -> tuple[bool, dict]:
-    """Collect all pending orders from pricecandle.json for a specific market and timeframe,
+    """Collect all pending orders from pricecandle.json and fetchedpendingorders.json for a specific market and timeframe,
     save to contractpendingorders.json, and aggregate across all markets and timeframes to temp_pendingorders.json."""
     log_and_print(f"Collecting pending orders for market={market}, timeframe={timeframe}", "INFO")
     
@@ -2472,6 +2334,7 @@ def collect_all_pending_orders(market: str, timeframe: str, json_dir: str) -> tu
     # Define file paths
     pricecandle_json_path = os.path.join(json_dir, "pricecandle.json")
     calculatedprices_json_path = os.path.join(json_dir, "calculatedprices.json")
+    fetchedpendingorders_json_path = os.path.join(json_dir, "fetchedpendingorders.json")
     pending_orders_json_path = os.path.join(json_dir, "contractpendingorders.json")
     collective_pending_path = os.path.join(BASE_OUTPUT_FOLDER, "temp_pendingorders.json")
     
@@ -2494,11 +2357,28 @@ def collect_all_pending_orders(market: str, timeframe: str, json_dir: str) -> tu
         with open(calculatedprices_json_path, 'r') as f:
             calculatedprices_data = json.load(f)
         
+        # Load fetchedpendingorders.json if it exists
+        fetched_pending_orders = []
+        if os.path.exists(fetchedpendingorders_json_path):
+            try:
+                with open(fetchedpendingorders_json_path, 'r') as f:
+                    fetched_data = json.load(f)
+                if isinstance(fetched_data, dict) and "orders" in fetched_data:
+                    fetched_pending_orders = fetched_data["orders"]
+                    log_and_print(f"Loaded {len(fetched_pending_orders)} orders from fetchedpendingorders.json for {market} {timeframe}", "INFO")
+                else:
+                    log_and_print(f"Invalid data format in fetchedpendingorders.json for {market} {timeframe}", "WARNING")
+                    status_report["warnings"].append("Invalid data format in fetchedpendingorders.json")
+            except Exception as e:
+                log_and_print(f"Error reading fetchedpendingorders.json for {market} {timeframe}: {str(e)}", "WARNING")
+                status_report["warnings"].append(f"Error reading fetchedpendingorders.json: {str(e)}")
+        
         # Extract pending orders from pricecandle.json
         contract_pending_orders = []
         seen_entry_prices = {}
         skipped_reasons = {}
         
+        # Process pricecandle.json orders
         for trendline in pricecandle_data:
             pending_order = trendline.get("pending order", {})
             trendline_type = trendline.get("type")
@@ -2605,31 +2485,139 @@ def collect_all_pending_orders(market: str, timeframe: str, json_dir: str) -> tu
                     "order_holder_timestamp": order_holder_timestamp
                 }
         
-        for entry in seen_entry_prices.values():
-            trendline = entry["trendline"]
-            matching_calculated = entry["matching_calculated"]
-            trendline_type = trendline.get("type")
-            order_holder = trendline.get("order_holder", {})
-            order_holder_position = order_holder.get("position_number")
-            order_holder_timestamp = order_holder.get("Time", "N/A")
-            order_type = trendline.get("receiver", {}).get("order_type", "").lower()
+        # Process fetchedpendingorders.json orders
+        for fetched_order in fetched_pending_orders:
+            order_type = fetched_order.get("order_type", "").lower()
+            actual_price = fetched_order.get("entry_price", 0)
+            order_holder_timestamp = fetched_order.get("created_at", "N/A")
             
-            contract_entry = {
-                "market": market,
-                "pair": matching_calculated.get("pair", market),
-                "timeframe": timeframe,
-                "order_type": matching_calculated.get("order_type"),
-                "entry_price": matching_calculated.get("entry_price", 0.0),
-                "exit_price": matching_calculated.get("exit_price", 0.0),
-                "1:0.5_price": matching_calculated.get("1:0.5_price", 0.0),
-                "1:1_price": matching_calculated.get("1:1_price", 0.0),
-                "1:2_price": matching_calculated.get("1:2_price", 0.0),
-                "profit_price": matching_calculated.get("profit_price", 0.0),
-                "lot_size": matching_calculated.get("lot_size", 0.0),
-                "trendline_type": trendline_type,
-                "order_holder_position": order_holder_position,
-                "order_holder_timestamp": order_holder_timestamp
-            }
+            if actual_price == 0:
+                skipped_reasons[f"fetched_order_{order_holder_timestamp}"] = "Invalid entry price"
+                log_and_print(f"Invalid entry price for fetched order at {order_holder_timestamp} in {market} {timeframe}", "WARNING")
+                status_report["warnings"].append(f"Invalid entry price for fetched order at {order_holder_timestamp}")
+                continue
+            
+            matching_calculated = None
+            price_tolerance = 1e-3
+            for calc_entry in calculatedprices_data:
+                calc_order_type = calc_entry.get("order_type", "").lower()
+                calc_entry_price = calc_entry.get("entry_price", 0)
+                if calc_order_type == order_type and abs(calc_entry_price - actual_price) < price_tolerance:
+                    matching_calculated = calc_entry
+                    log_and_print(
+                        f"Matched fetched order: fetched_entry={actual_price}, "
+                        f"calc_entry={calc_entry_price}, price_diff={abs(calc_entry_price - actual_price)}, "
+                        f"order_type={order_type}",
+                        "DEBUG"
+                    )
+                    break
+            
+            if not matching_calculated:
+                skipped_reasons[f"fetched_order_{order_holder_timestamp}"] = f"No matching calculated prices for entry_price={actual_price}, order_type={order_type}"
+                log_and_print(
+                    f"No matching calculated prices found for fetched order at {order_holder_timestamp} with entry_price {actual_price} in {market} {timeframe}",
+                    "WARNING"
+                )
+                status_report["warnings"].append(f"No matching calculated prices for fetched order at {order_holder_timestamp}")
+                continue
+            
+            if matching_calculated.get("order_type").lower() != order_type:
+                skipped_reasons[f"fetched_order_{order_holder_timestamp}"] = f"Order type mismatch: fetched={order_type}, calculatedprices={matching_calculated.get('order_type')}"
+                log_and_print(
+                    f"Order type mismatch for fetched order at {order_holder_timestamp} in {market} {timeframe}: "
+                    f"fetched={order_type}, calculatedprices={matching_calculated.get('order_type')}",
+                    "WARNING"
+                )
+                status_report["warnings"].append(f"Order type mismatch for fetched order at {order_holder_timestamp}")
+                continue
+            
+            if abs(matching_calculated.get("entry_price") - actual_price) > price_tolerance:
+                skipped_reasons[f"fetched_order_{order_holder_timestamp}"] = f"Entry price mismatch: fetched={actual_price}, calculatedprices={matching_calculated.get('entry_price')}"
+                log_and_print(
+                    f"Entry price mismatch for fetched order at {order_holder_timestamp} in {market} {timeframe}: "
+                    f"fetched={actual_price}, calculatedprices={matching_calculated.get('entry_price')}",
+                    "WARNING"
+                )
+                status_report["warnings"].append(f"Entry price mismatch for fetched order at {order_holder_timestamp}")
+                continue
+            
+            if actual_price in seen_entry_prices:
+                existing_time = seen_entry_prices[actual_price]["order_holder_timestamp"]
+                if order_holder_timestamp < existing_time:
+                    seen_entry_prices[actual_price] = {
+                        "fetched_order": fetched_order,
+                        "matching_calculated": matching_calculated,
+                        "order_holder_timestamp": order_holder_timestamp
+                    }
+                    log_and_print(
+                        f"Duplicate pending order detected for fetched order with entry_price {actual_price} in {market} {timeframe}. "
+                        f"Keeping older entry at {order_holder_timestamp}.",
+                        "INFO"
+                    )
+                else:
+                    skipped_reasons[f"fetched_order_{order_holder_timestamp}"] = f"Duplicate entry_price {actual_price}, newer timestamp {order_holder_timestamp}"
+                    log_and_print(
+                        f"Duplicate pending order detected for fetched order with entry_price {actual_price} in {market} {timeframe}. "
+                        f"Discarding newer entry at {order_holder_timestamp}.",
+                        "INFO"
+                    )
+                    status_report["warnings"].append(f"Duplicate pending order for fetched order at {order_holder_timestamp}")
+                    continue
+            else:
+                seen_entry_prices[actual_price] = {
+                    "fetched_order": fetched_order,
+                    "matching_calculated": matching_calculated,
+                    "order_holder_timestamp": order_holder_timestamp
+                }
+        
+        # Process all unique orders (from pricecandle and fetchedpendingorders)
+        for entry in seen_entry_prices.values():
+            trendline = entry.get("trendline")
+            fetched_order = entry.get("fetched_order")
+            matching_calculated = entry["matching_calculated"]
+            order_holder_timestamp = entry["order_holder_timestamp"]
+            
+            if trendline:
+                trendline_type = trendline.get("type")
+                order_holder = trendline.get("order_holder", {})
+                order_holder_position = order_holder.get("position_number")
+                order_type = trendline.get("receiver", {}).get("order_type", "").lower()
+                trendline_type = "ph-to-ph" if order_type == "long" else "pl-to-pl"
+                contract_entry = {
+                    "market": market,
+                    "pair": matching_calculated.get("pair", market),
+                    "timeframe": timeframe,
+                    "order_type": matching_calculated.get("order_type"),
+                    "entry_price": matching_calculated.get("entry_price", 0.0),
+                    "exit_price": matching_calculated.get("exit_price", 0.0),
+                    "1:0.5_price": matching_calculated.get("1:0.5_price", 0.0),
+                    "1:1_price": matching_calculated.get("1:1_price", 0.0),
+                    "1:2_price": matching_calculated.get("1:2_price", 0.0),
+                    "profit_price": matching_calculated.get("profit_price", 0.0),
+                    "lot_size": matching_calculated.get("lot_size", 0.0),
+                    "trendline_type": trendline_type,
+                    "order_holder_position": order_holder_position,
+                    "order_holder_timestamp": order_holder_timestamp
+                }
+            else:
+                order_type = fetched_order.get("order_type", "").lower()
+                trendline_type = "ph-to-ph" if order_type == "buy_limit" else "pl-to-pl"
+                contract_entry = {
+                    "market": fetched_order.get("market", market),
+                    "pair": fetched_order.get("pair", market),
+                    "timeframe": fetched_order.get("timeframe", timeframe),
+                    "order_type": fetched_order.get("order_type"),
+                    "entry_price": fetched_order.get("entry_price", 0.0),
+                    "exit_price": fetched_order.get("exit_price", 0.0),
+                    "1:0.5_price": fetched_order.get("1:0.5_price", 0.0),
+                    "1:1_price": fetched_order.get("1:1_price", 0.0),
+                    "1:2_price": fetched_order.get("1:2_price", 0.0),
+                    "profit_price": fetched_order.get("profit_price", 0.0),
+                    "lot_size": matching_calculated.get("lot_size", 0.0),
+                    "trendline_type": trendline_type,
+                    "order_holder_position": None,
+                    "order_holder_timestamp": order_holder_timestamp
+                }
             
             if any(price <= 0 for price in [
                 contract_entry["entry_price"],
@@ -2639,29 +2627,31 @@ def collect_all_pending_orders(market: str, timeframe: str, json_dir: str) -> tu
                 contract_entry["1:2_price"],
                 contract_entry["profit_price"]
             ]):
-                skipped_reasons[trendline_type] = f"Invalid price values: {contract_entry}"
-                log_and_print(f"Invalid price values for trendline {trendline_type} in {market} {timeframe}: {contract_entry}", "WARNING")
-                status_report["warnings"].append(f"Invalid price values for trendline {trendline_type}")
+                key = trendline_type if trendline else f"fetched_order_{order_holder_timestamp}"
+                skipped_reasons[key] = f"Invalid price values: {contract_entry}"
+                log_and_print(f"Invalid price values for {key} in {market} {timeframe}: {contract_entry}", "WARNING")
+                status_report["warnings"].append(f"Invalid price values for {key}")
                 continue
             
             if contract_entry["lot_size"] <= 0:
-                skipped_reasons[trendline_type] = f"Invalid lot_size {contract_entry['lot_size']}"
-                log_and_print(f"Invalid lot_size {contract_entry['lot_size']} for trendline {trendline_type} in {market} {timeframe}", "WARNING")
-                status_report["warnings"].append(f"Invalid lot_size for trendline {trendline_type}")
+                key = trendline_type if trendline else f"fetched_order_{order_holder_timestamp}"
+                skipped_reasons[key] = f"Invalid lot_size {contract_entry['lot_size']}"
+                log_and_print(f"Invalid lot_size {contract_entry['lot_size']} for {key} in {market} {timeframe}", "WARNING")
+                status_report["warnings"].append(f"Invalid lot_size for {key}")
                 continue
             
             contract_pending_orders.append(contract_entry)
             status_report["pending_orders_collected"] += 1
             log_and_print(
-                f"Added pending order for trendline {trendline_type}: order_type={contract_entry['order_type']}, "
+                f"Added pending order for {trendline_type if trendline else 'fetched_order'}: order_type={contract_entry['order_type']}, "
                 f"entry_price={contract_entry['entry_price']}, exit_price={contract_entry['exit_price']}, "
                 f"lot_size={contract_entry['lot_size']} in {market} {timeframe}",
                 "DEBUG"
             )
         
         if skipped_reasons:
-            log_and_print(f"Skipped trendlines in {market} {timeframe}: {skipped_reasons}", "INFO")
-            status_report["warnings"].extend([f"Skipped trendline {k}: {v}" for k, v in skipped_reasons.items()])
+            log_and_print(f"Skipped entries in {market} {timeframe}: {skipped_reasons}", "INFO")
+            status_report["warnings"].extend([f"Skipped {k}: {v}" for k, v in skipped_reasons.items()])
         if not contract_pending_orders:
             log_and_print(f"No pending orders collected for {market} {timeframe}. Skipped reasons: {skipped_reasons}", "WARNING")
             status_report["message"] = "No pending orders collected"
@@ -2742,668 +2732,513 @@ def collect_all_pending_orders(market: str, timeframe: str, json_dir: str) -> tu
         log_and_print(f"Error collecting pending orders for {market} {timeframe}: {str(e)}", "ERROR")
         status_report["message"] = f"Unexpected error: {str(e)}"
         return False, status_report
-def lockpendingorders() -> tuple[bool, dict]:
-    """Move orders from temp_pendingorders.json to lockedpendingorders.json, add order_status: 'locked',
-    check and skip duplicates, remove duplicates in locked orders, move or replace up to three buy_limit
-    and three sell_limit orders per pair and timeframe, and include summary counts."""
-    log_and_print("Starting to lock pending orders", "INFO")
+
+def validatesignals():
+    """Initialize MT5, fetch available symbols, validate signals from temp_pendingorders.json, place limit orders for valid signals, and categorize as valid or invalid price."""
+    log_and_print("===== Verifying Signals with Server =====", "TITLE")
     
-    # Initialize status report
-    status_report = {
-        "status": "failed",
-        "message": "",
-        "orders_locked": 0,
-        "orders_skipped": 0,
-        "duplicates_removed": 0,
-        "orders_retained": 0,
-        "warnings": [],
-        "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00')
-    }
+    # Define MT5 credentials and terminal path
+    TERMINAL_PATH = r"C:\Program Files\MetaTrader 5\terminal64.exe"
+    LOGIN_ID = "101347351"
+    PASSWORD = "@Techknowdge12#"
+    SERVER = "DerivSVG-Server-02"
     
-    # Define file paths
-    collective_pending_path = os.path.join(BASE_OUTPUT_FOLDER, "temp_pendingorders.json")
-    locked_pending_path = os.path.join(BASE_OUTPUT_FOLDER, "lockedpendingorders.json")
-    output_log_path = r"C:\xampp\htdocs\CIPHER\cipher i\programmes\chart\Outputs\lockedpendingorderoutputs.json"
+    # Define paths
+    BASE_OUTPUT_FOLDER = r"C:\xampp\htdocs\CIPHER\cipher i\programmes\chart\orders"
+    BASE_ERROR_FOLDER = r"C:\xampp\htdocs\CIPHER\cipher i\programmes\chart\orders\debugs"
+    signals_json_path = os.path.join(BASE_OUTPUT_FOLDER, "temp_pendingorders.json")
+    valid_json_path = os.path.join(BASE_OUTPUT_FOLDER, "validpendingorders.json")
+    valid_pairs_path = os.path.join(BASE_OUTPUT_FOLDER, "validpendingpairs.json")
+    invalid_json_path = os.path.join(BASE_OUTPUT_FOLDER, "invalidexecutedorders.json")
     
-    # Ensure output directory exists
-    os.makedirs(os.path.dirname(output_log_path), exist_ok=True)
+    # Initialize error log list
+    error_log = []
+    error_json_path = os.path.join(BASE_ERROR_FOLDER, "validatesignalserror.json")
     
-    # Initialize counters
-    total_processed = 0
-    total_skipped = 0
-    total_duplicates = 0
-    total_retained = 0
-    error_messages = []
+    # Helper function to save errors to JSON
+    def save_errors():
+        try:
+            os.makedirs(BASE_ERROR_FOLDER, exist_ok=True)
+            with open(error_json_path, 'w') as f:
+                json.dump(error_log, f, indent=4)
+            log_and_print(f"Errors saved to {error_json_path}", "INFO")
+        except Exception as e:
+            log_and_print(f"Failed to save errors to {error_json_path}: {str(e)}", "ERROR")
     
-    # Check if temp_pendingorders.json exists
-    if not os.path.exists(collective_pending_path):
-        error_msg = f"temp_pendingorders.json not found at {collective_pending_path}"
-        log_and_print(error_msg, "ERROR")
-        error_messages.append(error_msg)
-        status_report["message"] = error_msg
-        with open(output_log_path, 'w') as f:
-            f.write(f"ERROR: {error_msg}\n")
-        return False, status_report
+    # Helper function to normalize timeframe
+    def normalize_timeframe(timeframe):
+        timeframe = timeframe.lower().replace('minutes', 'm').replace('hour', 'h').replace('hours', 'h')
+        timeframe_map = {
+            'm5': '5m',
+            'm15': '15m',
+            'm30': '30m',
+            'h1': '1h',
+            'h4': '4h'
+        }
+        return timeframe_map.get(timeframe, timeframe)
     
+    # Verify terminal executable exists
+    if not os.path.exists(TERMINAL_PATH):
+        error_log.append({
+            "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+            "error": f"MT5 terminal executable not found at {TERMINAL_PATH}"
+        })
+        save_errors()
+        log_and_print(f"MT5 terminal executable not found at {TERMINAL_PATH}", "ERROR")
+        return 0, 0, 0, 0, 0, 0, 0
+    
+    # Read temp_pendingorders.json
+    signals_data = {}
     try:
-        # Load temp_pendingorders.json
-        with open(collective_pending_path, 'r') as f:
-            temp_data = json.load(f)
-        
-        orders_to_lock = temp_data.get("orders", [])
-        if not orders_to_lock:
-            warning_msg = "No orders found in temp_pendingorders.json"
-            log_and_print(warning_msg, "WARNING")
-            error_messages.append(warning_msg)
-            status_report["warnings"].append(warning_msg)
-            with open(output_log_path, 'w') as f:
-                f.write(f"WARNING: {warning_msg}\n")
-            status_report["status"] = "success"
-            status_report["message"] = "No orders to process"
-            return True, status_report
-        
-        # Load existing lockedpendingorders.json
-        existing_locked_orders = []
-        if os.path.exists(locked_pending_path):
-            try:
-                with open(locked_pending_path, 'r') as f:
-                    existing_data = json.load(f)
-                    existing_locked_orders = existing_data.get("orders", [])
-            except Exception as e:
-                error_msg = f"Error reading lockedpendingorders.json: {str(e)}"
-                log_and_print(error_msg, "WARNING")
-                error_messages.append(error_msg)
-                status_report["warnings"].append(error_msg)
-        
-        # Remove duplicates in existing_locked_orders
-        unique_locked_orders = []
-        seen_keys = set()
-        for order in existing_locked_orders:
-            key = (
-                order.get("market"),
-                order.get("timeframe"),
-                order.get("order_type"),
-                order.get("entry_price"),
-                order.get("order_holder_timestamp")
-            )
-            if key not in seen_keys:
-                unique_locked_orders.append(order)
-                seen_keys.add(key)
-            else:
-                total_duplicates += 1
-                status_report["duplicates_removed"] += 1
-                log_and_print(
-                    f"Removed duplicate order in lockedpendingorders.json: market={key[0]}, timeframe={key[1]}, "
-                    f"order_type={key[2]}, entry_price={key[3]}, timestamp={key[4]}",
-                    "INFO"
-                )
-        existing_locked_orders = unique_locked_orders
-        total_retained += len(existing_locked_orders)
-        status_report["orders_retained"] = total_retained
-        
-        # Check for duplicates in temp_pendingorders.json
-        non_duplicate_orders = []
-        for order in orders_to_lock:
-            key = (
-                order.get("market"),
-                order.get("timeframe"),
-                order.get("order_type"),
-                order.get("entry_price"),
-                order.get("order_holder_timestamp")
-            )
-            if key in seen_keys:
-                total_duplicates += 1
-                status_report["duplicates_removed"] += 1
-                log_and_print(
-                    f"Skipped duplicate order in temp_pendingorders.json: market={key[0]}, timeframe={key[1]}, "
-                    f"order_type={key[2]}, entry_price={key[3]}, timestamp={key[4]}",
-                    "INFO"
-                )
-                continue
-            non_duplicate_orders.append(order)
-            seen_keys.add(key)
-        
-        # Group orders by pair, timeframe, and order_type
-        temp_orders_by_pair_tf_type = {}
-        for order in non_duplicate_orders:
-            pair = order.get("pair")
-            timeframe = order.get("timeframe")
-            order_type = order.get("order_type")
-            if not all([pair, timeframe, order_type]):
-                total_skipped += 1
-                status_report["orders_skipped"] += 1
-                log_and_print(
-                    f"Skipped order due to missing fields: {order}",
-                    "WARNING"
-                )
-                status_report["warnings"].append(f"Skipped order due to missing fields: {order}")
-                continue
-            key = (pair, timeframe, order_type)
-            if key not in temp_orders_by_pair_tf_type:
-                temp_orders_by_pair_tf_type[key] = []
-            temp_orders_by_pair_tf_type[key].append(order)
-        
-        locked_orders_by_pair_tf_type = {}
-        for order in existing_locked_orders:
-            pair = order.get("pair")
-            timeframe = order.get("timeframe")
-            order_type = order.get("order_type")
-            if not all([pair, timeframe, order_type]):
-                total_skipped += 1
-                status_report["orders_skipped"] += 1
-                log_and_print(
-                    f"Skipped existing locked order due to missing fields: {order}",
-                    "WARNING"
-                )
-                status_report["warnings"].append(f"Skipped existing locked order due to missing fields")
-                continue
-            key = (pair, timeframe, order_type)
-            if key not in locked_orders_by_pair_tf_type:
-                locked_orders_by_pair_tf_type[key] = []
-            locked_orders_by_pair_tf_type[key].append(order)
-        
-        timeframe_counts_locked = {
-            "5minutes": 0,
-            "15minutes": 0,
-            "30minutes": 0,
-            "1Hour": 0,
-            "4Hours": 0
-        }
-        
-        DB_TIMEFRAME_MAPPING = {
-            "M5": "5minutes",
-            "M15": "15minutes",
-            "M30": "30minutes",
-            "H1": "1Hour",
-            "H4": "4Hours",
-            "5m": "5minutes",
-            "15m": "15minutes",
-            "30m": "30minutes",
-            "1h": "1Hour",
-            "4h": "4Hours"
-        }
-        
-        locked_orders = []
-        new_locked_count = 0
-        
-        pair_tf_combinations = set((pair, timeframe) for pair, timeframe, _ in temp_orders_by_pair_tf_type)
-        
-        for pair, timeframe in pair_tf_combinations:
-            buy_key = (pair, timeframe, "buy_limit")
-            sell_key = (pair, timeframe, "sell_limit")
-            
-            temp_buy_orders = temp_orders_by_pair_tf_type.get(buy_key, [])
-            existing_buy_orders = locked_orders_by_pair_tf_type.get(buy_key, [])
-            locked_buy_orders = [order for order in existing_buy_orders if order.get("order_status") == "locked"]
-            remaining_buy_slots = 3 - len(locked_buy_orders)
-            
-            if remaining_buy_slots <= 0:
-                total_skipped += len(temp_buy_orders)
-                status_report["orders_skipped"] += len(temp_buy_orders)
-                log_and_print(
-                    f"No slots available for buy_limit orders for pair={pair}, timeframe={timeframe}. Keeping {len(locked_buy_orders)} existing orders.",
-                    "INFO"
-                )
-                locked_orders.extend(existing_buy_orders)
-            else:
-                sorted_buy_orders = sorted(
-                    temp_buy_orders,
-                    key=lambda x: x.get("entry_price", float('inf'))
-                )
-                selected_buy_orders = sorted_buy_orders[:min(remaining_buy_slots, len(sorted_buy_orders))]
-                
-                for order in selected_buy_orders:
-                    locked_order = order.copy()
-                    locked_order["order_status"] = "locked"
-                    locked_orders.append(locked_order)
-                    new_locked_count += 1
-                    total_processed += 1
-                    status_report["orders_locked"] += 1
-                    log_and_print(
-                        f"Added new order for pair={pair}, timeframe={timeframe}, order_type=buy_limit: "
-                        f"entry_price={locked_order['entry_price']}",
-                        "INFO"
-                    )
-                
-                if len(sorted_buy_orders) > remaining_buy_slots:
-                    total_skipped += len(sorted_buy_orders) - remaining_buy_slots
-                    status_report["orders_skipped"] += len(sorted_buy_orders) - remaining_buy_slots
-                    for order in sorted_buy_orders[remaining_buy_slots:]:
-                        log_and_print(
-                            f"Skipped buy_limit order due to slot limit for pair={pair}, timeframe={timeframe}: "
-                            f"entry_price={order['entry_price']}",
-                            "INFO"
-                        )
-                        status_report["warnings"].append(f"Skipped buy_limit order due to slot limit for pair={pair}, timeframe={timeframe}")
-                
-                locked_orders.extend(locked_buy_orders)
-            
-            temp_sell_orders = temp_orders_by_pair_tf_type.get(sell_key, [])
-            existing_sell_orders = locked_orders_by_pair_tf_type.get(sell_key, [])
-            locked_sell_orders = [order for order in existing_sell_orders if order.get("order_status") == "locked"]
-            remaining_sell_slots = 3 - len(locked_sell_orders)
-            
-            if remaining_sell_slots <= 0:
-                total_skipped += len(temp_sell_orders)
-                status_report["orders_skipped"] += len(temp_sell_orders)
-                log_and_print(
-                    f"No slots available for sell_limit orders for pair={pair}, timeframe={timeframe}. Keeping {len(locked_sell_orders)} existing orders.",
-                    "INFO"
-                )
-                locked_orders.extend(existing_sell_orders)
-            else:
-                sorted_sell_orders = sorted(
-                    temp_sell_orders,
-                    key=lambda x: x.get("entry_price", float('-inf')),
-                    reverse=True
-                )
-                selected_sell_orders = sorted_sell_orders[:min(remaining_sell_slots, len(sorted_sell_orders))]
-                
-                for order in selected_sell_orders:
-                    locked_order = order.copy()
-                    locked_order["order_status"] = "locked"
-                    locked_orders.append(locked_order)
-                    new_locked_count += 1
-                    total_processed += 1
-                    status_report["orders_locked"] += 1
-                    log_and_print(
-                        f"Added new order for pair={pair}, timeframe={timeframe}, order_type=sell_limit: "
-                        f"entry_price={locked_order['entry_price']}",
-                        "INFO"
-                    )
-                
-                if len(sorted_sell_orders) > remaining_sell_slots:
-                    total_skipped += len(sorted_sell_orders) - remaining_sell_slots
-                    status_report["orders_skipped"] += len(sorted_sell_orders) - remaining_sell_slots
-                    for order in sorted_sell_orders[remaining_sell_slots:]:
-                        log_and_print(
-                            f"Skipped sell_limit order due to slot limit for pair={pair}, timeframe={timeframe}: "
-                            f"entry_price={order['entry_price']}",
-                            "INFO"
-                        )
-                        status_report["warnings"].append(f"Skipped sell_limit order due to slot limit for pair={pair}, timeframe={timeframe}")
-                
-                locked_orders.extend(locked_sell_orders)
-        
-        for key in locked_orders_by_pair_tf_type:
-            if key not in temp_orders_by_pair_tf_type:
-                locked_orders.extend(locked_orders_by_pair_tf_type[key])
-                count = len(locked_orders_by_pair_tf_type[key])
-                total_retained += count
-                status_report["orders_retained"] += count
-                log_and_print(
-                    f"Retained existing orders for pair={key[0]}, timeframe={key[1]}, order_type={key[2]}: "
-                    f"{count} orders",
-                    "INFO"
-                )
-        
-        for order in locked_orders:
-            timeframe = order.get("timeframe")
-            db_timeframe = DB_TIMEFRAME_MAPPING.get(timeframe, None)
-            if db_timeframe in timeframe_counts_locked:
-                timeframe_counts_locked[db_timeframe] += 1
-            else:
-                error_msg = f"Unknown timeframe {timeframe} in locked order in {order.get('market')}"
-                log_and_print(error_msg, "WARNING")
-                error_messages.append(error_msg)
-                status_report["warnings"].append(error_msg)
-        
-        locked_output = {
-            "temp_pendingorders": len(locked_orders),
-            "5minutes pending orders": timeframe_counts_locked["5minutes"],
-            "15minutes pending orders": timeframe_counts_locked["15minutes"],
-            "30minutes pending orders": timeframe_counts_locked["30minutes"],
-            "1Hour pending orders": timeframe_counts_locked["1Hour"],
-            "4Hours pending orders": timeframe_counts_locked["4Hours"],
-            "orders": locked_orders
-        }
-        
-        try:
-            with open(locked_pending_path, 'w') as f:
-                json.dump(locked_output, f, indent=4)
-            log_and_print(
-                f"Successfully saved {new_locked_count} new locked orders to {locked_pending_path} "
-                f"(total: {len(locked_orders)}, "
-                f"5m: {timeframe_counts_locked['5minutes']}, 15m: {timeframe_counts_locked['15minutes']}, "
-                f"30m: {timeframe_counts_locked['30minutes']}, 1H: {timeframe_counts_locked['1Hour']}, "
-                f"4H: {timeframe_counts_locked['4Hours']})",
-                "SUCCESS"
-            )
-            status_report["status"] = "success"
-            status_report["message"] = f"Saved {new_locked_count} new locked orders, total {len(locked_orders)}"
-        except Exception as e:
-            error_msg = f"Error saving lockedpendingorders.json: {str(e)}"
-            log_and_print(error_msg, "ERROR")
-            error_messages.append(error_msg)
-            status_report["message"] = error_msg
-            with open(output_log_path, 'w') as f:
-                f.write(f"ERROR: {error_msg}\n")
-            return False, status_report
-        
-        log_lines = []
-        log_lines.append(f"Timestamp: {datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00')}")
-        log_lines.append(f"Total Orders Processed: {total_processed}")
-        log_lines.append(f"Total Orders Skipped: {total_skipped}")
-        log_lines.append(f"Total Duplicate Orders: {total_duplicates}")
-        log_lines.append(f"Total Orders Retained: {total_retained}")
-        log_lines.append(f"Total Locked Orders Saved: {len(locked_orders)}")
-        log_lines.append(f"Timeframe Breakdown:")
-        log_lines.append(f"  5minutes: {timeframe_counts_locked['5minutes']}")
-        log_lines.append(f"  15minutes: {timeframe_counts_locked['15minutes']}")
-        log_lines.append(f"  30minutes: {timeframe_counts_locked['30minutes']}")
-        log_lines.append(f"  1Hour: {timeframe_counts_locked['1Hour']}")
-        log_lines.append(f"  4Hours: {timeframe_counts_locked['4Hours']}")
-        log_lines.append("\nDetailed Logs:")
-        log_lines.append("(Detailed logs captured in log_and_print)")
-        if error_messages:
-            log_lines.append("\nError Messages:")
-            log_lines.extend(error_messages)
-        
-        try:
-            with open(output_log_path, 'w') as f:
-                f.write("\n".join(log_lines))
-            log_and_print(f"Saved processing log to {output_log_path}", "SUCCESS")
-        except Exception as e:
-            log_and_print(f"Error saving lockedpendingorderoutputs.json: {str(e)}", "ERROR")
-            status_report["message"] = f"Error saving lockedpendingorderoutputs.json: {str(e)}"
-            return False, status_report
-        
-        return True, status_report
-    
+        if os.path.exists(signals_json_path):
+            with open(signals_json_path, 'r') as f:
+                signals_data = json.load(f)
+            log_and_print(f"Successfully loaded signals from {signals_json_path}", "INFO")
+        else:
+            error_log.append({
+                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                "error": f"temp_pendingorders.json not found at {signals_json_path}"
+            })
+            save_errors()
+            log_and_print(f"temp_pendingorders.json not found at {signals_json_path}", "ERROR")
+            return 0, 0, 0, 0, 0, 0, 0
     except Exception as e:
-        error_msg = f"Error processing lockpendingorders: {str(e)}"
-        log_and_print(error_msg, "ERROR")
-        error_messages.append(error_msg)
-        status_report["message"] = error_msg
-        with open(output_log_path, 'w') as f:
-            f.write(f"ERROR: {error_msg}\n")
-        return False, status_report
-
-
-def collect_all_executionercandle_orders(market: str, timeframe: str, json_dir: str) -> tuple[bool, dict]:
-    """Collect executioner candle orders from pricecandle.json for a specific market and timeframe,
-    move to executedorders.json, remove from pricecandle.json, and aggregate across all markets and timeframes to allexecutedorders.json."""
-    log_and_print(f"Collecting executioner candle orders for market={market}, timeframe={timeframe}", "INFO")
+        error_log.append({
+            "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+            "error": f"Error reading {signals_json_path}: {str(e)}"
+        })
+        save_errors()
+        log_and_print(f"Error reading {signals_json_path}: {str(e)}", "ERROR")
+        return 0, 0, 0, 0, 0, 0, 0
     
-    # Initialize status report
-    status_report = {
-        "market": market,
-        "timeframe": timeframe,
-        "status": "failed",
-        "message": "",
-        "executioner_orders_collected": 0,
-        "warnings": [],
-        "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-        "verified_executioner_count": 0,
-        "total_collective_executioner": 0
-    }
+    # Validate signals_data structure
+    if not isinstance(signals_data, dict) or 'orders' not in signals_data or not isinstance(signals_data['orders'], list):
+        error_log.append({
+            "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+            "error": f"Invalid structure in temp_pendingorders.json: Expected dict with 'orders' list"
+        })
+        save_errors()
+        log_and_print(f"Invalid structure in temp_pendingorders.json: Expected dict with 'orders' list", "ERROR")
+        return 0, 0, 0, 0, 0, 0, 0
     
-    # Define file paths
-    pricecandle_json_path = os.path.join(json_dir, "pricecandle.json")
-    executed_orders_json_path = os.path.join(json_dir, "executedorders.json")
-    collective_executed_path = os.path.join(BASE_OUTPUT_FOLDER, "allexecutedorders.json")
+    # Extract unique pairs from signals (case-insensitive)
+    signal_pairs = set()
+    for order in signals_data['orders']:
+        pair = order.get('pair', '').replace(' ', '').lower()
+        if pair:
+            signal_pairs.add(pair)
+    log_and_print(f"Found {len(signal_pairs)} unique pairs in temp_pendingorders.json", "INFO")
     
-    # Check if pricecandle.json exists
-    if not os.path.exists(pricecandle_json_path):
-        log_and_print(f"pricecandle.json not found at {pricecandle_json_path} for {market} {timeframe}", "ERROR")
-        status_report["message"] = f"pricecandle.json not found at {pricecandle_json_path}"
-        return False, status_report
-    
+    # Initialize MT5
     try:
-        # Load pricecandle.json
-        with open(pricecandle_json_path, 'r') as f:
-            pricecandle_data = json.load(f)
+        if not mt5.initialize(
+            path=TERMINAL_PATH,
+            login=int(LOGIN_ID),
+            server=SERVER,
+            password=PASSWORD,
+            timeout=30000
+        ):
+            error_log.append({
+                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                "error": f"Failed to initialize MT5: {mt5.last_error()}"
+            })
+            save_errors()
+            log_and_print(f"Failed to initialize MT5: {mt5.last_error()}", "ERROR")
+            return 0, 0, 0, 0, 0, 0, 0
         
-        # Extract executioner candle orders
-        executed_orders = []
-        seen_entry_prices = {}
-        skipped_reasons = {}
-        trendlines_to_keep = []
+        # Verify login
+        if not mt5.login(
+            login=int(LOGIN_ID),
+            server=SERVER,
+            password=PASSWORD
+        ):
+            error_log.append({
+                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                "error": f"Failed to login to MT5: {mt5.last_error()}"
+            })
+            save_errors()
+            log_and_print(f"Failed to login to MT5: {mt5.last_error()}", "ERROR")
+            mt5.shutdown()
+            return 0, 0, 0, 0, 0, 0, 0
         
-        for trendline in pricecandle_data:
-            executioner_candle = trendline.get("executioner candle", {})
-            trendline_type = trendline.get("type")
-            order_holder = trendline.get("order_holder", {})
-            order_holder_position = order_holder.get("position_number")
-            order_holder_timestamp = order_holder.get("Time", "N/A")
-            order_type = trendline.get("receiver", {}).get("order_type", "").lower()
-            contract_status = trendline.get("contract status summary", {}).get("contract status", "")
+        log_and_print(f"Successfully initialized and logged into MT5 (loginid={LOGIN_ID}, server={SERVER})", "SUCCESS")
+        
+        # Fetch available symbols
+        symbols = mt5.symbols_get()
+        if not symbols:
+            error_log.append({
+                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                "error": f"Failed to retrieve symbols: {mt5.last_error()}"
+            })
+            save_errors()
+            log_and_print(f"Failed to retrieve symbols: {mt5.last_error()}", "ERROR")
+            mt5.shutdown()
+            return 0, 0, 0, 0, 0, 0, 0
+        
+        total_symbols = len(symbols)
+        log_and_print(f"Retrieved {total_symbols} symbols from the broker", "INFO")
+        
+        # Initialize counters and lists
+        matched_pairs = set()
+        unmatched_pairs = set()
+        selected_pairs = set()
+        unable_to_select_pairs = set()
+        valid_orders = []
+        invalid_executed_orders = []
+        orders_placed = 0
+        timeframe_counts = {
+            "4h": 0,
+            "1h": 0,
+            "30m": 0,
+            "15m": 0,
+            "5m": 0
+        }
+        
+        # Create a dictionary of broker symbols for matching (case-insensitive)
+        broker_symbols_dict = {symbol.name.replace(' ', '').lower(): symbol.name for symbol in symbols}
+        
+        # Process each order, validate, and place limit orders only for valid signals
+        log_and_print("===== Validation and filtering =====", "TITLE")
+        total_orders = len(signals_data['orders'])
+        for i, order in enumerate(signals_data['orders'], 1):
+            log_and_print(f"Validating orders {i}/{total_orders}", "INFO")
+            pair = order.get('pair', '').replace(' ', '').lower()
+            original_symbol = broker_symbols_dict.get(pair)
+            order_type = order.get('order_type', '').lower()
+            entry_price = order.get('entry_price')
+            exit_price = order.get('exit_price')  # Stop-loss
+            lot_size = order.get('lot_size')
+            timeframe = normalize_timeframe(order.get('timeframe', '').lower())
             
-            if not executioner_candle or executioner_candle.get("status") != "Candle found at order holder entry level":
-                skipped_reasons[trendline_type] = f"No valid executioner candle or status not triggered: {executioner_candle.get('status', 'N/A')}"
-                log_and_print(f"No valid executioner candle for trendline {trendline_type} in {market} {timeframe}", "INFO")
-                status_report["warnings"].append(f"No valid executioner candle for trendline {trendline_type}")
-                trendlines_to_keep.append(trendline)
+            # Validate order fields
+            if not all([original_symbol, order_type in ['buy_limit', 'sell_limit'], isinstance(entry_price, (int, float)), isinstance(lot_size, (int, float))]):
+                unmatched_pairs.add(pair)
+                order_copy = order.copy()
+                order_copy['reason'] = "Missing or invalid order fields (symbol, order_type, entry_price, or lot_size)"
+                invalid_executed_orders.append(order_copy)
                 continue
             
-            actual_price = order_holder.get("High" if order_type == "long" else "Low", 0)
-            if actual_price == 0:
-                skipped_reasons[trendline_type] = "Invalid order_holder price"
-                log_and_print(f"Invalid order_holder price for trendline {trendline_type} in {market} {timeframe}", "WARNING")
-                status_report["warnings"].append(f"Invalid order_holder price for trendline {trendline_type}")
-                trendlines_to_keep.append(trendline)
-                continue
-            
-            if actual_price in seen_entry_prices:
-                existing_time = seen_entry_prices[actual_price]["order_holder_timestamp"]
-                if order_holder_timestamp < existing_time:
-                    seen_entry_prices[actual_price] = {
-                        "trendline": trendline,
-                        "order_holder_timestamp": order_holder_timestamp
-                    }
-                    log_and_print(
-                        f"Duplicate executioner order detected for trendline {trendline_type} with entry_price {actual_price} in {market} {timeframe}. "
-                        f"Keeping older entry at {order_holder_timestamp}.",
-                        "INFO"
-                    )
+            # Select the symbol in Market Watch
+            try:
+                if mt5.symbol_select(original_symbol, True):
+                    selected_pairs.add(pair)
                 else:
-                    skipped_reasons[trendline_type] = f"Duplicate entry_price {actual_price}, newer timestamp {order_holder_timestamp}"
-                    log_and_print(
-                        f"Duplicate executioner order detected for trendline {trendline_type} with entry_price {actual_price} in {market} {timeframe}. "
-                        f"Discarding newer entry at {order_holder_timestamp}.",
-                        "INFO"
-                    )
-                    status_report["warnings"].append(f"Duplicate executioner order for trendline {trendline_type}")
-                    trendlines_to_keep.append(trendline)
+                    unable_to_select_pairs.add(pair)
+                    unmatched_pairs.add(pair)
+                    order_copy = order.copy()
+                    order_copy['reason'] = f"Failed to select symbol: {mt5.last_error()}"
+                    invalid_executed_orders.append(order_copy)
                     continue
-            else:
-                seen_entry_prices[actual_price] = {
-                    "trendline": trendline,
-                    "order_holder_timestamp": order_holder_timestamp
-                }
-        
-        for entry in seen_entry_prices.values():
-            trendline = entry["trendline"]
-            trendline_type = trendline.get("type")
-            order_holder = trendline.get("order_holder", {})
-            order_holder_position = order_holder.get("position_number")
-            order_holder_timestamp = order_holder.get("Time", "N/A")
-            order_type = trendline.get("receiver", {}).get("order_type", "").lower()
-            executioner_candle = trendline.get("executioner candle", {})
-            sender = trendline.get("sender", {})
-            receiver = trendline.get("receiver", {})
-            breakout_parent = trendline.get("Breakout_parent", {})
+            except Exception as e:
+                unable_to_select_pairs.add(pair)
+                log_and_print(f"Error selecting symbol {original_symbol} for pair {pair}: {str(e)}", "ERROR")
+                unmatched_pairs.add(pair)
+                order_copy = order.copy()
+                order_copy['reason'] = f"Error selecting symbol: {str(e)}"
+                invalid_executed_orders.append(order_copy)
+                continue
             
-            executed_order = {
-                "market": market,
-                "timeframe": timeframe,
-                "type": trendline_type,
-                "sender": {
-                    "candle_color": sender.get("candle_color", ""),
-                    "position_number": sender.get("position_number", 0),
-                    "sender_arrow_number": sender.get("sender_arrow_number", 0),
-                    "Time": sender.get("Time", "N/A"),
-                    "Open": float(sender.get("Open", 0.0)),
-                    "High": float(sender.get("High", 0.0)),
-                    "Low": float(sender.get("Low", 0.0)),
-                    "Close": float(sender.get("Close", 0.0))
-                },
-                "receiver": {
-                    "candle_color": receiver.get("candle_color", ""),
-                    "position_number": receiver.get("position_number", 0),
-                    "order_type": receiver.get("order_type", ""),
-                    "order_status": receiver.get("order_status", ""),
-                    "Breakout_parent": receiver.get("Breakout_parent", ""),
-                    "order_parent": receiver.get("order_parent", ""),
-                    "actual_orderparent": receiver.get("actual_orderparent", ""),
-                    "reassigned_orderparent": receiver.get("reassigned_orderparent", ""),
-                    "receiver_contractcandle_arrownumber": receiver.get("receiver_contractcandle_arrownumber", 0),
-                    "Time": receiver.get("Time", "N/A"),
-                    "Open": float(receiver.get("Open", 0.0)),
-                    "High": float(receiver.get("High", 0.0)),
-                    "Low": float(receiver.get("Low", 0.0)),
-                    "Close": float(receiver.get("Close", 0.0))
-                },
-                "order_holder": {
-                    "position_number": order_holder.get("position_number", 0),
-                    "Time": order_holder.get("Time", "N/A"),
-                    "Open": float(order_holder.get("Open", 0.0)),
-                    "High": float(order_holder.get("High", 0.0)),
-                    "Low": float(order_holder.get("Low", 0.0)),
-                    "Close": float(order_holder.get("Close", 0.0))
-                },
-                "executioner_candle": {
-                    "status": executioner_candle.get("status", ""),
-                    "Time": executioner_candle.get("Time", "N/A"),
-                    "Open": float(executioner_candle.get("Open", 0.0)),
-                    "High": float(executioner_candle.get("High", 0.0)),
-                    "Low": float(executioner_candle.get("Low", 0.0)),
-                    "Close": float(executioner_candle.get("Close", 0.0)),
-                    "position_number": executioner_candle.get("position_number", 0)
-                },
-                "Breakout_parent": {
-                    "candle_color": breakout_parent.get("candle_color", ""),
-                    "position_number": breakout_parent.get("position_number", 0),
-                    "Time": breakout_parent.get("Time", "N/A"),
-                    "Open": float(breakout_parent.get("Open", 0.0)),
-                    "High": float(breakout_parent.get("High", 0.0)),
-                    "Low": float(breakout_parent.get("Low", 0.0)),
-                    "Close": float(breakout_parent.get("Close", 0.0))
-                }
+            # Get current market price (using last tick)
+            tick = mt5.symbol_info_tick(original_symbol)
+            if not tick:
+                unmatched_pairs.add(pair)
+                order_copy = order.copy()
+                order_copy['reason'] = f"Failed to retrieve tick data: {mt5.last_error()}"
+                invalid_executed_orders.append(order_copy)
+                continue
+            
+            current_price = (tick.bid + tick.ask) / 2  # Use midpoint of bid/ask for comparison
+            matched_pairs.add(pair)
+            
+            # Validate entry price
+            is_valid_entry = True
+            reason = ""
+            if order_type == 'buy_limit' and current_price <= entry_price:
+                is_valid_entry = False
+                reason = "Current price <= Entry price for buy_limit"
+            elif order_type == 'sell_limit' and current_price >= entry_price:
+                is_valid_entry = False
+                reason = "Current price >= Entry price for sell_limit"
+            
+            # Validate stop-loss (exit_price)
+            if is_valid_entry and isinstance(exit_price, (int, float)):
+                if order_type == 'buy_limit' and exit_price >= entry_price:
+                    is_valid_entry = False
+                    reason = "Stop-loss >= Entry price for buy_limit"
+                elif order_type == 'sell_limit' and exit_price <= entry_price:
+                    is_valid_entry = False
+                    reason = "Stop-loss <= Entry price for sell_limit"
+            
+            # Categorize order before placing
+            if not is_valid_entry:
+                order_copy = order.copy()
+                order_copy['reason'] = reason
+                invalid_executed_orders.append(order_copy)
+                continue
+            
+            # If entry is valid, proceed to place the order
+            mt5_order_type = mt5.ORDER_TYPE_BUY_LIMIT if order_type == 'buy_limit' else mt5.ORDER_TYPE_SELL_LIMIT
+            
+            # Prepare order request
+            request = {
+                "action": mt5.TRADE_ACTION_PENDING,
+                "symbol": original_symbol,
+                "volume": float(lot_size),
+                "type": mt5_order_type,
+                "price": float(entry_price),
+                "sl": float(exit_price) if isinstance(exit_price, (int, float)) else 0.0,  # Include stop-loss if provided
+                "type_time": mt5.ORDER_TIME_GTC,  # Good Till Cancel
+                "type_filling": mt5.ORDER_FILLING_IOC,  # Immediate or Cancel
             }
             
-            # Validate executed order
-            if any(price == 0 for price in [
-                executed_order["order_holder"]["High" if order_type == "long" else "Low"],
-                executed_order["executioner_candle"]["High"],
-                executed_order["executioner_candle"]["Low"]
-            ]):
-                skipped_reasons[trendline_type] = f"Invalid price values in executed order: {executed_order}"
-                log_and_print(f"Invalid price values for trendline {trendline_type} in {market} {timeframe}: {executed_order}", "WARNING")
-                status_report["warnings"].append(f"Invalid price values for trendline {trendline_type}")
-                trendlines_to_keep.append(trendline)
+            # Place limit order
+            result = mt5.order_send(request)
+            if result.retcode == mt5.TRADE_RETCODE_DONE:
+                orders_placed += 1
+                valid_orders.append(order)
+                # Increment timeframe count for normalized timeframe
+                if timeframe in timeframe_counts:
+                    timeframe_counts[timeframe] += 1
+            else:
+                unmatched_pairs.add(pair)
+                order_copy = order.copy()
+                order_copy['reason'] = f"Failed to place order: {result.comment}"
+                invalid_executed_orders.append(order_copy)
                 continue
-            
-            executed_orders.append(executed_order)
-            status_report["executioner_orders_collected"] += 1
-            log_and_print(
-                f"Collected executioner order for trendline {trendline_type}: order_type={order_type}, "
-                f"entry_price={executed_order['order_holder']['High' if order_type == 'long' else 'Low']} in {market} {timeframe}",
-                "DEBUG"
-            )
         
-        # Log skipped trendlines
-        if skipped_reasons:
-            log_and_print(f"Skipped trendlines in {market} {timeframe}: {skipped_reasons}", "INFO")
-            status_report["warnings"].extend([f"Skipped trendline {k}: {v}" for k, v in skipped_reasons.items()])
+        # Print newline to move to next line after progress updates
+        print()
         
-        # Save executed orders to executedorders.json
+        # Create directories for outputs
+        for dir_path in [BASE_OUTPUT_FOLDER, BASE_ERROR_FOLDER]:
+            try:
+                os.makedirs(dir_path, exist_ok=True)
+                log_and_print(f"Created directory: {dir_path}", "INFO")
+            except Exception as e:
+                error_log.append({
+                    "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                    "error": f"Error creating directory {dir_path}: {str(e)}"
+                })
+                save_errors()
+                log_and_print(f"Error creating directory {dir_path}: {str(e)}", "ERROR")
+                mt5.shutdown()
+                return total_symbols, len(matched_pairs), len(unmatched_pairs), len(selected_pairs), len(unable_to_select_pairs), len(valid_orders), len(invalid_executed_orders)
+        
+        # Save valid orders with updated summary
         try:
-            with open(executed_orders_json_path, 'w') as f:
-                json.dump(executed_orders, f, indent=4)
-            log_and_print(
-                f"Saved {len(executed_orders)} executioner orders to {executed_orders_json_path} for {market} {timeframe}",
-                "SUCCESS"
-            )
-            status_report["verified_executioner_count"] = len(executed_orders)
+            valid_data = {
+                "summary": {
+                    "total_valid_orders": len(valid_orders),
+                    "4h_valid_orders": timeframe_counts['4h'],
+                    "1h_valid_orders": timeframe_counts['1h'],
+                    "30m_valid_orders": timeframe_counts['30m'],
+                    "15m_valid_orders": timeframe_counts['15m'],
+                    "5m_valid_orders": timeframe_counts['5m']
+                },
+                "orders": valid_orders
+            }
+            with open(valid_json_path, 'w') as f:
+                json.dump(valid_data, f, indent=4)
+            log_and_print(f"Valid orders saved to {valid_json_path}", "SUCCESS")
         except Exception as e:
-            log_and_print(f"Error saving executedorders.json for {market} {timeframe}: {str(e)}", "ERROR")
-            status_report["message"] = f"Error saving executedorders.json: {str(e)}"
-            return False, status_report
+            error_log.append({
+                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                "error": f"Error saving {valid_json_path}: {str(e)}"
+            })
+            save_errors()
+            log_and_print(f"Error saving {valid_json_path}: {str(e)}", "ERROR")
         
-        # Update pricecandle.json to remove executed orders
+        # Save valid pairs to separate file
         try:
-            if os.path.exists(pricecandle_json_path):
-                os.remove(pricecandle_json_path)
-                log_and_print(f"Existing {pricecandle_json_path} deleted", "INFO")
-            with open(pricecandle_json_path, 'w') as f:
-                json.dump(trendlines_to_keep, f, indent=4)
-            log_and_print(
-                f"Updated pricecandle.json with {len(trendlines_to_keep)} remaining trendlines for {market} {timeframe}",
-                "SUCCESS"
-            )
+            valid_pairs_data = {
+                "valid_pairs": list(matched_pairs - unmatched_pairs)
+            }
+            with open(valid_pairs_path, 'w') as f:
+                json.dump(valid_pairs_data, f, indent=4)
+            log_and_print(f"Valid pairs saved to {valid_pairs_path}", "SUCCESS")
         except Exception as e:
-            log_and_print(f"Error updating pricecandle.json for {market} {timeframe}: {str(e)}", "ERROR")
-            status_report["message"] = f"Error updating pricecandle.json: {str(e)}"
-            return False, status_report
+            error_log.append({
+                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                "error": f"Error saving {valid_pairs_path}: {str(e)}"
+            })
+            save_errors()
+            log_and_print(f"Error saving {valid_pairs_path}: {str(e)}", "ERROR")
         
-        # Aggregate all executed orders across markets and timeframes
-        all_executed_orders = []
-        timeframe_counts_executed = {
-            "5minutes": 0,
-            "15minutes": 0,
-            "30minutes": 0,
-            "1Hour": 0,
-            "4Hours": 0
-        }
-        
-        for mkt in MARKETS:
-            formatted_market = mkt.replace(" ", "_")
-            for tf in TIMEFRAMES:
-                tf_dir = os.path.join(BASE_OUTPUT_FOLDER, formatted_market, tf.lower())
-                executed_path = os.path.join(tf_dir, "executedorders.json")
-                db_tf = DB_TIMEFRAME_MAPPING.get(tf, tf)
-                
-                if os.path.exists(executed_path):
-                    try:
-                        with open(executed_path, 'r') as f:
-                            executed_data = json.load(f)
-                        if isinstance(executed_data, list):
-                            all_executed_orders.extend(executed_data)
-                            timeframe_counts_executed[db_tf] += len(executed_data)
-                        else:
-                            log_and_print(f"Invalid data format in {executed_path}: Expected list, got {type(executed_data)}", "WARNING")
-                            status_report["warnings"].append(f"Invalid data format in {executed_path}")
-                    except Exception as e:
-                        log_and_print(f"Error reading {executed_path}: {str(e)}", "WARNING")
-                        status_report["warnings"].append(f"Error reading {executed_path}: {str(e)}")
-        
-        executed_output = {
-            "total_executed_orders": len(all_executed_orders),
-            "5minutes executed orders": timeframe_counts_executed["5minutes"],
-            "15minutes executed orders": timeframe_counts_executed["15minutes"],
-            "30minutes executed orders": timeframe_counts_executed["30minutes"],
-            "1Hour executed orders": timeframe_counts_executed["1Hour"],
-            "4Hours executed orders": timeframe_counts_executed["4Hours"],
-            "orders": all_executed_orders
-        }
-        
+        # Save invalid executed orders
         try:
-            with open(collective_executed_path, 'w') as f:
-                json.dump(executed_output, f, indent=4)
-            log_and_print(
-                f"Saved {len(all_executed_orders)} executed orders to {collective_executed_path} "
-                f"(5m: {timeframe_counts_executed['5minutes']}, 15m: {timeframe_counts_executed['15minutes']}, "
-                f"30m: {timeframe_counts_executed['30minutes']}, 1H: {timeframe_counts_executed['1Hour']}, "
-                f"4H: {timeframe_counts_executed['4Hours']})",
-                "SUCCESS"
-            )
-            status_report["total_collective_executioner"] = len(all_executed_orders)
-            status_report["status"] = "success"
-            status_report["message"] = f"Saved {len(executed_orders)} executioner orders for {market} {timeframe}"
-            return True, status_report
+            invalid_data = {
+                "summary": {
+                    "total_invalid_executed_orders": len(invalid_executed_orders),
+                    "invalid_pairs": list(unmatched_pairs)
+                },
+                "orders": invalid_executed_orders
+            }
+            with open(invalid_json_path, 'w') as f:
+                json.dump(invalid_data, f, indent=4)
+            log_and_print(f"Invalid executed orders saved to {invalid_json_path}", "SUCCESS")
         except Exception as e:
-            log_and_print(f"Error saving allexecutedorders.json: {str(e)}", "ERROR")
-            status_report["message"] = f"Error saving allexecutedorders.json: {str(e)}"
-            return False, status_report
+            error_log.append({
+                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                "error": f"Error saving {invalid_json_path}: {str(e)}"
+            })
+            save_errors()
+            log_and_print(f"Error saving {invalid_json_path}: {str(e)}", "ERROR")
+        
+        # Log summary
+        log_and_print(f"Found {len(matched_pairs)} signal pairs matching broker symbols", "INFO")
+        log_and_print(f"Found {len(unmatched_pairs)} signal pairs not matching broker symbols", "INFO")
+        log_and_print(f"Selected {len(selected_pairs)} signal pairs out of {total_symbols} server symbols", "INFO")
+        log_and_print(f"Unable to select {len(unable_to_select_pairs)} signal pairs out of {total_symbols} server symbols", "INFO")
+        log_and_print(f"Total valid orders: {len(valid_orders)}", "INFO")
+        log_and_print(f"Valid 4h orders: {timeframe_counts['4h']}", "INFO")
+        log_and_print(f"Valid 1h orders: {timeframe_counts['1h']}", "INFO")
+        log_and_print(f"Valid 30m orders: {timeframe_counts['30m']}", "INFO")
+        log_and_print(f"Valid 15m orders: {timeframe_counts['15m']}", "INFO")
+        log_and_print(f"Valid 5m orders: {timeframe_counts['5m']}", "INFO")
+        log_and_print(f"Total invalid executed orders: {len(invalid_executed_orders)}", "INFO")
+        log_and_print(f"Total orders placed: {orders_placed}", "INFO")
+        
+        # Shutdown MT5
+        mt5.shutdown()
+        return total_symbols, len(matched_pairs), len(unmatched_pairs), len(selected_pairs), len(unable_to_select_pairs), len(valid_orders), len(invalid_executed_orders)
     
     except Exception as e:
-        log_and_print(f"Error collecting executioner orders for {market} {timeframe}: {str(e)}", "ERROR")
-        status_report["message"] = f"Unexpected error: {str(e)}"
-        return False, status_report
+        error_log.append({
+            "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+            "error": f"Unexpected error in validatesignals: {str(e)}"
+        })
+        save_errors()
+        log_and_print(f"Unexpected error in validatesignals: {str(e)}", "ERROR")
+        mt5.shutdown()
+        return 0, 0, 0, 0, 0, 0, 0
+
+def deletependingorders():
+    """Delete all pending orders in the MT5 account."""
     
+    # Define MT5 credentials and terminal path
+    TERMINAL_PATH = r"C:\Program Files\MetaTrader 5\terminal64.exe"
+    LOGIN_ID = "101347351"
+    PASSWORD = "@Techknowdge12#"
+    SERVER = "DerivSVG-Server-02"
+    
+    # Initialize error log list
+    error_log = []
+    error_json_path = os.path.join(BASE_ERROR_FOLDER, "deletependingorderserror.json")
+    
+    # Helper function to save errors to JSON
+    def save_errors():
+        try:
+            with open(error_json_path, 'w') as f:
+                json.dump(error_log, f, indent=4)
+            #log_and_print(f"Errors saved to {error_json_path}", "INFO")
+            log_and_print(f"ALL CLEANED", "INFO")
+        except Exception as e:
+            log_and_print(f"Failed to save errors to {error_json_path}: {str(e)}", "ERROR")
+    
+    # Verify terminal executable exists
+    if not os.path.exists(TERMINAL_PATH):
+        error_log.append({
+            "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+            "error": f"MT5 terminal executable not found at {TERMINAL_PATH}"
+        })
+        save_errors()
+        log_and_print(f"MT5 terminal executable not found at {TERMINAL_PATH}", "ERROR")
+        return 0
+    
+    # Initialize MT5
+    try:
+        if not mt5.initialize(
+            path=TERMINAL_PATH,
+            login=int(LOGIN_ID),
+            server=SERVER,
+            password=PASSWORD,
+            timeout=30000
+        ):
+            error_log.append({
+                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                "error": f"Failed to initialize MT5: {mt5.last_error()}"
+            })
+            save_errors()
+            log_and_print(f"Failed to initialize MT5: {mt5.last_error()}", "ERROR")
+            return 0
+        
+        # Verify login
+        if not mt5.login(
+            login=int(LOGIN_ID),
+            server=SERVER,
+            password=PASSWORD
+        ):
+            error_log.append({
+                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                "error": f"Failed to login to MT5: {mt5.last_error()}"
+            })
+            save_errors()
+            log_and_print(f"Failed to login to MT5: {mt5.last_error()}", "ERROR")
+            mt5.shutdown()
+            return 0
+        
+        #log_and_print(f"Successfully initialized and logged into MT5 (loginid={LOGIN_ID}, server={SERVER})", "SUCCESS")
+        
+        # Fetch all pending orders
+        orders = mt5.orders_get()
+        if orders is None:
+            error_log.append({
+                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                "error": f"Failed to retrieve pending orders: {mt5.last_error()}"
+            })
+            save_errors()
+            #log_and_print(f"Failed to retrieve pending orders: {mt5.last_error()}", "ERROR")
+            mt5.shutdown()
+            return 0
+        
+        total_orders = len(orders)
+        #log_and_print(f"Found {total_orders} pending orders", "INFO")
+        log_and_print(f"Cleaning up...", "INFO")
+        
+        # Initialize counter for deleted orders
+        orders_deleted = 0
+        
+        # Delete each pending order
+        for order in orders:
+            request = {
+                "action": mt5.TRADE_ACTION_REMOVE,
+                "order": order.ticket
+            }
+            result = mt5.order_send(request)
+            if result.retcode == mt5.TRADE_RETCODE_DONE:
+                orders_deleted += 1
+                #log_and_print(f"Successfully deleted pending order (ticket={order.ticket}, symbol={order.symbol})", "SUCCESS")
+            else:
+                error_log.append({
+                    "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                    "error": f"Failed to delete order (ticket={order.ticket}, symbol={order.symbol}): {result.comment}"
+                })
+                #log_and_print(f"Failed to delete order (ticket={order.ticket}, symbol={order.symbol}): {result.comment}", "ERROR")
+        
+        # Save any errors
+        if error_log:
+            save_errors()
+        
+        # Log summary
+        #log_and_print(f"Total pending orders deleted: {orders_deleted}", "INFO")
+        #log_and_print(f"Total pending orders failed to delete: {total_orders - orders_deleted}", "INFO")
+        
+        # Shutdown MT5
+        mt5.shutdown()
+        return orders_deleted
+    
+    except Exception as e:
+        error_log.append({
+            "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+            "error": f"Unexpected error in deletependingorders: {str(e)}"
+        })
+        save_errors()
+        #log_and_print(f"Unexpected error in deletependingorders: {str(e)}", "ERROR")
+        mt5.shutdown()
+        return 0
+
 def marketsliststatus() -> tuple[bool, dict]:
-    """Generate a status report for all markets and timeframes, summarizing pending and executed orders."""
+    """Generate a status report for all markets and timeframes, summarizing valid pending and invalid executed orders."""
     log_and_print("Generating markets list status", "INFO")
     
     # Initialize status report
@@ -3414,106 +3249,82 @@ def marketsliststatus() -> tuple[bool, dict]:
         "warnings": [],
         "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
         "market_timeframe_status": {},
-        "total_pending_orders": 0,
-        "total_executed_orders": 0
+        "total_valid_pending_orders": 0,
+        "total_invalid_executed_orders": 0
     }
     
     # Define file paths
+    BASE_OUTPUT_FOLDER = r"C:\xampp\htdocs\CIPHER\cipher i\programmes\chart\orders"
     output_json_path = os.path.join(BASE_OUTPUT_FOLDER, "marketsliststatus.json")
-    collective_pending_path = os.path.join(BASE_OUTPUT_FOLDER, "temp_pendingorders.json")
-    collective_executed_path = os.path.join(BASE_OUTPUT_FOLDER, "allexecutedorders.json")
+    valid_pending_path = os.path.join(BASE_OUTPUT_FOLDER, "validpendingorders.json")
+    invalid_executed_path = os.path.join(BASE_OUTPUT_FOLDER, "invalidexecutedorders.json")
     
     try:
         # Initialize market status
         market_status = {}
-        total_pending = 0
-        total_executed = 0
+        total_valid_pending = 0
+        total_invalid_executed = 0
         
-        # Load collective pending orders
-        pending_orders = []
-        if os.path.exists(collective_pending_path):
+        # Load valid pending orders
+        valid_pending_orders = []
+        if os.path.exists(valid_pending_path):
             try:
-                with open(collective_pending_path, 'r') as f:
+                with open(valid_pending_path, 'r') as f:
                     pending_data = json.load(f)
-                pending_orders = pending_data.get("orders", [])
-                total_pending = len(pending_orders)
-                log_and_print(f"Loaded {total_pending} pending orders from {collective_pending_path}", "INFO")
+                valid_pending_orders = pending_data.get("orders", [])
+                total_valid_pending = len(valid_pending_orders)
+                log_and_print(f"Loaded {total_valid_pending} valid pending orders from {valid_pending_path}", "INFO")
             except Exception as e:
-                log_and_print(f"Error reading temp_pendingorders.json: {str(e)}", "WARNING")
-                status_report["warnings"].append(f"Error reading temp_pendingorders.json: {str(e)}")
+                log_and_print(f"Error reading validpendingorders.json: {str(e)}", "WARNING")
+                status_report["warnings"].append(f"Error reading validpendingorders.json: {str(e)}")
         
-        # Load collective executed orders
-        executed_orders = []
-        if os.path.exists(collective_executed_path):
+        # Load invalid executed orders
+        invalid_executed_orders = []
+        if os.path.exists(invalid_executed_path):
             try:
-                with open(collective_executed_path, 'r') as f:
+                with open(invalid_executed_path, 'r') as f:
                     executed_data = json.load(f)
-                executed_orders = executed_data.get("orders", [])
-                total_executed = len(executed_orders)
-                log_and_print(f"Loaded {total_executed} executed orders from {collective_executed_path}", "INFO")
+                invalid_executed_orders = executed_data.get("orders", [])
+                total_invalid_executed = len(invalid_executed_orders)
+                log_and_print(f"Loaded {total_invalid_executed} invalid executed orders from {invalid_executed_path}", "INFO")
             except Exception as e:
-                log_and_print(f"Error reading allexecutedorders.json: {str(e)}", "WARNING")
-                status_report["warnings"].append(f"Error reading allexecutedorders.json: {str(e)}")
+                log_and_print(f"Error reading invalidexecutedorders.json: {str(e)}", "WARNING")
+                status_report["warnings"].append(f"Error reading invalidexecutedorders.json: {str(e)}")
         
         # Process each market and timeframe
         for market in MARKETS:
             formatted_market = market.replace(" ", "_")
             market_status[market] = {}
             for timeframe in TIMEFRAMES:
-                tf_dir = os.path.join(BASE_OUTPUT_FOLDER, formatted_market, timeframe.lower())
-                pending_path = os.path.join(tf_dir, "contractpendingorders.json")
-                executed_path = os.path.join(tf_dir, "executedorders.json")
+                # Initialize counts
+                valid_pending_count = 0
+                invalid_executed_count = 0
                 
-                pending_count = 0
-                executed_count = 0
+                # Count valid pending orders for this market and timeframe
+                valid_pending_count = sum(1 for order in valid_pending_orders if order["market"] == market and order["timeframe"] == timeframe)
                 
-                # Count pending orders for this market and timeframe
-                if os.path.exists(pending_path):
-                    try:
-                        with open(pending_path, 'r') as f:
-                            pending_data = json.load(f)
-                        if isinstance(pending_data, list):
-                            pending_count = len(pending_data)
-                        else:
-                            log_and_print(f"Invalid data format in {pending_path}: Expected list, got {type(pending_data)}", "WARNING")
-                            status_report["warnings"].append(f"Invalid data format in {pending_path}")
-                    except Exception as e:
-                        log_and_print(f"Error reading {pending_path}: {str(e)}", "WARNING")
-                        status_report["warnings"].append(f"Error reading {pending_path}: {str(e)}")
-                
-                # Count executed orders for this market and timeframe
-                if os.path.exists(executed_path):
-                    try:
-                        with open(executed_path, 'r') as f:
-                            executed_data = json.load(f)
-                        if isinstance(executed_data, list):
-                            executed_count = len(executed_data)
-                        else:
-                            log_and_print(f"Invalid data format in {executed_path}: Expected list, got {type(executed_data)}", "WARNING")
-                            status_report["warnings"].append(f"Invalid data format in {executed_path}")
-                    except Exception as e:
-                        log_and_print(f"Error reading {executed_path}: {str(e)}", "WARNING")
-                        status_report["warnings"].append(f"Error reading {executed_path}: {str(e)}")
+                # Count invalid executed orders for this market and timeframe
+                invalid_executed_count = sum(1 for order in invalid_executed_orders if order["market"] == market and order["timeframe"] == timeframe)
                 
                 market_status[market][timeframe] = {
-                    "pending_orders": pending_count,
-                    "executed_orders": executed_count
+                    "valid_pending_orders": valid_pending_count,
+                    "invalid_executed_orders": invalid_executed_count
                 }
                 status_report["market_timeframe_status"][f"{market}_{timeframe}"] = {
-                    "pending_orders": pending_count,
-                    "executed_orders": executed_count
+                    "valid_pending_orders": valid_pending_count,
+                    "invalid_executed_orders": invalid_executed_count
                 }
                 status_report["markets_processed"] += 1
                 log_and_print(
-                    f"Market: {market}, Timeframe: {timeframe}, Pending: {pending_count}, Executed: {executed_count}",
+                    f"Market: {market}, Timeframe: {timeframe}, Valid Pending: {valid_pending_count}, Invalid Executed: {invalid_executed_count}",
                     "DEBUG"
                 )
         
         # Prepare output data
         output_data = {
             "timestamp": status_report["timestamp"],
-            "total_pending_orders": total_pending,
-            "total_executed_orders": total_executed,
+            "total_valid_pending_orders": total_valid_pending,
+            "total_invalid_executed_orders": total_invalid_executed,
             "markets": market_status
         }
         
@@ -3524,8 +3335,8 @@ def marketsliststatus() -> tuple[bool, dict]:
             log_and_print(f"Saved markets list status to {output_json_path}", "SUCCESS")
             status_report["status"] = "success"
             status_report["message"] = f"Processed {status_report['markets_processed']} market-timeframe combinations"
-            status_report["total_pending_orders"] = total_pending
-            status_report["total_executed_orders"] = total_executed
+            status_report["total_valid_pending_orders"] = total_valid_pending
+            status_report["total_invalid_executed_orders"] = total_invalid_executed
             return True, status_report
         except Exception as e:
             log_and_print(f"Error saving marketsliststatus.json: {str(e)}", "ERROR")
@@ -3536,16 +3347,16 @@ def marketsliststatus() -> tuple[bool, dict]:
         log_and_print(f"Error generating markets list status: {str(e)}", "ERROR")
         status_report["message"] = f"Unexpected error: {str(e)}"
         return False, status_report
-     
-def insertpendingorderstodb(json_path: str = os.path.join(BASE_OUTPUT_FOLDER, "lockedpendingorders.json")) -> bool:
-    """Insert all 'locked' orders from lockedpendingorders.json into cipherbouncestream_signals table after validation."""
-    log_and_print("Inserting all locked orders into cipherbouncestream_signals table", "INFO")
+
+def fetch_processed_bouncestream_signals(json_dir: str = r"C:\xampp\htdocs\CIPHER\cipher i\programmes\chart\orders") -> bool:
+    """Fetch all processed bouncestream signals data from cipher_processed_bouncestreamsignals table and save to fetchedprocessedmarkets.json."""
+    log_and_print("Fetching all processed bouncestream signals data", "INFO")
     
     # Initialize error log list
     error_log = []
     
     # Define error log file path
-    error_json_path = os.path.join(BASE_PROCESSING_FOLDER, "insertpendingorderserror.json")
+    error_json_path = os.path.join(BASE_ERROR_FOLDER, "fetchprocessedsignalserror.json")
     
     # Helper function to save errors to JSON
     def save_errors():
@@ -3556,15 +3367,222 @@ def insertpendingorderstodb(json_path: str = os.path.join(BASE_OUTPUT_FOLDER, "l
         except Exception as e:
             log_and_print(f"Failed to save errors to {error_json_path}: {str(e)}", "ERROR")
     
-    # Load locked orders from JSON
+    # Helper function to normalize timeframe values
+    def normalize_timeframe(timeframe: str) -> str:
+        timeframe_map = {
+            '15minutes': 'M15',
+            '30minutes': 'M30',
+            '1hour': 'H1',
+            '4hour': 'H4',
+            '5minutes': 'M5'
+        }
+        # Convert to lowercase and remove spaces for consistency
+        normalized = timeframe.lower().replace(' ', '')
+        return timeframe_map.get(normalized, timeframe)  # Return mapped value or original if not found
+    
+    # SQL query to fetch all rows
+    sql_query = """
+        SELECT id, pair, timeframe, order_type, entry_price, exit_price, 
+               ratio_0_5_price, ratio_1_price, ratio_2_price, profit_price, message, created_at
+        FROM cipher_processed_bouncestreamsignals
+    """
+    
+    # Create output directory if it doesn't exist
+    if not os.path.exists(json_dir):
+        try:
+            os.makedirs(json_dir)
+            log_and_print(f"Created output directory: {json_dir}", "INFO")
+        except Exception as e:
+            error_log.append({
+                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                "error": f"Error creating directory {json_dir}: {str(e)}"
+            })
+            save_errors()
+            log_and_print(f"Error creating directory {json_dir}: {str(e)}", "ERROR")
+            return False
+    
+    # Execute query with retries
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            result = db.execute_query(sql_query)
+            log_and_print(f"Raw query result for processed signals: {json.dumps(result, indent=2)}", "DEBUG")
+            
+            if not isinstance(result, dict):
+                error_log.append({
+                    "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                    "error": f"Invalid result format on attempt {attempt}: Expected dict, got {type(result)}"
+                })
+                save_errors()
+                log_and_print(f"Invalid result format on attempt {attempt}: Expected dict, got {type(result)}", "ERROR")
+                continue
+                
+            if result.get('status') != 'success':
+                error_message = result.get('message', 'No message provided')
+                error_log.append({
+                    "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                    "error": f"Query failed on attempt {attempt}: {error_message}"
+                })
+                save_errors()
+                log_and_print(f"Query failed on attempt {attempt}: {error_message}", "ERROR")
+                continue
+                
+            # Handle both 'data' and 'results' keys
+            rows = None
+            if 'data' in result and 'rows' in result['data'] and isinstance(result['data']['rows'], list):
+                rows = result['data']['rows']
+            elif 'results' in result and isinstance(result['results'], list):
+                rows = result['results']
+            else:
+                error_log.append({
+                    "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                    "error": f"Invalid or missing rows in result on attempt {attempt}: {json.dumps(result, indent=2)}"
+                })
+                save_errors()
+                log_and_print(f"Invalid or missing rows in result on attempt {attempt}: {json.dumps(result, indent=2)}", "ERROR")
+                continue
+            
+            # Prepare summary counts
+            summary = {
+                "total_valid_orders": len(rows),
+                "4h_valid_orders": 0,
+                "1h_valid_orders": 0,
+                "30m_valid_orders": 0,
+                "15m_valid_orders": 0,
+                "5m_valid_orders": 0
+            }
+            
+            # Prepare data for JSON
+            orders = []
+            for row in rows:
+                normalized_timeframe = normalize_timeframe(row.get('timeframe', 'N/A'))
+                # Update summary counts based on normalized timeframe
+                if normalized_timeframe == 'H4':
+                    summary['4h_valid_orders'] += 1
+                elif normalized_timeframe == 'H1':
+                    summary['1h_valid_orders'] += 1
+                elif normalized_timeframe == 'M30':
+                    summary['30m_valid_orders'] += 1
+                elif normalized_timeframe == 'M15':
+                    summary['15m_valid_orders'] += 1
+                elif normalized_timeframe == 'M5':
+                    summary['5m_valid_orders'] += 1
+                
+                orders.append({
+                    "market": row.get('pair', 'N/A'),
+                    "pair": row.get('pair', 'N/A'),
+                    "timeframe": normalized_timeframe,
+                    "order_type": row.get('order_type', 'N/A'),
+                    "entry_price": float(row.get('entry_price', 0.0)) if row.get('entry_price') is not None else None,
+                    "exit_price": float(row.get('exit_price', 0.0)) if row.get('exit_price') is not None else None,
+                    "1:0.5_price": float(row.get('ratio_0_5_price', 0.0)) if row.get('ratio_0_5_price') is not None else None,
+                    "1:1_price": float(row.get('ratio_1_price', 0.0)) if row.get('ratio_1_price') is not None else None,
+                    "1:2_price": float(row.get('ratio_2_price', 0.0)) if row.get('ratio_2_price') is not None else None,
+                    "profit_price": float(row.get('profit_price', 0.0)) if row.get('profit_price') is not None else None,
+                    "created_at": row.get('created_at', 'N/A'),
+                    "message": row.get('message', '')
+                })
+            
+            # Combine summary and orders
+            output_data = {
+                "summary": summary,
+                "orders": orders
+            }
+            
+            # Define output path
+            output_json_path = os.path.join(json_dir, "fetchedprocessedmarkets.json")
+            
+            # Delete existing file if it exists
+            if os.path.exists(output_json_path):
+                try:
+                    os.remove(output_json_path)
+                    log_and_print(f"Existing {output_json_path} deleted", "INFO")
+                except Exception as e:
+                    error_log.append({
+                        "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                        "error": f"Error deleting existing {output_json_path}: {str(e)}"
+                    })
+                    save_errors()
+                    log_and_print(f"Error deleting existing {output_json_path}: {str(e)}", "ERROR")
+                    return False
+            
+            # Save to JSON
+            try:
+                with open(output_json_path, 'w') as f:
+                    json.dump(output_data, f, indent=4)
+                log_and_print(f"Processed bouncestream signals saved to {output_json_path}", "SUCCESS")
+                return True
+            except Exception as e:
+                error_log.append({
+                    "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                    "error": f"Error saving {output_json_path}: {str(e)}"
+                })
+                save_errors()
+                log_and_print(f"Error saving {output_json_path}: {str(e)}", "ERROR")
+                return False
+                
+        except Exception as e:
+            error_log.append({
+                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                "error": f"Exception on attempt {attempt}: {str(e)}"
+            })
+            save_errors()
+            log_and_print(f"Exception on attempt {attempt}: {str(e)}", "ERROR")
+            
+        if attempt < MAX_RETRIES:
+            delay = RETRY_DELAY * (2 ** (attempt - 1))
+            log_and_print(f"Retrying after {delay} seconds...", "INFO")
+            time.sleep(delay)
+        else:
+            error_log.append({
+                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                "error": "Max retries reached for fetching processed bouncestream signals"
+            })
+            save_errors()
+            log_and_print("Max retries reached for fetching processed bouncestream signals", "ERROR")
+            return False
+    
+    error_log.append({
+        "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+        "error": "Function exited without success"
+    })
+    save_errors()
+    return False
+def execute_fetch_processed_bouncestream_signals():
+    """Execute the fetch_processed_bouncestream_signals function."""
+    if not fetch_processed_bouncestream_signals():
+        log_and_print("Failed to fetch processed bouncestream signals data. Exiting.", "ERROR")
+        return False
+    return True
+
+def insertprocessedorderstodb() -> bool:
+    """Insert all invalid executed orders from invalidexecutedorders.json into cipher_processed_bouncestreamsignals table after validation, removing only duplicate orders."""
+    json_path = r"C:\xampp\htdocs\CIPHER\cipher i\programmes\chart\orders\invalidexecutedorders.json"
+    log_and_print("Inserting all invalid executed orders into cipher_processed_bouncestreamsignals table", "INFO")
+    
+    # Initialize error log list
+    error_log = []
+    
+    # Define error log file path
+    error_json_path = os.path.join(BASE_PROCESSING_FOLDER, "insertprocessedorderserror.json")
+    
+    # Helper function to save errors to JSON
+    def save_errors():
+        try:
+            with open(error_json_path, 'w') as f:
+                json.dump(error_log, f, indent=4)
+            log_and_print(f"Errors saved to {error_json_path}", "INFO")
+        except Exception as e:
+            log_and_print(f"Failed to save errors to {error_json_path}: {str(e)}", "ERROR")
+    
+    # Load invalid executed orders from JSON
     try:
         if not os.path.exists(json_path):
             error_log.append({
                 "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-                "error": f"Locked orders JSON file not found at: {json_path}"
+                "error": f"Invalid executed orders JSON file not found at: {json_path}"
             })
             save_errors()
-            log_and_print(f"Locked orders JSON file not found at: {json_path}", "ERROR")
+            log_and_print(f"Invalid executed orders JSON file not found at: {json_path}", "ERROR")
             return False
         
         with open(json_path, 'r') as f:
@@ -3574,32 +3592,1084 @@ def insertpendingorderstodb(json_path: str = os.path.join(BASE_OUTPUT_FOLDER, "l
         if not orders:
             error_log.append({
                 "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-                "error": "No orders found in lockedpendingorders.json or 'orders' key is missing"
+                "error": "No orders found in invalidexecutedorders.json or 'orders' key is missing"
             })
             save_errors()
-            log_and_print("No orders found in lockedpendingorders.json or 'orders' key is missing", "ERROR")
-            return False
+            log_and_print("No orders found in invalidexecutedorders.json or 'orders' key is missing", "INFO")
+            return True  # No orders to process, but not an error
         
-        # Filter only "locked" orders
-        locked_orders = [order for order in orders if order.get("order_status") == "locked"]
-        log_and_print(f"Loaded {len(locked_orders)} locked orders from {json_path} (out of {len(orders)} total orders)", "INFO")
-        
-        if not locked_orders:
-            error_log.append({
-                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-                "error": "No 'locked' orders found in lockedpendingorders.json"
-            })
-            save_errors()
-            log_and_print("No 'locked' orders found in lockedpendingorders.json", "INFO")
-            return True  # No locked orders to process, but not an error
+        log_and_print(f"Loaded {len(orders)} invalid executed orders from {json_path}", "INFO")
         
     except Exception as e:
         error_log.append({
             "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-            "error": f"Error loading lockedpendingorders.json: {str(e)}"
+            "error": f"Error loading invalidexecutedorders.json: {str(e)}"
         })
         save_errors()
-        log_and_print(f"Error loading lockedpendingorders.json: {str(e)}", "ERROR")
+        log_and_print(f"Error loading invalidexecutedorders.json: {str(e)}", "ERROR")
+        return False
+    
+    # Fetch existing signals from the database
+    fetch_query = """
+        SELECT pair, timeframe, order_type, entry_price, created_at
+        FROM cipher_processed_bouncestreamsignals
+    """
+    try:
+        result = db.execute_query(fetch_query)
+        log_and_print(f"Raw query result for fetching signals: {json.dumps(result, indent=2)}", "DEBUG")
+        
+        existing_signals = []
+        if isinstance(result, dict):
+            if result.get('status') != 'success':
+                error_log.append({
+                    "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                    "error": f"Query failed: {result.get('message', 'No message provided')}"
+                })
+                save_errors()
+                log_and_print(f"Query failed: {result.get('message', 'No message provided')}", "ERROR")
+                return False
+            existing_signals = result.get('data', {}).get('rows', []) or result.get('results', [])
+        elif isinstance(result, list):
+            existing_signals = result
+        else:
+            error_log.append({
+                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                "error": f"Invalid result format: Expected dict or list, got {type(result)}"
+            })
+            save_errors()
+            log_and_print(f"Invalid result format: Expected dict or list, got {type(result)}", "ERROR")
+            return False
+        
+    except Exception as e:
+        error_log.append({
+            "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+            "error": f"Error fetching existing signals: {str(e)}"
+        })
+        save_errors()
+        log_and_print(f"Error fetching existing signals: {str(e)}", "ERROR")
+        return False
+    
+    # Process JSON orders and validate
+    json_order_keys = set()
+    valid_orders = []
+    
+    # Define maximum allowed value for numeric fields
+    MAX_NUMERIC_VALUE = 9999999999.99
+    MIN_NUMERIC_VALUE = -9999999999.99
+    
+    for order in orders:
+        try:
+            pair = order.get('pair', 'N/A')
+            timeframe = DB_TIMEFRAME_MAPPING.get(order.get('timeframe', 'N/A'), order.get('timeframe', 'N/A'))
+            order_type = order.get('order_type', 'N/A')
+            entry_price = float(order.get('entry_price', 0.0))
+            exit_price = float(order.get('exit_price', 0.0))
+            ratio0_5_price = float(order.get('1:0.5_price', 0.0))
+            ratio_1_price = float(order.get('1:1_price', 0.0))
+            ratio_2_price = float(order.get('1:2_price', 0.0))
+            profit_price = float(order.get('profit_price', 0.0))
+            message = order.get('reason', 'N/A')
+            
+            # Validate numeric fields
+            for field_name, value in [
+                ('entry_price', entry_price),
+                ('exit_price', exit_price),
+                ('1:0.5_price', ratio0_5_price),
+                ('1:1_price', ratio_1_price),
+                ('1:2_price', ratio_2_price),
+                ('profit_price', profit_price)
+            ]:
+                if not (MIN_NUMERIC_VALUE <= value <= MAX_NUMERIC_VALUE):
+                    raise ValueError(f"{field_name} out of range: {value}")
+            
+            order_key = (pair, timeframe, order_type, entry_price)
+            if order_key in json_order_keys:
+                error_log.append({
+                    "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                    "error": f"Duplicate order in JSON: {pair}, {timeframe}, {order_type}, {entry_price}"
+                })
+                log_and_print(f"Duplicate order in JSON: {pair}, {timeframe}, {order_type}, {entry_price}", "WARNING")
+                continue
+            json_order_keys.add(order_key)
+            valid_orders.append(order)
+        except (ValueError, TypeError) as e:
+            error_log.append({
+                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                "error": f"Invalid data format in order {order.get('pair', 'unknown')} {order.get('timeframe', 'unknown')}: {str(e)}"
+            })
+            log_and_print(f"Invalid data format in order {order.get('pair', 'unknown')} {order.get('timeframe', 'unknown')}: {str(e)}", "ERROR")
+            continue
+    
+    # Identify duplicates in DB
+    db_order_keys = {}
+    duplicates_to_remove = []
+    
+    for signal in existing_signals:
+        try:
+            pair = signal.get('pair', 'N/A')
+            timeframe = signal.get('timeframe', 'N/A')
+            order_type = signal.get('order_type', 'N/A')
+            entry_price = float(signal.get('entry_price', 0.0))
+            created_at = signal.get('created_at', '')
+            
+            signal_key = (pair, timeframe, order_type, entry_price)
+            
+            if signal_key in db_order_keys:
+                if created_at < db_order_keys[signal_key]['created_at']:
+                    duplicates_to_remove.append(db_order_keys[signal_key])
+                    db_order_keys[signal_key] = signal
+                else:
+                    duplicates_to_remove.append(signal)
+            else:
+                db_order_keys[signal_key] = signal
+        except (ValueError, TypeError) as e:
+            error_log.append({
+                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                "error": f"Invalid data in existing signal {signal.get('pair', 'unknown')}: {str(e)}"
+            })
+            log_and_print(f"Invalid data in existing signal {signal.get('pair', 'unknown')}: {str(e)}", "ERROR")
+            continue
+    
+    # Initialize counters for batch processing
+    insert_batch_counts = []
+    duplicate_batch_counts = []
+    
+    # Batch delete duplicates
+    DELETE_BATCH_SIZE = 80
+    if duplicates_to_remove:
+        for i in range(0, len(duplicates_to_remove), DELETE_BATCH_SIZE):
+            batch = duplicates_to_remove[i:i + DELETE_BATCH_SIZE]
+            batch_number = i // DELETE_BATCH_SIZE + 1
+            try:
+                delete_conditions = []
+                for signal in batch:
+                    pair = signal['pair'].replace("'", "''")
+                    timeframe = signal['timeframe'].replace("'", "''")
+                    order_type = signal['order_type'].replace("'", "''")
+                    entry_price = float(signal['entry_price'])
+                    created_at = signal['created_at'].replace("'", "''")
+                    condition = (
+                        f"(pair = '{pair}' AND timeframe = '{timeframe}' AND "
+                        f"order_type = '{order_type}' AND entry_price = {entry_price} AND created_at = '{created_at}')"
+                    )
+                    delete_conditions.append(condition)
+                
+                delete_query = f"DELETE FROM cipher_processed_bouncestreamsignals WHERE {' OR '.join(delete_conditions)}"
+                result = db.execute_query(delete_query)
+                affected_rows = result.get('results', {}).get('affected_rows', 0) if isinstance(result, dict) else 0
+                duplicate_batch_counts.append((batch_number, affected_rows))  # Track duplicate deletion count
+                log_and_print(f"Successfully removed {affected_rows} duplicate orders in batch {batch_number}", "SUCCESS")
+            except Exception as e:
+                error_log.append({
+                    "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                    "error": f"Failed to batch delete duplicates in batch {batch_number}: {str(e)}"
+                })
+                save_errors()
+                log_and_print(f"Failed to batch delete duplicates in batch {batch_number}: {str(e)}", "ERROR")
+                return False
+    
+    # Prepare batch INSERT query for new valid orders (in chunks of 80)
+    BATCH_SIZE = 80
+    sql_query_base = """
+        INSERT INTO cipher_processed_bouncestreamsignals (
+            pair, timeframe, order_type, entry_price, exit_price,
+            ratio_0_5_price, ratio_1_price, ratio_2_price, 
+            profit_price, message
+        ) VALUES 
+    """
+    value_strings = []
+    
+    for order in valid_orders:
+        try:
+            pair = order.get('pair', 'N/A')
+            timeframe = DB_TIMEFRAME_MAPPING.get(order.get('timeframe', 'N/A'), order.get('timeframe', 'N/A'))
+            order_type = order.get('order_type', 'N/A')
+            entry_price = float(order.get('entry_price', 0.0))
+            exit_price = float(order.get('exit_price', 0.0))
+            ratio0_5_price = float(order.get('1:0.5_price', 0.0))
+            ratio_1_price = float(order.get('1:1_price', 0.0))
+            ratio_2_price = float(order.get('1:2_price', 0.0))
+            profit_price = float(order.get('profit_price', 0.0))
+            message = order.get('reason', 'N/A')
+            
+            # Re-validate numeric fields
+            for field_name, value in [
+                ('entry_price', entry_price),
+                ('exit_price', exit_price),
+                ('1:0.5_price', ratio0_5_price),
+                ('1:1_price', ratio_1_price),
+                ('1:2_price', ratio_2_price),
+                ('profit_price', profit_price)
+            ]:
+                if not (MIN_NUMERIC_VALUE <= value <= MAX_NUMERIC_VALUE):
+                    raise ValueError(f"{field_name} out of range: {value}")
+            
+            order_key = (pair, timeframe, order_type, entry_price)
+            
+            if order_key not in db_order_keys:
+                pair_escaped = pair.replace("'", "''")
+                timeframe_escaped = timeframe.replace("'", "''")
+                order_type_escaped = order_type.replace("'", "''")
+                message_escaped = message.replace("'", "''")
+                value_string = (
+                    f"('{pair_escaped}', '{timeframe_escaped}', '{order_type_escaped}', {entry_price}, {exit_price}, "
+                    f"{ratio0_5_price}, {ratio_1_price}, {ratio_2_price}, {profit_price}, '{message_escaped}')"
+                )
+                value_strings.append(value_string)
+        except (ValueError, TypeError) as e:
+            error_log.append({
+                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                "error": f"Invalid data format in order {order.get('pair', 'unknown')} {order.get('timeframe', 'unknown')}: {str(e)}"
+            })
+            log_and_print(f"Invalid data format in order {order.get('pair', 'unknown')} {order.get('timeframe', 'unknown')}: {str(e)}", "ERROR")
+            continue
+    
+    if not value_strings:
+        error_log.append({
+            "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+            "error": "No new valid invalid executed orders to insert after processing"
+        })
+        save_errors()
+        log_and_print(f"No new valid invalid executed orders to insert after processing", "INFO")
+        return True
+    
+    # Execute batch INSERT in chunks of BATCH_SIZE with retries
+    success = True
+    for i in range(0, len(value_strings), BATCH_SIZE):
+        batch = value_strings[i:i + BATCH_SIZE]
+        batch_number = i // BATCH_SIZE + 1
+        sql_query = sql_query_base + ", ".join(batch)
+        
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                result = db.execute_query(sql_query)
+                log_and_print(f"Raw query result for inserting batch {batch_number}: {json.dumps(result, indent=2)}", "DEBUG")
+                
+                if not isinstance(result, dict):
+                    error_log.append({
+                        "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                        "error": f"Invalid result format on attempt {attempt} for batch {batch_number}: Expected dict, got {type(result)}"
+                    })
+                    save_errors()
+                    log_and_print(f"Invalid result format on attempt {attempt} for batch {batch_number}: Expected dict, got {type(result)}", "ERROR")
+                    success = False
+                    continue
+                
+                if result.get('status') != 'success':
+                    error_log.append({
+                        "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                        "error": f"Query failed on attempt {attempt} for batch {batch_number}: {result.get('message', 'No message provided')}"
+                    })
+                    save_errors()
+                    log_and_print(f"Query failed on attempt {attempt} for batch {batch_number}: {result.get('message', 'No message provided')}", "ERROR")
+                    success = False
+                    continue
+                
+                affected_rows = result.get('results', {}).get('affected_rows', 0)
+                insert_batch_counts.append((batch_number, affected_rows))  # Track insert count
+                log_and_print(f"Successfully inserted {affected_rows} invalid executed orders in batch {batch_number}", "SUCCESS")
+                break  # Exit retry loop on success
+                
+            except Exception as e:
+                error_log.append({
+                    "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                    "error": f"Exception on attempt {attempt} for batch {batch_number}: {str(e)}"
+                })
+                save_errors()
+                log_and_print(f"Exception on attempt {attempt} for batch {batch_number}: {str(e)}", "ERROR")
+                
+                if attempt < MAX_RETRIES:
+                    delay = RETRY_DELAY * (2 ** (attempt - 1))
+                    log_and_print(f"Retrying batch {batch_number} after {delay} seconds...", "INFO")
+                    time.sleep(delay)
+                else:
+                    error_log.append({
+                        "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                        "error": f"Max retries reached for batch {batch_number}"
+                    })
+                    save_errors()
+                    log_and_print(f"Max retries reached for batch {batch_number}", "ERROR")
+                    success = False
+    
+    # Log batch processing counts
+    for batch_number, count in duplicate_batch_counts:
+        log_and_print(f"Duplicate batch {batch_number} processed: {count}", "INFO")
+    for batch_number, count in insert_batch_counts:
+        log_and_print(f"Insert batch {batch_number} processed: {count}", "INFO")
+    
+    if not success:
+        error_log.append({
+            "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+            "error": "Function failed due to errors in one or more batches"
+        })
+        save_errors()
+        log_and_print(f"Function failed due to errors in one or more batches", "ERROR")
+        return False
+    
+    log_and_print(f"All batches processed successfully", "SUCCESS")
+    return True
+def executeinsertprocessedorderstodb():
+    """Execute the insertion of invalid executed orders into the database."""
+    log_and_print("===== Execute Insert Invalid Executed Orders to Database =====", "TITLE")
+    if not insertprocessedorderstodb():
+        log_and_print("Failed to insert invalid executed orders into database. Exiting.", "ERROR")
+        return
+    log_and_print("===== Insert Invalid Executed Orders to Database Completed =====", "TITLE")
+
+
+def fetch_pending_bouncestream_signals(json_dir: str = r"C:\xampp\htdocs\CIPHER\cipher i\programmes\chart\orders") -> bool:
+    """Fetch all pending bouncestream signals data from cipherbouncestream_signals table and save to fetchedpendingorders.json."""
+    log_and_print("Fetching all pending bouncestream signals data", "INFO")
+    
+    # Initialize error log list
+    error_log = []
+    
+    # Define error log file path
+    error_json_path = os.path.join(BASE_ERROR_FOLDER, "fetchpendingsignalserror.json")
+    
+    # Helper function to save errors to JSON
+    def save_errors():
+        try:
+            with open(error_json_path, 'w') as f:
+                json.dump(error_log, f, indent=4)
+            log_and_print(f"Errors saved to {error_json_path}", "INFO")
+        except Exception as e:
+            log_and_print(f"Failed to save errors to {error_json_path}: {str(e)}", "ERROR")
+    
+    # Helper function to normalize timeframe values
+    def normalize_timeframe(timeframe: str) -> str:
+        timeframe_map = {
+            '15minutes': 'M15',
+            '30minutes': 'M30',
+            '1hour': 'H1',
+            '4hour': 'H4',
+            '5minutes': 'M5'
+        }
+        # Convert to lowercase and remove spaces for consistency
+        normalized = timeframe.lower().replace(' ', '')
+        return timeframe_map.get(normalized, timeframe)  # Return mapped value or original if not found
+    
+    # SQL query to fetch all rows
+    sql_query = """
+        SELECT id, pair, timeframe, order_type, entry_price, exit_price, 
+               ratio_0_5_price, ratio_1_price, ratio_2_price, profit_price, created_at
+        FROM cipherbouncestream_signals
+    """
+    
+    # Create output directory if it doesn't exist
+    if not os.path.exists(json_dir):
+        try:
+            os.makedirs(json_dir)
+            log_and_print(f"Created output directory: {json_dir}", "INFO")
+        except Exception as e:
+            error_log.append({
+                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                "error": f"Error creating directory {json_dir}: {str(e)}"
+            })
+            save_errors()
+            log_and_print(f"Error creating directory {json_dir}: {str(e)}", "ERROR")
+            return False
+    
+    # Execute query with retries
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            result = db.execute_query(sql_query)
+            log_and_print(f"Raw query result for pending signals: {json.dumps(result, indent=2)}", "DEBUG")
+            
+            if not isinstance(result, dict):
+                error_log.append({
+                    "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                    "error": f"Invalid result format on attempt {attempt}: Expected dict, got {type(result)}"
+                })
+                save_errors()
+                log_and_print(f"Invalid result format on attempt {attempt}: Expected dict, got {type(result)}", "ERROR")
+                continue
+                
+            if result.get('status') != 'success':
+                error_message = result.get('message', 'No message provided')
+                error_log.append({
+                    "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                    "error": f"Query failed on attempt {attempt}: {error_message}"
+                })
+                save_errors()
+                log_and_print(f"Query failed on attempt {attempt}: {error_message}", "ERROR")
+                continue
+                
+            # Handle both 'data' and 'results' keys
+            rows = None
+            if 'data' in result and 'rows' in result['data'] and isinstance(result['data']['rows'], list):
+                rows = result['data']['rows']
+            elif 'results' in result and isinstance(result['results'], list):
+                rows = result['results']
+            else:
+                error_log.append({
+                    "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                    "error": f"Invalid or missing rows in result on attempt {attempt}: {json.dumps(result, indent=2)}"
+                })
+                save_errors()
+                continue
+            
+            # Prepare summary counts
+            summary = {
+                "total_valid_orders": len(rows),
+                "4h_valid_orders": 0,
+                "1h_valid_orders": 0,
+                "30m_valid_orders": 0,
+                "15m_valid_orders": 0,
+                "5m_valid_orders": 0
+            }
+            
+            # Prepare data for JSON
+            orders = []
+            for row in rows:
+                normalized_timeframe = normalize_timeframe(row.get('timeframe', 'N/A'))
+                # Update summary counts based on normalized timeframe
+                if normalized_timeframe == 'H4':
+                    summary['4h_valid_orders'] += 1
+                elif normalized_timeframe == 'H1':
+                    summary['1h_valid_orders'] += 1
+                elif normalized_timeframe == 'M30':
+                    summary['30m_valid_orders'] += 1
+                elif normalized_timeframe == 'M15':
+                    summary['15m_valid_orders'] += 1
+                elif normalized_timeframe == 'M5':
+                    summary['5m_valid_orders'] += 1
+                
+                orders.append({
+                    "market": row.get('pair', 'N/A'),
+                    "pair": row.get('pair', 'N/A'),
+                    "timeframe": normalized_timeframe,
+                    "order_type": row.get('order_type', 'N/A'),
+                    "entry_price": float(row.get('entry_price', 0.0)) if row.get('entry_price') is not None else None,
+                    "exit_price": float(row.get('exit_price', 0.0)) if row.get('exit_price') is not None else None,
+                    "1:0.5_price": float(row.get('ratio_0_5_price', 0.0)) if row.get('ratio_0_5_price') is not None else None,
+                    "1:1_price": float(row.get('ratio_1_price', 0.0)) if row.get('ratio_1_price') is not None else None,
+                    "1:2_price": float(row.get('ratio_2_price', 0.0)) if row.get('ratio_2_price') is not None else None,
+                    "profit_price": float(row.get('profit_price', 0.0)) if row.get('profit_price') is not None else None,
+                    "created_at": row.get('created_at', 'N/A')
+                })
+            
+            # Combine summary and orders
+            output_data = {
+                "summary": summary,
+                "orders": orders
+            }
+            
+            # Define output path
+            output_json_path = os.path.join(json_dir, "fetchedpendingorders.json")
+            
+            # Delete existing file if it exists
+            if os.path.exists(output_json_path):
+                try:
+                    os.remove(output_json_path)
+                    log_and_print(f"Existing {output_json_path} deleted", "INFO")
+                except Exception as e:
+                    error_log.append({
+                        "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                        "error": f"Error deleting existing {output_json_path}: {str(e)}"
+                    })
+                    save_errors()
+                    log_and_print(f"Error deleting existing {output_json_path}: {str(e)}", "ERROR")
+                    return False
+            
+            # Save to JSON
+            try:
+                with open(output_json_path, 'w') as f:
+                    json.dump(output_data, f, indent=4)
+                log_and_print(f"Pending bouncestream signals saved to {output_json_path}", "SUCCESS")
+                return True
+            except Exception as e:
+                error_log.append({
+                    "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                    "error": f"Error saving {output_json_path}: {str(e)}"
+                })
+                save_errors()
+                log_and_print(f"Error saving {output_json_path}: {str(e)}", "ERROR")
+                return False
+                
+        except Exception as e:
+            error_log.append({
+                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                "error": f"Exception on attempt {attempt}: {str(e)}"
+            })
+            save_errors()
+            log_and_print(f"Exception on attempt {attempt}: {str(e)}", "ERROR")
+            
+        if attempt < MAX_RETRIES:
+            delay = RETRY_DELAY * (2 ** (attempt - 1))
+            log_and_print(f"Retrying after {delay} seconds...", "INFO")
+            time.sleep(delay)
+        else:
+            error_log.append({
+                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                "error": "Max retries reached for fetching pending bouncestream signals"
+            })
+            save_errors()
+            log_and_print("Max retries reached for fetching pending bouncestream signals", "ERROR")
+            return False
+    
+    error_log.append({
+        "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+        "error": "Function exited without success"
+    })
+    save_errors()
+    return False
+def execute_fetch_pending_bouncestream_signals():
+    """Execute the fetch_pending_bouncestream_signals function."""
+    if not fetch_pending_bouncestream_signals():
+        log_and_print("Failed to fetch pending bouncestream signals data. Exiting.", "ERROR")
+        return False
+    return True
+
+def remove_processed_from_pending_orders(
+    pending_json_path: str = r"C:\xampp\htdocs\CIPHER\cipher i\programmes\chart\orders\fetchedpendingorders.json",
+    processed_json_path: str = r"C:\xampp\htdocs\CIPHER\cipher i\programmes\chart\orders\fetchedprocessedmarkets.json"
+) -> bool:
+    """
+    Read fetchedpendingorders.json and fetchedprocessedmarkets.json, remove orders from pending JSON that exist in
+    processed JSON based on pair, timeframe, order_type, and entry_price, and overwrite fetchedpendingorders.json
+    with the filtered orders and updated summary.
+    
+    Args:
+        pending_json_path (str): Path to fetchedpendingorders.json
+        processed_json_path (str): Path to fetchedprocessedmarkets.json
+    
+    Returns:
+        bool: True if the operation succeeds, False if any errors occur
+    """
+    log_and_print("Starting removal of processed orders from pending orders", "INFO")
+    
+    # Initialize error log list
+    error_log = []
+    error_json_path = os.path.join(os.path.dirname(pending_json_path), "removeprocessedorderserror.json")
+    
+    # Helper function to save errors to JSON
+    def save_errors():
+        try:
+            with open(error_json_path, 'w') as f:
+                json.dump(error_log, f, indent=4)
+            log_and_print(f"Errors saved to {error_json_path}", "INFO")
+        except Exception as e:
+            log_and_print(f"Failed to save errors to {error_json_path}: {str(e)}", "ERROR")
+
+    # Load processed orders from fetchedprocessedmarkets.json
+    try:
+        if not os.path.exists(processed_json_path):
+            error_log.append({
+                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                "error": f"Processed orders JSON file not found at: {processed_json_path}"
+            })
+            save_errors()
+            log_and_print(f"Processed orders JSON file not found at: {processed_json_path}", "ERROR")
+            return False
+        
+        with open(processed_json_path, 'r') as f:
+            processed_data = json.load(f)
+        
+        processed_orders = processed_data.get('orders', [])
+        if not processed_orders:
+            error_log.append({
+                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                "error": "No orders found in fetchedprocessedmarkets.json or 'orders' key is missing"
+            })
+            save_errors()
+            log_and_print("No orders found in fetchedprocessedmarkets.json or 'orders' key is missing", "INFO")
+            # Continue as there are no processed orders to remove
+        
+        log_and_print(f"Loaded {len(processed_orders)} processed orders from {processed_json_path}", "INFO")
+        
+    except Exception as e:
+        error_log.append({
+            "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+            "error": f"Error loading fetchedprocessedmarkets.json: {str(e)}"
+        })
+        save_errors()
+        log_and_print(f"Error loading fetchedprocessedmarkets.json: {str(e)}", "ERROR")
+        return False
+    
+    # Load pending orders from fetchedpendingorders.json
+    try:
+        if not os.path.exists(pending_json_path):
+            error_log.append({
+                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                "error": f"Pending orders JSON file not found at: {pending_json_path}"
+            })
+            save_errors()
+            log_and_print(f"Pending orders JSON file not found at: {pending_json_path}", "ERROR")
+            return False
+        
+        with open(pending_json_path, 'r') as f:
+            pending_data = json.load(f)
+        
+        pending_orders = pending_data.get('orders', [])
+        if not pending_orders:
+            error_log.append({
+                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                "error": "No orders found in fetchedpendingorders.json or 'orders' key is missing"
+            })
+            save_errors()
+            log_and_print("No orders found in fetchedpendingorders.json or 'orders' key is missing", "INFO")
+            return True  # No pending orders to process, but not an error
+        
+        pending_summary = pending_data.get('summary', {})
+        log_and_print(f"Loaded {len(pending_orders)} pending orders from {pending_json_path}", "INFO")
+        
+    except Exception as e:
+        error_log.append({
+            "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+            "error": f"Error loading fetchedpendingorders.json: {str(e)}"
+        })
+        save_errors()
+        log_and_print(f"Error loading fetchedpendingorders.json: {str(e)}", "ERROR")
+        return False
+    
+    # Create a set of processed order keys for efficient lookup
+    processed_order_keys = set()
+    for order in processed_orders:
+        try:
+            pair = order.get('pair', 'N/A')
+            timeframe = order.get('timeframe', 'N/A')
+            order_type = order.get('order_type', 'N/A')
+            entry_price = float(order.get('entry_price', 0.0))
+            order_key = (pair, timeframe, order_type, entry_price)
+            processed_order_keys.add(order_key)
+        except (ValueError, TypeError) as e:
+            error_log.append({
+                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                "error": f"Invalid data in processed order {order.get('pair', 'unknown')}: {str(e)}"
+            })
+            log_and_print(f"Invalid data in processed order {order.get('pair', 'unknown')}: {str(e)}", "ERROR")
+            continue
+    
+    # Filter pending orders, keeping only those not in processed_order_keys
+    filtered_orders = []
+    removed_orders_count = 0
+    filtered_summary = {
+        "total_valid_orders": 0,
+        "4h_valid_orders": 0,
+        "1h_valid_orders": 0,
+        "30m_valid_orders": 0,
+        "15m_valid_orders": 0,
+        "5m_valid_orders": 0
+    }
+    
+    for order in pending_orders:
+        try:
+            pair = order.get('pair', 'N/A')
+            timeframe = order.get('timeframe', 'N/A')
+            order_type = order.get('order_type', 'N/A')
+            entry_price = float(order.get('entry_price', 0.0))
+            order_key = (pair, timeframe, order_type, entry_price)
+            
+            if order_key in processed_order_keys:
+                removed_orders_count += 1
+                log_and_print(f"Removed order from pending: {pair}, {timeframe}, {order_type}, {entry_price}", "INFO")
+                continue  # Skip this order as it's found in processed orders
+            
+            # Add to filtered orders
+            filtered_orders.append(order)
+            
+            # Update summary counts
+            timeframe_mapped = {
+                'H4': '4h_valid_orders',
+                '1H': '1h_valid_orders',
+                'M30': '30m_valid_orders',
+                'M15': '15m_valid_orders',
+                'M5': '5m_valid_orders'
+            }.get(timeframe, None)
+            if timeframe_mapped:
+                filtered_summary[timeframe_mapped] += 1
+            else:
+                error_log.append({
+                    "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                    "error": f"Unknown timeframe {timeframe} in order {pair}"
+                })
+                log_and_print(f"Unknown timeframe {timeframe} in order {pair}", "WARNING")
+        
+        except (ValueError, TypeError) as e:
+            error_log.append({
+                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                "error": f"Invalid data in pending order {order.get('pair', 'unknown')}: {str(e)}"
+            })
+            log_and_print(f"Invalid data in pending order {order.get('pair', 'unknown')}: {str(e)}", "ERROR")
+            continue
+    
+    filtered_summary['total_valid_orders'] = len(filtered_orders)
+    
+    # Verify summary counts
+    calculated_counts = {
+        "4h_valid_orders": sum(1 for order in filtered_orders if order.get('timeframe') == 'H4'),
+        "1h_valid_orders": sum(1 for order in filtered_orders if order.get('timeframe') == '1H'),
+        "30m_valid_orders": sum(1 for order in filtered_orders if order.get('timeframe') == 'M30'),
+        "15m_valid_orders": sum(1 for order in filtered_orders if order.get('timeframe') == 'M15'),
+        "5m_valid_orders": sum(1 for order in filtered_orders if order.get('timeframe') == 'M5')
+    }
+    
+    for timeframe_key, count in calculated_counts.items():
+        if filtered_summary[timeframe_key] != count:
+            error_log.append({
+                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                "error": f"Mismatch in {timeframe_key}: summary count {filtered_summary[timeframe_key]}, calculated count {count}"
+            })
+            log_and_print(f"Mismatch in {timeframe_key}: summary count {filtered_summary[timeframe_key]}, calculated count {count}", "WARNING")
+            filtered_summary[timeframe_key] = count  # Update to correct count
+    
+    # Save filtered orders back to fetchedpendingorders.json
+    filtered_data = {
+        "summary": filtered_summary,
+        "orders": filtered_orders
+    }
+    
+    try:
+        os.makedirs(os.path.dirname(pending_json_path), exist_ok=True)
+        with open(pending_json_path, 'w') as f:
+            json.dump(filtered_data, f, indent=4)
+        log_and_print(f"Successfully updated {pending_json_path} with {len(filtered_orders)} filtered pending orders", "SUCCESS")
+        log_and_print(f"Removed {removed_orders_count} orders that were found in processed orders", "INFO")
+        
+    except Exception as e:
+        error_log.append({
+            "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+            "error": f"Failed to update {pending_json_path}: {str(e)}"
+        })
+        save_errors()
+        log_and_print(f"Failed to update {pending_json_path}: {str(e)}", "ERROR")
+        return False
+    
+    # Save errors if any
+    if error_log:
+        save_errors()
+    
+    log_and_print("Completed removal of processed orders from pending orders", "SUCCESS")
+    return True
+
+def insertpendingorderstodb(json_path: str = os.path.join(BASE_OUTPUT_FOLDER, "validpendingorders.json")) -> bool:
+    """Insert all pending orders from validpendingorders.json into cipherbouncestream_signals table after validation, 
+    removing only duplicate orders. Fetch all orders older than or equal to 4 days, insert them into 
+    cipher_processed_bouncestreamsignals with message 'older than <old_range_limit>', and save to oldestpendingorders.json."""
+    log_and_print("Inserting all pending orders into cipherbouncestream_signals table", "INFO")
+    
+    # Initialize error log list
+    error_log = []
+    
+    # Define paths
+    error_json_path = os.path.join(BASE_PROCESSING_FOLDER, "insertpendingorderserror.json")
+    oldest_orders_path = r"C:\xampp\htdocs\CIPHER\cipher i\programmes\chart\orders\oldestpendingorders.json"
+    
+    # Helper function to save errors to JSON
+    def save_errors():
+        try:
+            with open(error_json_path, 'w') as f:
+                json.dump(error_log, f, indent=4)
+            log_and_print(f"Errors saved to {error_json_path}", "INFO")
+        except Exception as e:
+            log_and_print(f"Failed to save errors to {error_json_path}: {str(e)}", "ERROR")
+    
+    # Helper function to calculate order age
+    def calculate_order_age(created_at_str: str) -> str:
+        try:
+            # Parse created_at as offset-naive
+            created_at = datetime.strptime(created_at_str, '%Y-%m-%d %H:%M:%S')
+            # Make created_at offset-aware with Africa/Lagos timezone
+            lagos_tz = pytz.timezone('Africa/Lagos')
+            created_at = lagos_tz.localize(created_at)
+            # Get current time in Africa/Lagos timezone
+            current_time = datetime.now(lagos_tz)
+            time_diff = current_time - created_at
+            
+            days = time_diff.days
+            hours = time_diff.seconds // 3600
+            minutes = (time_diff.seconds % 3600) // 60
+            
+            if days > 0:
+                return f"{days} day{'s' if days > 1 else ''} old"
+            elif hours > 0:
+                return f"{hours} hour{'s' if hours > 1 else ''} old"
+            else:
+                return f"{minutes} minute{'s' if minutes > 1 else ''} old"
+        except Exception as e:
+            log_and_print(f"Error calculating age for created_at {created_at_str}: {str(e)}", "ERROR")
+            return "Unknown age"
+
+    # Fetch all orders older than or equal to 4 days from the database
+    try:
+        old_range_limit = (datetime.now(pytz.timezone('Africa/Lagos')) - timedelta(days=4)).strftime('%Y-%m-%d %H:%M:%S')
+        fetch_oldest_query = f"""
+            SELECT pair, timeframe, order_type, entry_price, exit_price, 
+                   ratio_0_5_price, ratio_1_price, ratio_2_price, profit_price, created_at
+            FROM cipherbouncestream_signals
+            WHERE created_at <= '{old_range_limit}'
+            ORDER BY created_at ASC
+        """
+        oldest_result = db.execute_query(fetch_oldest_query)
+        log_and_print(f"Raw query result for fetching oldest orders: {json.dumps(oldest_result, indent=2)}", "DEBUG")
+        
+        oldest_orders = []
+        if isinstance(oldest_result, dict):
+            if oldest_result.get('status') != 'success':
+                error_log.append({
+                    "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                    "error": f"Oldest orders query failed: {oldest_result.get('message', 'No message provided')}"
+                })
+                save_errors()
+                log_and_print(f"Oldest orders query failed: {oldest_result.get('message', 'No message provided')}", "ERROR")
+            else:
+                oldest_orders = oldest_result.get('data', {}).get('rows', []) or oldest_result.get('results', [])
+        elif isinstance(oldest_result, list):
+            oldest_orders = oldest_result
+        else:
+            error_log.append({
+                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                "error": f"Invalid result format for oldest orders: Expected dict or list, got {type(oldest_result)}"
+            })
+            save_errors()
+            log_and_print(f"Invalid result format for oldest orders: Expected dict or list, got {type(oldest_result)}", "ERROR")
+        
+        # Initialize summary dictionary
+        summary = {
+            "total_valid_orders": 0,
+            "4h_valid_orders": 0,
+            "1h_valid_orders": 0,
+            "30m_valid_orders": 0,
+            "15m_valid_orders": 0,
+            "5m_valid_orders": 0
+        }
+        
+        formatted_orders = []
+        if oldest_orders:
+            # Process all orders older than or equal to old_range_limit
+            for order in oldest_orders:
+                timeframe = order.get('timeframe', 'N/A')
+                # Map timeframe to the correct format if necessary
+                timeframe = DB_TIMEFRAME_MAPPING.get(timeframe, timeframe)
+                
+                # Increment timeframe counters
+                if timeframe == '4Hour':
+                    summary['4h_valid_orders'] += 1
+                elif timeframe == '1Hour':
+                    summary['1h_valid_orders'] += 1
+                elif timeframe == '30minutes':
+                    summary['30m_valid_orders'] += 1
+                elif timeframe == '15minutes':
+                    summary['15m_valid_orders'] += 1
+                elif timeframe == '5minutes':
+                    summary['5m_valid_orders'] += 1
+                
+                formatted_orders.append({
+                    "market": order.get('pair', 'N/A'),
+                    "pair": order.get('pair', 'N/A'),
+                    "timeframe": timeframe,
+                    "order_type": order.get('order_type', 'N/A'),
+                    "entry_price": float(order.get('entry_price', 0.0)),
+                    "exit_price": float(order.get('exit_price', 0.0)),
+                    "1:0.5_price": float(order.get('ratio_0_5_price', 0.0)),
+                    "1:1_price": float(order.get('ratio_1_price', 0.0)),
+                    "1:2_price": float(order.get('ratio_2_price', 0.0)),
+                    "profit_price": float(order.get('profit_price', 0.0)),
+                    "created_at": order.get('created_at', ''),
+                    "old_range": calculate_order_age(order.get('created_at', ''))
+                })
+            
+            summary["total_valid_orders"] = len(formatted_orders)
+        
+        # Verify summary counts against formatted_orders
+        calculated_counts = {
+            "4h_valid_orders": sum(1 for order in formatted_orders if order['timeframe'] == '4Hour'),
+            "1h_valid_orders": sum(1 for order in formatted_orders if order['timeframe'] == '1Hour'),
+            "30m_valid_orders": sum(1 for order in formatted_orders if order['timeframe'] == '30minutes'),
+            "15m_valid_orders": sum(1 for order in formatted_orders if order['timeframe'] == '15minutes'),
+            "5m_valid_orders": sum(1 for order in formatted_orders if order['timeframe'] == '5minutes')
+        }
+        
+        for timeframe_key, count in calculated_counts.items():
+            if summary[timeframe_key] != count:
+                error_log.append({
+                    "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                    "error": f"Mismatch in {timeframe_key}: summary count {summary[timeframe_key]}, calculated count {count}"
+                })
+                log_and_print(f"Mismatch in {timeframe_key}: summary count {summary[timeframe_key]}, calculated count {count}", "WARNING")
+                # Update summary to reflect correct counts
+                summary[timeframe_key] = count
+        
+        # Insert oldest orders into cipher_processed_bouncestreamsignals
+        if formatted_orders:
+            DELETE_BATCH_SIZE = 80
+            processed_insert_success = True
+            insert_batch_counts = []
+            sql_insert_base = """
+                INSERT INTO cipher_processed_bouncestreamsignals (
+                    pair, timeframe, order_type, entry_price, exit_price,
+                    ratio_0_5_price, ratio_1_price, ratio_2_price, 
+                    profit_price, message
+                ) VALUES 
+            """
+            value_strings = []
+            
+            for order in formatted_orders:
+                try:
+                    pair = order['pair'].replace("'", "''")
+                    timeframe = order['timeframe'].replace("'", "''")
+                    order_type = order['order_type'].replace("'", "''")
+                    entry_price = float(order['entry_price'])
+                    exit_price = float(order['exit_price'])
+                    ratio_0_5_price = float(order['1:0.5_price'])
+                    ratio_1_price = float(order['1:1_price'])
+                    ratio_2_price = float(order['1:2_price'])
+                    profit_price = float(order['profit_price'])
+                    message = f"older than {old_range_limit}"
+                    message_escaped = message.replace("'", "''")
+                    
+                    value_string = (
+                        f"('{pair}', '{timeframe}', '{order_type}', {entry_price}, {exit_price}, "
+                        f"{ratio_0_5_price}, {ratio_1_price}, {ratio_2_price}, {profit_price}, '{message_escaped}')"
+                    )
+                    value_strings.append(value_string)
+                except (ValueError, TypeError) as e:
+                    error_log.append({
+                        "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                        "error": f"Invalid data format in order {order.get('pair', 'unknown')} {order.get('timeframe', 'unknown')} for processed table: {str(e)}"
+                    })
+                    log_and_print(f"Invalid data format in order {order.get('pair', 'unknown')} {order.get('timeframe', 'unknown')} for processed table: {str(e)}", "ERROR")
+                    processed_insert_success = False
+                    continue
+            
+            # Execute batch INSERT into cipher_processed_bouncestreamsignals
+            for i in range(0, len(value_strings), DELETE_BATCH_SIZE):
+                batch = value_strings[i:i + DELETE_BATCH_SIZE]
+                batch_number = i // DELETE_BATCH_SIZE + 1
+                sql_query = sql_insert_base + ", ".join(batch)
+                
+                for attempt in range(1, MAX_RETRIES + 1):
+                    try:
+                        result = db.execute_query(sql_query)
+                        log_and_print(f"Raw query result for inserting batch {batch_number} into processed table: {json.dumps(result, indent=2)}", "DEBUG")
+                        
+                        if not isinstance(result, dict):
+                            error_log.append({
+                                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                                "error": f"Invalid result format on attempt {attempt} for batch {batch_number} in processed table: Expected dict, got {type(result)}"
+                            })
+                            save_errors()
+                            log_and_print(f"Invalid result format on attempt {attempt} for batch {batch_number} in processed table: Expected dict, got {type(result)}", "ERROR")
+                            processed_insert_success = False
+                            continue
+                        
+                        if result.get('status') != 'success':
+                            error_log.append({
+                                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                                "error": f"Insert query failed on attempt {attempt} for batch {batch_number} in processed table: {result.get('message', 'No message provided')}"
+                            })
+                            save_errors()
+                            log_and_print(f"Insert query failed on attempt {attempt} for batch {batch_number} in processed table: {result.get('message', 'No message provided')}", "ERROR")
+                            processed_insert_success = False
+                            continue
+                        
+                        affected_rows = result.get('results', {}).get('affected_rows', 0)
+                        insert_batch_counts.append((batch_number, affected_rows))
+                        log_and_print(f"Successfully inserted {affected_rows} orders into cipher_processed_bouncestreamsignals in batch {batch_number}", "SUCCESS")
+                        break  # Exit retry loop on success
+                        
+                    except Exception as e:
+                        error_log.append({
+                            "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                            "error": f"Exception on attempt {attempt} for batch {batch_number} in processed table: {str(e)}"
+                        })
+                        save_errors()
+                        log_and_print(f"Exception on attempt {attempt} for batch {batch_number} in processed table: {str(e)}", "ERROR")
+                        
+                        if attempt < MAX_RETRIES:
+                            delay = RETRY_DELAY * (2 ** (attempt - 1))
+                            log_and_print(f"Retrying batch {batch_number} for processed table after {delay} seconds...", "INFO")
+                            time.sleep(delay)
+                        else:
+                            error_log.append({
+                                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                                "error": f"Max retries reached for batch {batch_number} in processed table"
+                            })
+                            save_errors()
+                            log_and_print(f"Max retries reached for batch {batch_number} in processed table", "ERROR")
+                            processed_insert_success = False
+            
+            # Log batch processing counts for processed table
+            for batch_number, count in insert_batch_counts:
+                log_and_print(f"Processed table insert batch {batch_number} processed: {count}", "INFO")
+            
+            if not processed_insert_success:
+                error_log.append({
+                    "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                    "error": "Failed to insert all orders into cipher_processed_bouncestreamsignals"
+                })
+                save_errors()
+                log_and_print("Failed to insert all orders into cipher_processed_bouncestreamsignals", "ERROR")
+                return False
+        
+        # Save oldest orders to JSON
+        oldest_orders_data = {
+            "summary": summary,
+            "orders": formatted_orders
+        }
+        try:
+            os.makedirs(os.path.dirname(oldest_orders_path), exist_ok=True)
+            with open(oldest_orders_path, 'w') as f:
+                json.dump(oldest_orders_data, f, indent=4)
+            log_and_print(f"Successfully saved {len(formatted_orders)} oldest orders to {oldest_orders_path}", "SUCCESS")
+        
+        except Exception as e:
+            error_log.append({
+                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                "error": f"Failed to save oldest orders to {oldest_orders_path}: {str(e)}"
+            })
+            save_errors()
+            log_and_print(f"Failed to save oldest orders to {oldest_orders_path}: {str(e)}", "ERROR")
+            return False
+        
+    except Exception as e:
+        error_log.append({
+            "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+            "error": f"Error fetching oldest orders: {str(e)}"
+        })
+        save_errors()
+        log_and_print(f"Error fetching oldest orders: {str(e)}", "ERROR")
+        # Continue with the rest of the function despite error in fetching oldest orders
+
+    #===============#
+    remove_processed_from_pending_orders()
+    #validatesignals()
+    #===============#
+    
+    # Load pending orders from JSON
+    try:
+        if not os.path.exists(json_path):
+            error_log.append({
+                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                "error": f"Pending orders JSON file not found at: {json_path}"
+            })
+            save_errors()
+            log_and_print(f"Pending orders JSON file not found at: {json_path}", "ERROR")
+            return False
+        
+        with open(json_path, 'r') as f:
+            data = json.load(f)
+        
+        orders = data.get('orders', [])
+        if not orders:
+            error_log.append({
+                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+                "error": "No orders found in validpendingorders.json or 'orders' key is missing"
+            })
+            save_errors()
+            log_and_print("No orders found in validpendingorders.json or 'orders' key is missing", "INFO")
+            return True  # No orders to process, but not an error
+        
+        log_and_print(f"Loaded {len(orders)} pending orders from {json_path}", "INFO")
+        
+    except Exception as e:
+        error_log.append({
+            "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
+            "error": f"Error loading validpendingorders.json: {str(e)}"
+        })
+        save_errors()
+        log_and_print(f"Error loading validpendingorders.json: {str(e)}", "ERROR")
         return False
     
     # Fetch existing signals from the database
@@ -3633,8 +4703,6 @@ def insertpendingorderstodb(json_path: str = os.path.join(BASE_OUTPUT_FOLDER, "l
             log_and_print(f"Invalid result format: Expected dict or list, got {type(result)}", "ERROR")
             return False
         
-        #log_and_print(f"Fetched {len(existing_signals)} existing signals from database", "INFO")
-        
     except Exception as e:
         error_log.append({
             "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
@@ -3652,23 +4720,27 @@ def insertpendingorderstodb(json_path: str = os.path.join(BASE_OUTPUT_FOLDER, "l
     MAX_NUMERIC_VALUE = 9999999999.99
     MIN_NUMERIC_VALUE = -9999999999.99
     
-    for order in locked_orders:
+    for order in orders:
         try:
             pair = order.get('pair', 'N/A')
             timeframe = DB_TIMEFRAME_MAPPING.get(order.get('timeframe', 'N/A'), order.get('timeframe', 'N/A'))
             order_type = order.get('order_type', 'N/A')
             entry_price = float(order.get('entry_price', 0.0))
             exit_price = float(order.get('exit_price', 0.0))
-            ratio0_5_price = float(order.get('1:0.5_price', 0.0))
+            ratio_0_5_price = float(order.get('1:0.5_price', 0.0))
             ratio_1_price = float(order.get('1:1_price', 0.0))
             ratio_2_price = float(order.get('1:2_price', 0.0))
             profit_price = float(order.get('profit_price', 0.0))
+            created_at = order.get('order_holder_timestamp', 'N/A')  # Map order_holder_timestamp to created_at
+            
+            if created_at == 'N/A':
+                raise ValueError("Missing order_holder_timestamp")
             
             # Validate numeric fields
             for field_name, value in [
                 ('entry_price', entry_price),
                 ('exit_price', exit_price),
-                ('1:0.5_price', ratio0_5_price),
+                ('1:0.5_price', ratio_0_5_price),
                 ('1:1_price', ratio_1_price),
                 ('1:2_price', ratio_2_price),
                 ('profit_price', profit_price)
@@ -3682,10 +4754,21 @@ def insertpendingorderstodb(json_path: str = os.path.join(BASE_OUTPUT_FOLDER, "l
                     "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
                     "error": f"Duplicate order in JSON: {pair}, {timeframe}, {order_type}, {entry_price}"
                 })
-                #log_and_print(f"Duplicate order in JSON: {pair}, {timeframe}, {order_type}, {entry_price}", "WARNING")
+                log_and_print(f"Duplicate order in JSON: {pair}, {timeframe}, {order_type}, {entry_price}", "WARNING")
                 continue
             json_order_keys.add(order_key)
-            valid_orders.append(order)
+            valid_orders.append({
+                'pair': pair,
+                'timeframe': timeframe,
+                'order_type': order_type,
+                'entry_price': entry_price,
+                'exit_price': exit_price,
+                '1:0.5_price': ratio_0_5_price,
+                '1:1_price': ratio_1_price,
+                '1:2_price': ratio_2_price,
+                'profit_price': profit_price,
+                'created_at': created_at
+            })
         except (ValueError, TypeError) as e:
             error_log.append({
                 "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
@@ -3694,9 +4777,8 @@ def insertpendingorderstodb(json_path: str = os.path.join(BASE_OUTPUT_FOLDER, "l
             log_and_print(f"Invalid data format in order {order.get('pair', 'unknown')} {order.get('timeframe', 'unknown')}: {str(e)}", "ERROR")
             continue
     
-    # Identify signals to delete (not in JSON locked orders) and duplicates in DB
+    # Identify duplicates in DB
     db_order_keys = {}
-    signals_to_delete = []
     duplicates_to_remove = []
     
     for signal in existing_signals:
@@ -3709,9 +4791,7 @@ def insertpendingorderstodb(json_path: str = os.path.join(BASE_OUTPUT_FOLDER, "l
             
             signal_key = (pair, timeframe, order_type, entry_price)
             
-            if signal_key not in json_order_keys:
-                signals_to_delete.append(signal)
-            elif signal_key in db_order_keys:
+            if signal_key in db_order_keys:
                 if created_at < db_order_keys[signal_key]['created_at']:
                     duplicates_to_remove.append(db_order_keys[signal_key])
                     db_order_keys[signal_key] = signal
@@ -3729,9 +4809,9 @@ def insertpendingorderstodb(json_path: str = os.path.join(BASE_OUTPUT_FOLDER, "l
     
     # Batch delete duplicates
     DELETE_BATCH_SIZE = 80
-    if duplicates_to_delete := duplicates_to_remove:
-        for i in range(0, len(duplicates_to_delete), DELETE_BATCH_SIZE):
-            batch = duplicates_to_delete[i:i + DELETE_BATCH_SIZE]
+    if duplicates_to_remove:
+        for i in range(0, len(duplicates_to_remove), DELETE_BATCH_SIZE):
+            batch = duplicates_to_remove[i:i + DELETE_BATCH_SIZE]
             batch_number = i // DELETE_BATCH_SIZE + 1
             try:
                 delete_conditions = []
@@ -3750,7 +4830,7 @@ def insertpendingorderstodb(json_path: str = os.path.join(BASE_OUTPUT_FOLDER, "l
                 delete_query = f"DELETE FROM cipherbouncestream_signals WHERE {' OR '.join(delete_conditions)}"
                 result = db.execute_query(delete_query)
                 affected_rows = result.get('results', {}).get('affected_rows', 0) if isinstance(result, dict) else 0
-                #log_and_print(f"[{datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S')} ] │ SUCCESS │ Successfully removed {affected_rows} duplicate orders in batch {batch_number}", "SUCCESS")
+                log_and_print(f"Successfully removed {affected_rows} duplicate orders in batch {batch_number}", "SUCCESS")
             except Exception as e:
                 error_log.append({
                     "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
@@ -3760,45 +4840,13 @@ def insertpendingorderstodb(json_path: str = os.path.join(BASE_OUTPUT_FOLDER, "l
                 log_and_print(f"Failed to batch delete duplicates in batch {batch_number}: {str(e)}", "ERROR")
                 return False
     
-    # Batch delete signals not in JSON locked orders
-    if signals_to_delete:
-        for i in range(0, len(signals_to_delete), DELETE_BATCH_SIZE):
-            batch = signals_to_delete[i:i + DELETE_BATCH_SIZE]
-            batch_number = i // DELETE_BATCH_SIZE + 1
-            try:
-                delete_conditions = []
-                for signal in batch:
-                    pair = signal['pair'].replace("'", "''")
-                    timeframe = signal['timeframe'].replace("'", "''")
-                    order_type = signal['order_type'].replace("'", "''")
-                    entry_price = float(signal['entry_price'])
-                    created_at = signal['created_at'].replace("'", "''")
-                    condition = (
-                        f"(pair = '{pair}' AND timeframe = '{timeframe}' AND "
-                        f"order_type = '{order_type}' AND entry_price = {entry_price} AND created_at = '{created_at}')"
-                    )
-                    delete_conditions.append(condition)
-                
-                delete_query = f"DELETE FROM cipherbouncestream_signals WHERE {' OR '.join(delete_conditions)}"
-                result = db.execute_query(delete_query)
-                affected_rows = result.get('results', {}).get('affected_rows', 0) if isinstance(result, dict) else 0
-                log_and_print(f"[{datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S')} ] │ SUCCESS │ Successfully deleted {affected_rows} orders that don't exist in lockedpendingorders in batch {batch_number}", "SUCCESS")
-            except Exception as e:
-                error_log.append({
-                    "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-                    "error": f"Failed to batch delete non-JSON signals in batch {batch_number}: {str(e)}"
-                })
-                save_errors()
-                log_and_print(f"Failed to batch delete non-JSON signals in batch {batch_number}: {str(e)}", "ERROR")
-                return False
-    
     # Prepare batch INSERT query for new valid orders (in chunks of 80)
     BATCH_SIZE = 80
     sql_query_base = """
         INSERT INTO cipherbouncestream_signals (
             pair, timeframe, order_type, entry_price, exit_price,
             ratio_0_5_price, ratio_1_price, ratio_2_price, 
-            profit_price
+            profit_price, created_at
         ) VALUES 
     """
     value_strings = []
@@ -3806,20 +4854,21 @@ def insertpendingorderstodb(json_path: str = os.path.join(BASE_OUTPUT_FOLDER, "l
     for order in valid_orders:
         try:
             pair = order.get('pair', 'N/A')
-            timeframe = DB_TIMEFRAME_MAPPING.get(order.get('timeframe', 'N/A'), order.get('timeframe', 'N/A'))
+            timeframe = order.get('timeframe', 'N/A')
             order_type = order.get('order_type', 'N/A')
             entry_price = float(order.get('entry_price', 0.0))
             exit_price = float(order.get('exit_price', 0.0))
-            ratio0_5_price = float(order.get('1:0.5_price', 0.0))
+            ratio_0_5_price = float(order.get('1:0.5_price', 0.0))
             ratio_1_price = float(order.get('1:1_price', 0.0))
             ratio_2_price = float(order.get('1:2_price', 0.0))
             profit_price = float(order.get('profit_price', 0.0))
+            created_at = order.get('created_at', 'N/A')
             
             # Re-validate numeric fields
             for field_name, value in [
                 ('entry_price', entry_price),
                 ('exit_price', exit_price),
-                ('1:0.5_price', ratio0_5_price),
+                ('1:0.5_price', ratio_0_5_price),
                 ('1:1_price', ratio_1_price),
                 ('1:2_price', ratio_2_price),
                 ('profit_price', profit_price)
@@ -3827,15 +4876,19 @@ def insertpendingorderstodb(json_path: str = os.path.join(BASE_OUTPUT_FOLDER, "l
                 if not (MIN_NUMERIC_VALUE <= value <= MAX_NUMERIC_VALUE):
                     raise ValueError(f"{field_name} out of range: {value}")
             
+            if created_at == 'N/A':
+                raise ValueError("Missing created_at")
+            
             order_key = (pair, timeframe, order_type, entry_price)
             
             if order_key not in db_order_keys:
                 pair_escaped = pair.replace("'", "''")
                 timeframe_escaped = timeframe.replace("'", "''")
                 order_type_escaped = order_type.replace("'", "''")
+                created_at_escaped = created_at.replace("'", "''")
                 value_string = (
                     f"('{pair_escaped}', '{timeframe_escaped}', '{order_type_escaped}', {entry_price}, {exit_price}, "
-                    f"{ratio0_5_price}, {ratio_1_price}, {ratio_2_price}, {profit_price})"
+                    f"{ratio_0_5_price}, {ratio_1_price}, {ratio_2_price}, {profit_price}, '{created_at_escaped}')"
                 )
                 value_strings.append(value_string)
         except (ValueError, TypeError) as e:
@@ -3849,14 +4902,15 @@ def insertpendingorderstodb(json_path: str = os.path.join(BASE_OUTPUT_FOLDER, "l
     if not value_strings:
         error_log.append({
             "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-            "error": "No new valid locked orders to insert after processing"
+            "error": "No new valid pending orders to insert after processing"
         })
         save_errors()
-        log_and_print(f"[{datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S')} ] │ INFO │ No new valid locked orders to insert after processing", "INFO")
+        log_and_print(f"No new valid pending orders to insert after processing", "INFO")
         return True
     
     # Execute batch INSERT in chunks of BATCH_SIZE with retries
     success = True
+    insert_batch_counts = []
     for i in range(0, len(value_strings), BATCH_SIZE):
         batch = value_strings[i:i + BATCH_SIZE]
         batch_number = i // BATCH_SIZE + 1
@@ -3865,7 +4919,7 @@ def insertpendingorderstodb(json_path: str = os.path.join(BASE_OUTPUT_FOLDER, "l
         for attempt in range(1, MAX_RETRIES + 1):
             try:
                 result = db.execute_query(sql_query)
-               # log_and_print(f"Raw query result for inserting batch {batch_number}: {json.dumps(result, indent=2)}", "DEBUG")
+                log_and_print(f"Raw query result for inserting batch {batch_number}: {json.dumps(result, indent=2)}", "DEBUG")
                 
                 if not isinstance(result, dict):
                     error_log.append({
@@ -3873,7 +4927,7 @@ def insertpendingorderstodb(json_path: str = os.path.join(BASE_OUTPUT_FOLDER, "l
                         "error": f"Invalid result format on attempt {attempt} for batch {batch_number}: Expected dict, got {type(result)}"
                     })
                     save_errors()
-                    log_and_print(f"[{datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S')} ] │ ERROR │ Invalid result format on attempt {attempt} for batch {batch_number}: Expected dict, got {type(result)}", "ERROR")
+                    log_and_print(f"Invalid result format on attempt {attempt} for batch {batch_number}: Expected dict, got {type(result)}", "ERROR")
                     success = False
                     continue
                 
@@ -3883,12 +4937,13 @@ def insertpendingorderstodb(json_path: str = os.path.join(BASE_OUTPUT_FOLDER, "l
                         "error": f"Query failed on attempt {attempt} for batch {batch_number}: {result.get('message', 'No message provided')}"
                     })
                     save_errors()
-                    log_and_print(f"[{datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S')} ] │ ERROR │ Query failed on attempt {attempt} for batch {batch_number}: {result.get('message', 'No message provided')}", "ERROR")
+                    log_and_print(f"Query failed on attempt {attempt} for batch {batch_number}: {result.get('message', 'No message provided')}", "ERROR")
                     success = False
                     continue
                 
                 affected_rows = result.get('results', {}).get('affected_rows', 0)
-                #log_and_print(f"{datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S,%f')[:-3]} [SUCCESS] Successfully inserted {affected_rows} locked orders in batch {batch_number}", "SUCCESS")
+                insert_batch_counts.append((batch_number, affected_rows))  # Track insert count
+                log_and_print(f"Successfully inserted {affected_rows} pending orders in batch {batch_number}", "SUCCESS")
                 break  # Exit retry loop on success
                 
             except Exception as e:
@@ -3897,11 +4952,11 @@ def insertpendingorderstodb(json_path: str = os.path.join(BASE_OUTPUT_FOLDER, "l
                     "error": f"Exception on attempt {attempt} for batch {batch_number}: {str(e)}"
                 })
                 save_errors()
-                log_and_print(f"[{datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S')} ] │ ERROR │ Exception on attempt {attempt} for batch {batch_number}: {str(e)}", "ERROR")
+                log_and_print(f"Exception on attempt {attempt} for batch {batch_number}: {str(e)}", "ERROR")
                 
                 if attempt < MAX_RETRIES:
                     delay = RETRY_DELAY * (2 ** (attempt - 1))
-                    log_and_print(f"[{datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S')} ] │ INFO │ Retrying batch {batch_number} after {delay} seconds...", "INFO")
+                    log_and_print(f"Retrying batch {batch_number} after {delay} seconds...", "INFO")
                     time.sleep(delay)
                 else:
                     error_log.append({
@@ -3909,8 +4964,12 @@ def insertpendingorderstodb(json_path: str = os.path.join(BASE_OUTPUT_FOLDER, "l
                         "error": f"Max retries reached for batch {batch_number}"
                     })
                     save_errors()
-                    log_and_print(f"[{datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S')} ] │ ERROR │ Max retries reached for batch {batch_number}", "ERROR")
+                    log_and_print(f"Max retries reached for batch {batch_number}", "ERROR")
                     success = False
+    
+    # Log batch processing counts
+    for batch_number, count in insert_batch_counts:
+        log_and_print(f"Insert batch {batch_number} processed: {count}", "INFO")
     
     if not success:
         error_log.append({
@@ -3918,10 +4977,10 @@ def insertpendingorderstodb(json_path: str = os.path.join(BASE_OUTPUT_FOLDER, "l
             "error": "Function failed due to errors in one or more batches"
         })
         save_errors()
-        log_and_print(f"[{datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S')} ] │ ERROR │ Function failed due to errors in one or more batches", "ERROR")
+        log_and_print(f"Function failed due to errors in one or more batches", "ERROR")
         return False
     
-    #log_and_print(f"[{datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S')} ] │ SUCCESS │ All batches processed successfully", "SUCCESS")
+    log_and_print(f"All batches processed successfully", "SUCCESS")
     return True
 def executeinsertpendingorderstodb():
     """Execute the insertion of pending orders into the database."""
@@ -3931,42 +4990,37 @@ def executeinsertpendingorderstodb():
         return
     log_and_print("===== Insert Pending Orders to Database Completed =====", "TITLE")
 
-def check_status_json(market: str, timeframe: str) -> bool:
-    """Check if the status.json file for a market and timeframe has 'chart_identified' or 'order_free' status."""
+def check_verification_json(market: str) -> bool:
+    """Check if verification.json for a market has all required timeframes set to 'chart_identified' and 'all_timeframes' set to 'verified'."""
     try:
-        normalized_tf = timeframe.lower()  # Normalize timeframe for folder path
         market_folder_name = market.replace(" ", "_")
-        status_file = os.path.join(FETCHCHART_DESTINATION_PATH, market_folder_name, normalized_tf, "status.json")
-        os.makedirs(os.path.dirname(status_file), exist_ok=True)
+        verification_file = os.path.join(FETCHCHART_DESTINATION_PATH, market_folder_name, "verification.json")
         
-        if not os.path.exists(status_file):
-            log_and_print(f"Status file not found for {market} timeframe {timeframe}: {status_file}. Creating default status.json", "WARNING")
-            default_status = {
-                "market": market,
-                "timeframe": timeframe,
-                "normalized_timeframe": normalized_tf,
-                "timestamp": "",
-                "status": "order_free",
-                "elligible_status": "order_free"
-            }
-            with open(status_file, 'w') as f:
-                json.dump(default_status, f, indent=4)
+        if not os.path.exists(verification_file):
+            log_and_print(f"Verification file not found for {market}: {verification_file}", "WARNING")
+            return False
         
-        with open(status_file, 'r') as f:
-            status_data = json.load(f)
-        status = status_data.get("status", "")
-        if status in ["chart_identified"]:
-            log_and_print(f"Status '{status}' found for {market} timeframe {timeframe}", "INFO")
+        with open(verification_file, 'r') as f:
+            verification_data = json.load(f)
+        
+        required_timeframes = ["m5", "m15", "m30", "h1", "h4"]
+        all_timeframes_verified = all(
+            verification_data.get(tf) == "chart_identified" for tf in required_timeframes
+        ) and verification_data.get("all_timeframes") == "verified"
+        
+        if all_timeframes_verified:
+            log_and_print(f"All timeframes in verification.json for {market} are 'chart_identified' and 'all_timeframes' is 'verified'", "INFO")
             return True
         else:
-            log_and_print(f"Status '{status}' for {market} timeframe {timeframe}, skipping processing", "INFO")
+            log_and_print(f"Not all timeframes in verification.json for {market} are 'chart_identified' or 'all_timeframes' is not 'verified'", "INFO")
             return False
-    except Exception as e:
-        log_and_print(f"Error reading or creating status file for {market} timeframe {timeframe}: {e}", "ERROR")
-        return False
     
+    except Exception as e:
+        log_and_print(f"Error reading verification.json for {market}: {e}", "ERROR")
+        return False
+              
 def process_5minutes_timeframe():
-    """Process all markets for the 5-minute (M5) timeframe if status is 'chart_identified' or 'order_free', returning a summary of processing results."""
+    """Process all markets for the 5-minute (M5) timeframe if verification.json has all timeframes 'chart_identified' and 'all_timeframes' verified, using markets from batchbybatch.json, returning a summary of processing results."""
     try:
         log_and_print("===== Fetch and Process M5 Candle Data =====", "TITLE")
         
@@ -3974,38 +5028,108 @@ def process_5minutes_timeframe():
         if not all([LOGIN_ID, PASSWORD, SERVER, TERMINAL_PATH]):
             error_message = "Credentials not properly loaded from base.json. Exiting."
             log_and_print(error_message, "ERROR")
-            return {"status": "failed", "message": error_message, "markets_processed": 0, "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"), "process_messages": {}}
+            return {
+                "status": "failed",
+                "message": error_message,
+                "markets_processed": 0,
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "process_messages": {}
+            }
         
-        # Check M5 candle time left globally
-        if not MARKETS:
-            error_message = "No markets defined in MARKETS list. Exiting."
+        # Load markets from batchbybatch.json
+        batch_json_path = r"C:\xampp\htdocs\CIPHER\cipher i\programmes\chart\batches\batchbybatch.json"
+        if not os.path.exists(batch_json_path):
+            error_message = f"batchbybatch.json not found at {batch_json_path}. Exiting."
             log_and_print(error_message, "ERROR")
-            return {"status": "failed", "message": error_message, "markets_processed": 0, "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"), "process_messages": {}}
+            return {
+                "status": "failed",
+                "message": error_message,
+                "markets_processed": 0,
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "process_messages": {}
+            }
         
-        default_market = MARKETS[0]
+        try:
+            with open(batch_json_path, 'r') as f:
+                batch_data = json.load(f)
+            batch_markets = batch_data.get("markets", [])
+            if not batch_markets:
+                error_message = "No markets found in batchbybatch.json. Exiting."
+                log_and_print(error_message, "ERROR")
+                return {
+                    "status": "failed",
+                    "message": error_message,
+                    "markets_processed": 0,
+                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "process_messages": {}
+                }
+        except json.JSONDecodeError as e:
+            error_message = f"Error decoding batchbybatch.json: {str(e)}. Exiting."
+            log_and_print(error_message, "ERROR")
+            return {
+                "status": "failed",
+                "message": error_message,
+                "markets_processed": 0,
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "process_messages": {}
+            }
+        
+        log_and_print(f"Loaded {len(batch_markets)} markets from batchbybatch.json", "INFO")
+        
+        # Filter markets that are in both batchbybatch.json and MARKETS
+        valid_markets = [market for market in batch_markets if market in MARKETS]
+        if not valid_markets:
+            error_message = "No valid markets found in both batchbybatch.json and MARKETS list. Exiting."
+            log_and_print(error_message, "ERROR")
+            return {
+                "status": "failed",
+                "message": error_message,
+                "markets_processed": 0,
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "process_messages": {}
+            }
+        
+        # Check M5 candle time left globally using the first valid market
+        default_market = valid_markets[0]
         timeframe = "M5"
         log_and_print(f"Checking M5 candle time left using market: {default_market}", "INFO")
-        time_left, next_close_time = candletimeleft_5minutes(default_market, None, min_time_left=8)
+        time_left, next_close_time = candletimeleft_5minutes(default_market, None, min_time_left=0.5)
         
         if time_left is None or next_close_time is None:
             error_message = f"Failed to retrieve candle time for {default_market} (M5). Exiting."
             log_and_print(error_message, "ERROR")
-            return {"status": "failed", "message": error_message, "markets_processed": 0, "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"), "process_messages": {}}
+            return {
+                "status": "failed",
+                "message": error_message,
+                "markets_processed": 0,
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "process_messages": {}
+            }
         
         log_and_print(f"M5 candle time left: {time_left:.2f} minutes. Proceeding with execution.", "INFO")
 
-        # Create tasks for markets with valid status for M5 timeframe
+        # Create tasks for markets with valid verification.json
         tasks = []
         process_messages = {}
-        for market in MARKETS:
-            if check_status_json(market, timeframe):
+        markets_with_all_timeframes_verified = []
+        for market in valid_markets:
+            if check_verification_json(market):
                 tasks.append((market, timeframe))
+                markets_with_all_timeframes_verified.append(market)
+            else:
+                log_and_print(f"Skipping market {market}: verification.json not valid or missing 'chart_identified' or 'all_timeframes' verified", "WARNING")
         
         allfound = len(tasks)
         if not tasks:
-            message = "No markets with 'chart_identified' or 'order_free' status for M5 timeframe found. Exiting."
+            message = "No markets with valid verification.json found for M5 timeframe. Exiting."
             log_and_print(message, "WARNING")
-            return {"status": "no_markets", "message": message, "markets_processed": 0, "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"), "process_messages": {}}
+            return {
+                "status": "no_markets",
+                "message": message,
+                "markets_processed": 0,
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "process_messages": {}
+            }
         
         log_and_print(f"Processing {allfound} markets for M5 timeframe", "INFO")
         success_data = []
@@ -4017,12 +5141,10 @@ def process_5minutes_timeframe():
         match_mostrecent_statuses = []
         calc_candles_inbetween_statuses = []
         candles_after_breakout_statuses = []
-        executioner_candle_statuses = []
         order_holder_prices_statuses = []
         pending_order_updater_statuses = []
         collect_pending_orders_statuses = []
         lock_pending_orders_statuses = []
-        collect_executioner_orders_statuses = []
         markets_list_statuses = []
 
         with multiprocessing.Pool(processes=4) as pool:
@@ -4044,6 +5166,7 @@ def process_5minutes_timeframe():
                 "candle_count": fetch_status.get("candle_count", 0),
                 "timestamp": fetch_status.get("timestamp", time.strftime("%Y-%m-%d %H:%M:%S"))
             })
+            
             # Collect match_trendline_with_candle_data status
             match_status = market_process_messages.get("match_trendline_with_candle_data", {})
             match_statuses.append({
@@ -4055,6 +5178,7 @@ def process_5minutes_timeframe():
                 "timestamp": match_status.get("timestamp", time.strftime("%Y-%m-%d %H:%M:%S")),
                 "warnings": match_status.get("warnings", [])
             })
+            
             # Collect save_new_mostrecent_completed_candle status
             save_status = market_process_messages.get("save_new_mostrecent_completed_candle", {})
             save_mostrecent_statuses.append({
@@ -4066,6 +5190,7 @@ def process_5minutes_timeframe():
                 "timestamp": save_status.get("timestamp", time.strftime("%Y-%m-%d %H:%M:%S")),
                 "warnings": save_status.get("warnings", [])
             })
+            
             # Collect match_mostrecent_candle status
             match_mostrecent_status = market_process_messages.get("match_mostrecent_candle", {})
             match_mostrecent_statuses.append({
@@ -4079,6 +5204,7 @@ def process_5minutes_timeframe():
                 "match_result_status": match_mostrecent_status.get("match_result_status", "none"),
                 "candles_inbetween": match_mostrecent_status.get("candles_inbetween", 0)
             })
+            
             # Collect calculate_candles_inbetween status
             calc_status = market_process_messages.get("calculate_candles_inbetween", {})
             calc_candles_inbetween_statuses.append({
@@ -4091,6 +5217,7 @@ def process_5minutes_timeframe():
                 "timestamp": calc_status.get("timestamp", time.strftime("%Y-%m-%d %H:%M:%S")),
                 "warnings": calc_status.get("warnings", [])
             })
+            
             # Collect candleafterbreakoutparent_to_currentprice status
             cabp_status = market_process_messages.get("candleafterbreakoutparent_to_currentprice", {})
             candles_after_breakout_statuses.append({
@@ -4103,19 +5230,7 @@ def process_5minutes_timeframe():
                 "timestamp": cabp_status.get("timestamp", time.strftime("%Y-%m-%d %H:%M:%S")),
                 "warnings": cabp_status.get("warnings", [])
             })
-            # Collect executioncandle_after_breakoutparent status
-            exec_status = market_process_messages.get("executioncandle_after_breakoutparent", {})
-            executioner_candle_statuses.append({
-                "market": market,
-                "timeframe": timeframe,
-                "exec_status": exec_status.get("status", "unknown"),
-                "exec_message": exec_status.get("message", "No executioner candle data"),
-                "trendlines_processed": exec_status.get("trendlines_processed", 0),
-                "executioner_candles_found": exec_status.get("executioner_candles_found", 0),
-                "executioner_candles_not_found": exec_status.get("executioner_candles_not_found", 0),
-                "timestamp": exec_status.get("timestamp", time.strftime("%Y-%m-%d %H:%M:%S")),
-                "warnings": exec_status.get("warnings", [])
-            })
+            
             # Collect getorderholderpriceswithlotsizeandrisk status
             order_holder_prices_status = market_process_messages.get("getorderholderpriceswithlotsizeandrisk", {})
             order_holder_prices_statuses.append({
@@ -4123,21 +5238,27 @@ def process_5minutes_timeframe():
                 "timeframe": timeframe,
                 "order_holder_prices_status": "success" if isinstance(order_holder_prices_status, str) and "Calculated prices" in order_holder_prices_status else "failed",
                 "order_holder_prices_message": order_holder_prices_status if isinstance(order_holder_prices_status, str) else "No order holder prices data",
-                "orders_processed": 0,  # Will update below
-                "verified_order_count": 0,  # Will update below
+                "orders_processed": 0,
+                "verified_order_count": 0,
                 "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "warnings": []
             })
             if isinstance(order_holder_prices_status, str) and "Calculated prices" in order_holder_prices_status:
                 try:
                     output_json_path = os.path.join(BASE_OUTPUT_FOLDER, market.replace(" ", "_"), timeframe.lower(), 'calculatedprices.json')
-                    if os.path.exists(output_json_path):
+                    if os.path.exists(output_json_path) and os.path.getsize(output_json_path) > 0:
                         with open(output_json_path, 'r') as f:
-                            calculated_data = json.load(f)
-                        order_holder_prices_statuses[-1]["orders_processed"] = len(calculated_data)
-                        order_holder_prices_statuses[-1]["verified_order_count"] = len(calculated_data)
+                            try:
+                                calculated_data = json.load(f)
+                                order_holder_prices_statuses[-1]["orders_processed"] = len(calculated_data)
+                                order_holder_prices_statuses[-1]["verified_order_count"] = len(calculated_data)
+                            except json.JSONDecodeError as e:
+                                order_holder_prices_statuses[-1]["warnings"].append(f"Error decoding calculatedprices.json: {str(e)}")
+                    else:
+                        order_holder_prices_statuses[-1]["warnings"].append(f"calculatedprices.json is missing or empty for {market} {timeframe}")
                 except Exception as e:
                     order_holder_prices_statuses[-1]["warnings"].append(f"Error reading calculatedprices.json: {str(e)}")
+            
             # Collect PendingOrderUpdater status
             pending_order_updater_status = market_process_messages.get("PendingOrderUpdater", {})
             pending_order_updater_statuses.append({
@@ -4145,21 +5266,27 @@ def process_5minutes_timeframe():
                 "timeframe": timeframe,
                 "pending_order_updater_status": "success" if isinstance(pending_order_updater_status, str) and "Tracked breakeven" in pending_order_updater_status else "failed",
                 "pending_order_updater_message": pending_order_updater_status if isinstance(pending_order_updater_status, str) else "No pending order updater data",
-                "orders_updated": 0,  # Will update below
-                "verified_order_count": 0,  # Will update below
+                "orders_updated": 0,
+                "verified_order_count": 0,
                 "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "warnings": []
             })
             if isinstance(pending_order_updater_status, str) and "Tracked breakeven" in pending_order_updater_status:
                 try:
                     pricecandle_json_path = os.path.join(BASE_OUTPUT_FOLDER, market.replace(" ", "_"), timeframe.lower(), 'pricecandle.json')
-                    if os.path.exists(pricecandle_json_path):
+                    if os.path.exists(pricecandle_json_path) and os.path.getsize(pricecandle_json_path) > 0:
                         with open(pricecandle_json_path, 'r') as f:
-                            pricecandle_data = json.load(f)
-                        pending_order_updater_statuses[-1]["orders_updated"] = len(pricecandle_data)
-                        pending_order_updater_statuses[-1]["verified_order_count"] = len(pricecandle_data)
+                            try:
+                                pricecandle_data = json.load(f)
+                                pending_order_updater_statuses[-1]["orders_updated"] = len(pricecandle_data)
+                                pending_order_updater_statuses[-1]["verified_order_count"] = len(pricecandle_data)
+                            except json.JSONDecodeError as e:
+                                pending_order_updater_statuses[-1]["warnings"].append(f"Error decoding pricecandle.json: {str(e)}")
+                    else:
+                        pending_order_updater_statuses[-1]["warnings"].append(f"pricecandle.json is missing or empty for {market} {timeframe}")
                 except Exception as e:
                     pending_order_updater_statuses[-1]["warnings"].append(f"Error reading pricecandle.json: {str(e)}")
+            
             # Collect collect_all_pending_orders status
             collect_pending_orders_status = market_process_messages.get("collect_all_pending_orders", {})
             collect_pending_orders_statuses.append({
@@ -4167,21 +5294,27 @@ def process_5minutes_timeframe():
                 "timeframe": timeframe,
                 "collect_pending_status": "success" if isinstance(collect_pending_orders_status, str) and "Collected" in collect_pending_orders_status else "failed",
                 "collect_pending_message": collect_pending_orders_status if isinstance(collect_pending_orders_status, str) else "No collect pending orders data",
-                "pending_orders_collected": 0,  # Will update below
-                "verified_pending_count": 0,  # Will update below
+                "pending_orders_collected": 0,
+                "verified_pending_count": 0,
                 "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "warnings": []
             })
             if isinstance(collect_pending_orders_status, str) and "Collected" in collect_pending_orders_status:
                 try:
                     pending_json_path = os.path.join(BASE_OUTPUT_FOLDER, market.replace(" ", "_"), timeframe.lower(), 'contractpendingorders.json')
-                    if os.path.exists(pending_json_path):
+                    if os.path.exists(pending_json_path) and os.path.getsize(pending_json_path) > 0:
                         with open(pending_json_path, 'r') as f:
-                            pending_data = json.load(f)
-                        collect_pending_orders_statuses[-1]["pending_orders_collected"] = len(pending_data)
-                        collect_pending_orders_statuses[-1]["verified_pending_count"] = len(pending_data)
+                            try:
+                                pending_data = json.load(f)
+                                collect_pending_orders_statuses[-1]["pending_orders_collected"] = len(pending_data)
+                                collect_pending_orders_statuses[-1]["verified_pending_count"] = len(pending_data)
+                            except json.JSONDecodeError as e:
+                                collect_pending_orders_statuses[-1]["warnings"].append(f"Error decoding contractpendingorders.json: {str(e)}")
+                    else:
+                        collect_pending_orders_statuses[-1]["warnings"].append(f"contractpendingorders.json is missing or empty for {market} {timeframe}")
                 except Exception as e:
                     collect_pending_orders_statuses[-1]["warnings"].append(f"Error reading contractpendingorders.json: {str(e)}")
+            
             # Collect lockpendingorders status
             lock_pending_status = market_process_messages.get("lockpendingorders", {})
             lock_pending_orders_statuses.append({
@@ -4189,41 +5322,25 @@ def process_5minutes_timeframe():
                 "timeframe": timeframe,
                 "lock_pending_status": "success" if isinstance(lock_pending_status, str) and "Saved" in lock_pending_status else "failed",
                 "lock_pending_message": lock_pending_status if isinstance(lock_pending_status, str) else "No lock pending orders data",
-                "orders_locked": 0,  # Will update below
+                "orders_locked": 0,
                 "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "warnings": []
             })
             if isinstance(lock_pending_status, str) and "Saved" in lock_pending_status:
                 try:
                     locked_pending_path = os.path.join(BASE_OUTPUT_FOLDER, 'lockedpendingorders.json')
-                    if os.path.exists(locked_pending_path):
+                    if os.path.exists(locked_pending_path) and os.path.getsize(locked_pending_path) > 0:
                         with open(locked_pending_path, 'r') as f:
-                            locked_data = json.load(f)
-                        lock_pending_orders_statuses[-1]["orders_locked"] = locked_data.get("temp_pendingorders", 0)
+                            try:
+                                locked_data = json.load(f)
+                                lock_pending_orders_statuses[-1]["orders_locked"] = len(locked_data.get("temp_pendingorders", []))
+                            except json.JSONDecodeError as e:
+                                lock_pending_orders_statuses[-1]["warnings"].append(f"Error decoding lockedpendingorders.json: {str(e)}")
+                    else:
+                        lock_pending_orders_statuses[-1]["warnings"].append(f"lockedpendingorders.json is missing or empty")
                 except Exception as e:
                     lock_pending_orders_statuses[-1]["warnings"].append(f"Error reading lockedpendingorders.json: {str(e)}")
-            # Collect collect_all_executionercandle_orders status
-            collect_executioner_status = market_process_messages.get("collect_all_executionercandle_orders", {})
-            collect_executioner_orders_statuses.append({
-                "market": market,
-                "timeframe": timeframe,
-                "collect_executioner_status": "success" if isinstance(collect_executioner_status, str) and "Collected" in collect_executioner_status else "failed",
-                "collect_executioner_message": collect_executioner_status if isinstance(collect_executioner_status, str) else "No collect executioner orders data",
-                "executioner_orders_collected": 0,  # Will update below
-                "verified_executioner_count": 0,  # Will update below
-                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-                "warnings": []
-            })
-            if isinstance(collect_executioner_status, str) and "Collected" in collect_executioner_status:
-                try:
-                    executed_orders_json_path = os.path.join(BASE_OUTPUT_FOLDER, market.replace(" ", "_"), timeframe.lower(), 'executedorders.json')
-                    if os.path.exists(executed_orders_json_path):
-                        with open(executed_orders_json_path, 'r') as f:
-                            executed_data = json.load(f)
-                        collect_executioner_orders_statuses[-1]["executioner_orders_collected"] = len(executed_data)
-                        collect_executioner_orders_statuses[-1]["verified_executioner_count"] = len(executed_data)
-                except Exception as e:
-                    collect_executioner_orders_statuses[-1]["warnings"].append(f"Error reading executedorders.json: {str(e)}")
+            
             # Collect marketsliststatus status
             markets_list_status = market_process_messages.get("marketsliststatus", {})
             markets_list_statuses.append({
@@ -4231,34 +5348,60 @@ def process_5minutes_timeframe():
                 "timeframe": timeframe,
                 "markets_list_status": "success" if isinstance(markets_list_status, str) and "Generated" in markets_list_status else "failed",
                 "markets_list_message": markets_list_status if isinstance(markets_list_status, str) else "No markets list status data",
-                "markets_processed": 0,  # Will update below
+                "markets_processed": 0,
                 "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "warnings": []
             })
             if isinstance(markets_list_status, str) and "Generated" in markets_list_status:
                 try:
                     markets_order_list_path = os.path.join(BASE_OUTPUT_FOLDER, "marketsorderlist.json")
-                    if os.path.exists(markets_order_list_path):
+                    if os.path.exists(markets_order_list_path) and os.path.getsize(markets_order_list_path) > 0:
                         with open(markets_order_list_path, 'r') as f:
-                            markets_data = json.load(f)
-                        markets_list_statuses[-1]["markets_processed"] = len(markets_data.get("markets_pending", {})) + sum(len(markets_data.get("order_free_markets", {}).get(f"market_{tf.lower()}", [])) for tf in TIMEFRAMES)
+                            try:
+                                markets_data = json.load(f)
+                                markets_list_statuses[-1]["markets_processed"] = len(markets_data.get("markets_pending", {})) + sum(
+                                    len(markets_data.get("order_free_markets", {}).get(f"market_{tf.lower()}", [])) for tf in TIMEFRAMES
+                                )
+                            except json.JSONDecodeError as e:
+                                markets_list_statuses[-1]["warnings"].append(f"Error decoding marketsorderlist.json: {str(e)}")
+                    else:
+                        markets_list_statuses[-1]["warnings"].append(f"marketsorderlist.json is missing or empty")
                 except Exception as e:
                     markets_list_statuses[-1]["warnings"].append(f"Error reading marketsorderlist.json: {str(e)}")
             
             # Categorize result
-            if success:
+            if success or status == "no_pending_orders":
                 if status == "no_pending_orders":
-                    no_pending_data.append(market)
+                    no_pending_data.append({
+                        "market": market,
+                        "timeframe": timeframe,
+                        "message": market_process_messages.get("match_trendline_with_candle_data", {}).get("message", "No pending orders found"),
+                        "processed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                        "process_messages": market_process_messages
+                    })
                 else:
-                    success_data.append(market)
+                    success_data.append({
+                        "market": market,
+                        "timeframe": timeframe,
+                        "processed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                        "process_messages": market_process_messages
+                    })
             else:
-                failed_data.append((market, error_message))
+                failed_data.append({
+                    "market": market,
+                    "timeframe": timeframe,
+                    "error_message": error_message,
+                    "processed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "process_messages": market_process_messages
+                })
             
             # Log detailed status for each step
             for step, details in market_process_messages.items():
                 if isinstance(details, dict):
-                    log_and_print(f"{market} {timeframe} - {step}: {details['status']} - {details['message']}", 
-                                  "SUCCESS" if details['status'] == "success" else "ERROR")
+                    log_and_print(
+                        f"{market} {timeframe} - {step}: {details['status']} - {details['message']}",
+                        "SUCCESS" if details['status'] in ["success", "no_pending_orders"] else "ERROR"
+                    )
                     if details.get("warnings"):
                         for warning in details["warnings"]:
                             log_and_print(f"{market} {timeframe} - {step} Warning: {warning}", "WARNING")
@@ -4288,11 +5431,6 @@ def process_5minutes_timeframe():
         cabp_failed_count = sum(1 for cabp in candles_after_breakout_statuses if cabp["cabp_status"] == "failed")
         total_cabp_trendlines_processed = sum(cabp["trendlines_processed"] for cabp in candles_after_breakout_statuses)
         total_cabp_candles_fetched = sum(cabp["total_candles_fetched"] for cabp in candles_after_breakout_statuses)
-        exec_success_count = sum(1 for es in executioner_candle_statuses if es["exec_status"] == "success")
-        exec_failed_count = sum(1 for es in executioner_candle_statuses if es["exec_status"] == "failed")
-        total_exec_trendlines_processed = sum(es["trendlines_processed"] for es in executioner_candle_statuses)
-        total_executioner_candles_found = sum(es["executioner_candles_found"] for es in executioner_candle_statuses)
-        total_executioner_candles_not_found = sum(es["executioner_candles_not_found"] for es in executioner_candle_statuses)
         order_holder_prices_success_count = sum(1 for ohp in order_holder_prices_statuses if ohp["order_holder_prices_status"] == "success")
         order_holder_prices_failed_count = sum(1 for ohp in order_holder_prices_statuses if ohp["order_holder_prices_status"] == "failed")
         total_orders_processed = sum(ohp["orders_processed"] for ohp in order_holder_prices_statuses)
@@ -4305,9 +5443,6 @@ def process_5minutes_timeframe():
         lock_pending_success_count = sum(1 for lpo in lock_pending_orders_statuses if lpo["lock_pending_status"] == "success")
         lock_pending_failed_count = sum(1 for lpo in lock_pending_orders_statuses if lpo["lock_pending_status"] == "failed")
         total_orders_locked = sum(lpo["orders_locked"] for lpo in lock_pending_orders_statuses)
-        collect_executioner_success_count = sum(1 for ceo in collect_executioner_orders_statuses if ceo["collect_executioner_status"] == "success")
-        collect_executioner_failed_count = sum(1 for ceo in collect_executioner_orders_statuses if ceo["collect_executioner_status"] == "failed")
-        total_executioner_orders_collected = sum(ceo["executioner_orders_collected"] for ceo in collect_executioner_orders_statuses)
         markets_list_success_count = sum(1 for mls in markets_list_statuses if mls["markets_list_status"] == "success")
         markets_list_failed_count = sum(1 for mls in markets_list_statuses if mls["markets_list_status"] == "failed")
         total_markets_processed = sum(mls["markets_processed"] for mls in markets_list_statuses)
@@ -4319,44 +5454,58 @@ def process_5minutes_timeframe():
         log_and_print(f"Match most recent candle summary: {match_mostrecent_success_count}/{allfound} successful, {match_mostrecent_failed_count} failed, total candles matched: {total_mostrecent_candles_matched}", "INFO")
         log_and_print(f"Calculate candles in between summary: {calc_candles_success_count}/{allfound} successful, {calc_candles_failed_count} failed, total candles in between: {total_candles_inbetween}", "INFO")
         log_and_print(f"Candles after breakout parent summary: {cabp_success_count}/{allfound} successful, {cabp_failed_count} failed, total trendlines processed: {total_cabp_trendlines_processed}, total candles fetched: {total_cabp_candles_fetched}", "INFO")
-        log_and_print(f"Executioner candle summary: {exec_success_count}/{allfound} successful, {exec_failed_count} failed, total trendlines processed: {total_exec_trendlines_processed}, executioner candles found: {total_executioner_candles_found}, not found: {total_executioner_candles_not_found}", "INFO")
         log_and_print(f"Order holder prices summary: {order_holder_prices_success_count}/{allfound} successful, {order_holder_prices_failed_count} failed, total orders processed: {total_orders_processed}", "INFO")
         log_and_print(f"Pending order updater summary: {pending_order_updater_success_count}/{allfound} successful, {pending_order_updater_failed_count} failed, total orders updated: {total_orders_updated}", "INFO")
         log_and_print(f"Collect pending orders summary: {collect_pending_success_count}/{allfound} successful, {collect_pending_failed_count} failed, total pending orders collected: {total_pending_orders_collected}", "INFO")
         log_and_print(f"Lock pending orders summary: {lock_pending_success_count}/{allfound} successful, {lock_pending_failed_count} failed, total orders locked: {total_orders_locked}", "INFO")
-        log_and_print(f"Collect executioner orders summary: {collect_executioner_success_count}/{allfound} successful, {collect_executioner_failed_count} failed, total executioner orders collected: {total_executioner_orders_collected}", "INFO")
         log_and_print(f"Markets list status summary: {markets_list_success_count}/{allfound} successful, {markets_list_failed_count} failed, total markets processed: {total_markets_processed}", "INFO")
         log_and_print(f"Match trendline summary: {match_success_count}/{allfound} successful, {match_failed_count} failed, {match_no_pending_count} with no pending orders, total trendlines matched: {total_trendlines_matched}, total warnings: {total_warnings}", "INFO")
+        log_and_print(f"Sum success / allfound: {success_count}/{allfound}", "SUCCESS")
+        log_and_print(f"Markets with verification.json and all timeframes 'verified': {len(markets_with_all_timeframes_verified)}", "INFO")
+        log_and_print(f"Result: {success_count}/{failed_count}", "INFO")
         
         summary = {
             "status": "success" if success_data or no_pending_data else "failed",
-            "message": f"Processed {allfound} markets: {len(success_data)} successful, {len(no_pending_data)} with no pending orders, {len(failed_data)} failed",
+            "message": f"Processed {allfound} markets: {success_count} successful, {no_pending_count} with no pending orders, {failed_count} failed",
             "markets_processed": allfound,
-            "successful_markets": success_data,
-            "no_pending_markets": no_pending_data,
-            "failed_markets": [market for market, _ in failed_data],
-            "failed_details": [{"market": market, "error": error} for market, error in failed_data],
+            "successful_markets": [d["market"] for d in success_data],
+            "no_pending_markets": [d["market"] for d in no_pending_data],
+            "failed_markets": [d["market"] for d in failed_data],
+            "failed_details": [{"market": d["market"], "error": d["error_message"]} for d in failed_data],
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "process_messages": process_messages
+            "process_messages": process_messages,
+            "markets_with_all_timeframes_verified": markets_with_all_timeframes_verified
         }
         
         log_and_print(
-            f"M5 Processing Summary: {len(success_data)} markets processed successfully, "
-            f"{len(no_pending_data)} with no pending orders, {len(failed_data)} failed",
+            f"M5 Processing Summary: {success_count} markets processed successfully, "
+            f"{no_pending_count} with no pending orders, {failed_count} failed",
             "INFO"
         )
+        marketsliststatus()
         
         if failed_data:
-            for market, error in failed_data:
-                log_and_print(f"Failed market {market}: {error}", "ERROR")
+            for d in failed_data:
+                log_and_print(f"Failed market {d['market']}: {d['error_message']}", "ERROR")
         
         return summary
 
     except Exception as e:
         error_message = f"Unexpected error in process_5minutes_timeframe: {str(e)}"
         log_and_print(error_message, "ERROR")
-        return {"status": "failed", "message": error_message, "markets_processed": 0, "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"), "process_messages": {}}
-        
+        return {
+            "status": "failed",
+            "message": error_message,
+            "markets_processed": 0,
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "process_messages": {}
+        }
+    finally:
+        try:
+            mt5.shutdown()
+        except Exception as e:
+            log_and_print(f"Error shutting down MT5: {str(e)}", "WARNING")
+
 def process_market_timeframe(market: str, timeframe: str) -> Tuple[bool, Optional[str], str, Dict]:
     """Process a single market and timeframe combination, returning success status, error message, status, and process messages."""
     error_message = None
@@ -4378,10 +5527,24 @@ def process_market_timeframe(market: str, timeframe: str) -> Tuple[bool, Optiona
             log_and_print(error_message, "ERROR")
             return False, error_message, "failed", process_messages
         
-        with open(os.path.join(json_dir, 'candle_data.json'), 'r') as f:
-            candle_data_content = json.load(f)
-        candle_count = len(candle_data_content)
-        process_messages["fetch_candle_data"]["verified_candle_count"] = candle_count
+        # Verify candle_data.json
+        candle_data_path = os.path.join(json_dir, 'candle_data.json')
+        if not os.path.exists(candle_data_path) or os.path.getsize(candle_data_path) == 0:
+            error_message = f"candle_data.json is missing or empty for {market} {timeframe}"
+            log_and_print(error_message, "ERROR")
+            process_messages["fetch_candle_data"]["warnings"] = process_messages["fetch_candle_data"].get("warnings", []) + [error_message]
+            return False, error_message, "failed", process_messages
+        
+        try:
+            with open(candle_data_path, 'r') as f:
+                candle_data_content = json.load(f)
+            candle_count = len(candle_data_content)
+            process_messages["fetch_candle_data"]["verified_candle_count"] = candle_count
+        except json.JSONDecodeError as e:
+            error_message = f"Error decoding candle_data.json for {market} {timeframe}: {str(e)}"
+            log_and_print(error_message, "ERROR")
+            process_messages["fetch_candle_data"]["warnings"] = process_messages["fetch_candle_data"].get("warnings", []) + [error_message]
+            return False, error_message, "failed", process_messages
 
         # Save the most recent completed candle
         success, error_msg, save_status, save_status_report = save_new_mostrecent_completed_candle(market, timeframe, json_dir)
@@ -4416,10 +5579,17 @@ def process_market_timeframe(market: str, timeframe: str) -> Tuple[bool, Optiona
             log_and_print(error_message, "ERROR")
             process_messages["match_mostrecent_candle"]["message"] = error_message
         else:
-            with open(os.path.join(json_dir, 'matchedcandles.json'), 'r') as f:
-                matched_data = json.load(f)
-            process_messages["match_mostrecent_candle"]["verified_match_result_status"] = matched_data.get('match_result_status', 'unknown')
-            process_messages["match_mostrecent_candle"]["verified_candles_inbetween"] = matched_data.get('candles_inbetween', '0')
+            matched_candles_path = os.path.join(json_dir, 'matchedcandles.json')
+            if os.path.exists(matched_candles_path) and os.path.getsize(matched_candles_path) > 0:
+                try:
+                    with open(matched_candles_path, 'r') as f:
+                        matched_data = json.load(f)
+                    process_messages["match_mostrecent_candle"]["verified_match_result_status"] = matched_data.get('match_result_status', 'unknown')
+                    process_messages["match_mostrecent_candle"]["verified_candles_inbetween"] = matched_data.get('candles_inbetween', 0)
+                except json.JSONDecodeError as e:
+                    process_messages["match_mostrecent_candle"]["warnings"] = process_messages["match_mostrecent_candle"].get("warnings", []) + [f"Error decoding matchedcandles.json: {str(e)}"]
+            else:
+                process_messages["match_mostrecent_candle"]["warnings"] = process_messages["match_mostrecent_candle"].get("warnings", []) + [f"matchedcandles.json is missing or empty for {market} {timeframe}"]
 
         # Calculate candles in between
         success, error_msg, calc_status, calc_status_report = calculate_candles_inbetween(market, timeframe, json_dir)
@@ -4436,10 +5606,17 @@ def process_market_timeframe(market: str, timeframe: str) -> Tuple[bool, Optiona
             log_and_print(error_message, "ERROR")
             process_messages["calculate_candles_inbetween"]["message"] = error_message
         else:
-            with open(os.path.join(json_dir, 'candlesamountinbetween.json'), 'r') as f:
-                inbetween_data = json.load(f)
-            process_messages["calculate_candles_inbetween"]["verified_candles_inbetween"] = inbetween_data.get('candles in between', '0')
-            process_messages["calculate_candles_inbetween"]["verified_plus_newmostrecent"] = inbetween_data.get('plus_newmostrecent', '0')
+            inbetween_path = os.path.join(json_dir, 'candlesamountinbetween.json')
+            if os.path.exists(inbetween_path) and os.path.getsize(inbetween_path) > 0:
+                try:
+                    with open(inbetween_path, 'r') as f:
+                        inbetween_data = json.load(f)
+                    process_messages["calculate_candles_inbetween"]["verified_candles_inbetween"] = inbetween_data.get('candles in between', 0)
+                    process_messages["calculate_candles_inbetween"]["verified_plus_newmostrecent"] = inbetween_data.get('plus_newmostrecent', 0)
+                except json.JSONDecodeError as e:
+                    process_messages["calculate_candles_inbetween"]["warnings"] = process_messages["calculate_candles_inbetween"].get("warnings", []) + [f"Error decoding candlesamountinbetween.json: {str(e)}"]
+            else:
+                process_messages["calculate_candles_inbetween"]["warnings"] = process_messages["calculate_candles_inbetween"].get("warnings", []) + [f"candlesamountinbetween.json is missing or empty for {market} {timeframe}"]
 
         # Match trendline with candle data
         success, error_msg, trendline_status, match_status = match_trendline_with_candle_data(candle_data, json_dir, market, timeframe)
@@ -4457,19 +5634,31 @@ def process_market_timeframe(market: str, timeframe: str) -> Tuple[bool, Optiona
                 if not os.path.exists(pending_json_path):
                     process_messages["match_trendline_with_candle_data"]["message"] = f"No pending orders found because pendingorder.json does not exist for {market} {timeframe}"
                 else:
-                    with open(pending_json_path, 'r') as f:
-                        pending_data = json.load(f)
-                    if not pending_data:
-                        process_messages["match_trendline_with_candle_data"]["message"] = f"No pending orders found because pendingorder.json is empty for {market} {timeframe}"
-                    else:
-                        process_messages["match_trendline_with_candle_data"]["message"] = f"No pending orders found for {market} {timeframe}"
+                    try:
+                        with open(pending_json_path, 'r') as f:
+                            pending_data = json.load(f)
+                        if not pending_data:
+                            process_messages["match_trendline_with_candle_data"]["message"] = f"No pending orders found because pendingorder.json is empty for {market} {timeframe}"
+                        else:
+                            process_messages["match_trendline_with_candle_data"]["message"] = f"No pending orders found for {market} {timeframe}"
+                    except json.JSONDecodeError as e:
+                        process_messages["match_trendline_with_candle_data"]["warnings"] = process_messages["match_trendline_with_candle_data"].get("warnings", []) + [f"Error decoding pendingorder.json: {str(e)}"]
+                        error_message = f"Failed to process pending orders due to invalid pendingorder.json for {market} {timeframe}"
+                        return False, error_message, "failed", process_messages
             else:
                 process_messages["match_trendline_with_candle_data"]["message"] = f"Failed to match pending orders: {error_msg}"
-            return False, error_msg, trendline_status, process_messages
+                return False, error_msg, trendline_status, process_messages
         else:
-            with open(os.path.join(json_dir, 'pricecandle.json'), 'r') as f:
-                pricecandle_data = json.load(f)
-            process_messages["match_trendline_with_candle_data"]["verified_trendline_count"] = len(pricecandle_data)
+            pricecandle_path = os.path.join(json_dir, 'pricecandle.json')
+            if os.path.exists(pricecandle_path) and os.path.getsize(pricecandle_path) > 0:
+                try:
+                    with open(pricecandle_path, 'r') as f:
+                        pricecandle_data = json.load(f)
+                    process_messages["match_trendline_with_candle_data"]["verified_trendline_count"] = len(pricecandle_data)
+                except json.JSONDecodeError as e:
+                    process_messages["match_trendline_with_candle_data"]["warnings"] = process_messages["match_trendline_with_candle_data"].get("warnings", []) + [f"Error decoding pricecandle.json: {str(e)}"]
+            else:
+                process_messages["match_trendline_with_candle_data"]["warnings"] = process_messages["match_trendline_with_candle_data"].get("warnings", []) + [f"pricecandle.json is missing or empty for {market} {timeframe}"]
 
         # Fetch candles from after Breakout_parent to current price
         success, error_msg, cabp_status, cabp_status_report = candleafterbreakoutparent_to_currentprice(market, timeframe, json_dir)
@@ -4486,35 +5675,19 @@ def process_market_timeframe(market: str, timeframe: str) -> Tuple[bool, Optiona
             log_and_print(error_message, "ERROR")
             process_messages["candleafterbreakoutparent_to_currentprice"]["message"] = error_message
         else:
-            with open(os.path.join(json_dir, 'candlesafterbreakoutparent.json'), 'r') as f:
-                cabp_data = json.load(f)
-            trendline_count = len(cabp_data)
-            total_candles = sum(len(trendline.get('candles', [])) for trendline in cabp_data)
-            process_messages["candleafterbreakoutparent_to_currentprice"]["verified_trendline_count"] = trendline_count
-            process_messages["candleafterbreakoutparent_to_currentprice"]["verified_total_candles"] = total_candles
-
-        # Search for executioner candle and update pricecandle.json
-        success, error_msg, exec_status, exec_status_report = executioncandle_after_breakoutparent(market, timeframe, json_dir)
-        process_messages["executioncandle_after_breakoutparent"] = {
-            "status": exec_status_report["status"],
-            "message": exec_status_report["message"],
-            "trendlines_processed": exec_status_report["trendlines_processed"],
-            "executioner_candles_found": exec_status_report["executioner_candles_found"],
-            "executioner_candles_not_found": exec_status_report["executioner_candles_not_found"],
-            "timestamp": exec_status_report["timestamp"],
-            "warnings": exec_status_report["warnings"]
-        }
-        if not success:
-            error_message = error_msg or f"Failed to process executioner candle for {market} {timeframe}"
-            log_and_print(error_message, "ERROR")
-            process_messages["executioncandle_after_breakoutparent"]["message"] = error_message
-        else:
-            with open(os.path.join(json_dir, 'pricecandle.json'), 'r') as f:
-                pricecandle_data = json.load(f)
-            verified_executioner_found = sum(1 for t in pricecandle_data if t.get('executioner candle', {}).get('status') == 'Candle found at order holder entry level')
-            verified_executioner_not_found = len(pricecandle_data) - verified_executioner_found
-            process_messages["executioncandle_after_breakoutparent"]["verified_executioner_candles_found"] = verified_executioner_found
-            process_messages["executioncandle_after_breakoutparent"]["verified_executioner_candles_not_found"] = verified_executioner_not_found
+            cabp_path = os.path.join(json_dir, 'candlesafterbreakoutparent.json')
+            if os.path.exists(cabp_path) and os.path.getsize(cabp_path) > 0:
+                try:
+                    with open(cabp_path, 'r') as f:
+                        cabp_data = json.load(f)
+                    trendline_count = len(cabp_data)
+                    total_candles = sum(len(trendline.get('candles', [])) for trendline in cabp_data)
+                    process_messages["candleafterbreakoutparent_to_currentprice"]["verified_trendline_count"] = trendline_count
+                    process_messages["candleafterbreakoutparent_to_currentprice"]["verified_total_candles"] = total_candles
+                except json.JSONDecodeError as e:
+                    process_messages["candleafterbreakoutparent_to_currentprice"]["warnings"] = process_messages["candleafterbreakoutparent_to_currentprice"].get("warnings", []) + [f"Error decoding candlesafterbreakoutparent.json: {str(e)}"]
+            else:
+                process_messages["candleafterbreakoutparent_to_currentprice"]["warnings"] = process_messages["candleafterbreakoutparent_to_currentprice"].get("warnings", []) + [f"candlesafterbreakoutparent.json is missing or empty for {market} {timeframe}"]
 
         # Calculate order holder prices with lot size and risk
         if not getorderholderpriceswithlotsizeandrisk(market, timeframe, json_dir):
@@ -4523,16 +5696,21 @@ def process_market_timeframe(market: str, timeframe: str) -> Tuple[bool, Optiona
             process_messages["getorderholderpriceswithlotsizeandrisk"] = error_message
         else:
             output_json_path = os.path.join(json_dir, 'calculatedprices.json')
-            if os.path.exists(output_json_path):
-                with open(output_json_path, 'r') as f:
-                    calculated_data = json.load(f)
-                process_messages["getorderholderpriceswithlotsizeandrisk"] = (
-                    f"Calculated prices for {len(calculated_data)} trendlines for {market} {timeframe}"
-                )
+            if os.path.exists(output_json_path) and os.path.getsize(output_json_path) > 0:
+                try:
+                    with open(output_json_path, 'r') as f:
+                        calculated_data = json.load(f)
+                    process_messages["getorderholderpriceswithlotsizeandrisk"] = (
+                        f"Calculated prices for {len(calculated_data)} trendlines for {market} {timeframe}"
+                    )
+                except json.JSONDecodeError as e:
+                    process_messages["getorderholderpriceswithlotsizeandrisk"] = f"Error decoding calculatedprices.json: {str(e)}"
+                    process_messages["getorderholderpriceswithlotsizeandrisk_warnings"] = [f"Error decoding calculatedprices.json: {str(e)}"]
             else:
                 process_messages["getorderholderpriceswithlotsizeandrisk"] = (
                     f"No calculated prices saved for {market} {timeframe}"
                 )
+                process_messages["getorderholderpriceswithlotsizeandrisk_warnings"] = [f"calculatedprices.json is missing or empty for {market} {timeframe}"]
 
         # Track breakeven, stoploss, and profit
         if not PendingOrderUpdater(market, timeframe, json_dir):
@@ -4540,12 +5718,21 @@ def process_market_timeframe(market: str, timeframe: str) -> Tuple[bool, Optiona
             log_and_print(error_message, "ERROR")
             process_messages["PendingOrderUpdater"] = error_message
         else:
-            with open(os.path.join(json_dir, 'pricecandle.json'), 'r') as f:
-                pricecandle_data = json.load(f)
-            contract_statuses = [t.get('contract status summary', {}).get('contract status', 'unknown') for t in pricecandle_data]
-            process_messages["PendingOrderUpdater"] = (
-                f"Tracked breakeven, stoploss, and profit for {len(pricecandle_data)} trendlines: {', '.join(set(contract_statuses))} for {market} {timeframe}"
-            )
+            pricecandle_path = os.path.join(json_dir, 'pricecandle.json')
+            if os.path.exists(pricecandle_path) and os.path.getsize(pricecandle_path) > 0:
+                try:
+                    with open(pricecandle_path, 'r') as f:
+                        pricecandle_data = json.load(f)
+                    contract_statuses = [t.get('contract status summary', {}).get('contract status', 'unknown') for t in pricecandle_data]
+                    process_messages["PendingOrderUpdater"] = (
+                        f"Tracked breakeven, stoploss, and profit for {len(pricecandle_data)} trendlines: {', '.join(set(contract_statuses))} for {market} {timeframe}"
+                    )
+                except json.JSONDecodeError as e:
+                    process_messages["PendingOrderUpdater"] = f"Error decoding pricecandle.json: {str(e)}"
+                    process_messages["PendingOrderUpdater_warnings"] = [f"Error decoding pricecandle.json: {str(e)}"]
+            else:
+                process_messages["PendingOrderUpdater"] = f"No pricecandle data saved for {market} {timeframe}"
+                process_messages["PendingOrderUpdater_warnings"] = [f"pricecandle.json is missing or empty for {market} {timeframe}"]
 
         # Collect pending orders
         if not collect_all_pending_orders(market, timeframe, json_dir):
@@ -4557,34 +5744,22 @@ def process_market_timeframe(market: str, timeframe: str) -> Tuple[bool, Optiona
             collective_pending_path = os.path.join(BASE_OUTPUT_FOLDER, 'temp_pendingorders.json')
             pending_count = 0
             all_pending_count = 0
-            if os.path.exists(output_json_path):
-                with open(output_json_path, 'r') as f:
-                    contract_data = json.load(f)
-                pending_count = len(contract_data)
-            if os.path.exists(collective_pending_path):
-                with open(collective_pending_path, 'r') as f:
-                    all_pending_data = json.load(f)
-                all_pending_count = len(all_pending_data.get('orders', []))
+            if os.path.exists(output_json_path) and os.path.getsize(output_json_path) > 0:
+                try:
+                    with open(output_json_path, 'r') as f:
+                        contract_data = json.load(f)
+                    pending_count = len(contract_data)
+                except json.JSONDecodeError as e:
+                    process_messages["collect_all_pending_orders_warnings"] = [f"Error decoding contractpendingorders.json: {str(e)}"]
+            if os.path.exists(collective_pending_path) and os.path.getsize(collective_pending_path) > 0:
+                try:
+                    with open(collective_pending_path, 'r') as f:
+                        all_pending_data = json.load(f)
+                    all_pending_count = len(all_pending_data.get('orders', []))
+                except json.JSONDecodeError as e:
+                    process_messages["collect_all_pending_orders_warnings"] = process_messages.get("collect_all_pending_orders_warnings", []) + [f"Error decoding temp_pendingorders.json: {str(e)}"]
             process_messages["collect_all_pending_orders"] = (
                 f"Collected {pending_count} pending orders for {market} {timeframe}, total {all_pending_count} in collective"
-            )
-        
-        lockpendingorders()
-        
-        # Collect executioner candle orders
-        if not collect_all_executionercandle_orders(market, timeframe, json_dir):
-            error_message = f"Failed to collect executioner candle orders for {market} {timeframe}"
-            log_and_print(error_message, "ERROR")
-            process_messages["collect_all_executionercandle_orders"] = error_message
-        else:
-            executed_orders_json_path = os.path.join(json_dir, 'executedorders.json')
-            executed_count = 0
-            if os.path.exists(executed_orders_json_path):
-                with open(executed_orders_json_path, 'r') as f:
-                    executed_data = json.load(f)
-                executed_count = len(executed_data)
-            process_messages["collect_all_executionercandle_orders"] = (
-                f"Collected {executed_count} executed orders for {market} {timeframe}"
             )
 
         # Generate markets order list status
@@ -4594,23 +5769,28 @@ def process_market_timeframe(market: str, timeframe: str) -> Tuple[bool, Optiona
             process_messages["marketsliststatus"] = error_message
         else:
             markets_order_list_path = os.path.join(BASE_OUTPUT_FOLDER, "marketsorderlist.json")
-            if os.path.exists(markets_order_list_path):
-                with open(markets_order_list_path, 'r') as f:
-                    markets_data = json.load(f)
-                pending_markets = markets_data.get("markets_pending", {})
-                order_free = markets_data.get("order_free_markets", {})
-                process_messages["marketsliststatus"] = (
-                    f"Generated markets order list: {len(pending_markets)} markets with pending orders, "
-                    f"order-free markets - M5: {len(order_free.get('market_m5', []))}, "
-                    f"M15: {len(order_free.get('market_m15', []))}, "
-                    f"M30: {len(order_free.get('market_m30', []))}, "
-                    f"H1: {len(order_free.get('market_1H', []))}, "
-                    f"H4: {len(order_free.get('market_4H', []))}"
-                )
+            if os.path.exists(markets_order_list_path) and os.path.getsize(markets_order_list_path) > 0:
+                try:
+                    with open(markets_order_list_path, 'r') as f:
+                        markets_data = json.load(f)
+                    pending_markets = markets_data.get("markets_pending", {})
+                    order_free = markets_data.get("order_free_markets", {})
+                    process_messages["marketsliststatus"] = (
+                        f"Generated markets order list: {len(pending_markets)} markets with pending orders, "
+                        f"order-free markets - M5: {len(order_free.get('market_m5', []))}, "
+                        f"M15: {len(order_free.get('market_m15', []))}, "
+                        f"M30: {len(order_free.get('market_m30', []))}, "
+                        f"H1: {len(order_free.get('market_1H', []))}, "
+                        f"H4: {len(order_free.get('market_4H', []))}"
+                    )
+                except json.JSONDecodeError as e:
+                    process_messages["marketsliststatus"] = f"Error decoding marketsorderlist.json: {str(e)}"
+                    process_messages["marketsliststatus_warnings"] = [f"Error decoding marketsorderlist.json: {str(e)}"]
             else:
                 process_messages["marketsliststatus"] = (
                     f"No markets order list generated for {market} {timeframe}"
                 )
+                process_messages["marketsliststatus_warnings"] = [f"marketsorderlist.json is missing or empty for {market} {timeframe}"]
 
         log_and_print(f"Completed processing market: {market}, timeframe: {timeframe}", "SUCCESS")
         return True, None, "success", process_messages
@@ -4620,11 +5800,9 @@ def process_market_timeframe(market: str, timeframe: str) -> Tuple[bool, Optiona
         log_and_print(error_message, "ERROR")
         process_messages["error"] = error_message
         return False, error_message, "failed", process_messages
-    finally:
-        mt5.shutdown()
-        
+         
 def main():
-    """Main function to process markets and timeframes with 'chart_identified' or 'order_free' status, saving all status to marketsstatus.json."""
+    """Main function to process markets for all timeframes with valid verification.json, using markets from batchbybatch.json, saving all status to marketsstatus.json."""
     try:
         log_and_print("===== Fetch and Process Candle Data =====", "TITLE")
         
@@ -4633,11 +5811,33 @@ def main():
             log_and_print("Credentials not properly loaded from base.json. Exiting.", "ERROR")
             return
         
-        # Check M15 candle time left globally
-        if not MARKETS:
-            log_and_print("No markets defined in MARKETS list. Exiting.", "ERROR")
+        # Load markets from batchbybatch.json
+        batch_json_path = r"C:\xampp\htdocs\CIPHER\cipher i\programmes\chart\batches\batchbybatch.json"
+        if not os.path.exists(batch_json_path):
+            log_and_print(f"batchbybatch.json not found at {batch_json_path}. Exiting.", "ERROR")
             return
-        default_market = MARKETS[0]
+        
+        try:
+            with open(batch_json_path, 'r') as f:
+                batch_data = json.load(f)
+            batch_markets = batch_data.get("markets", [])
+            if not batch_markets:
+                log_and_print("No markets found in batchbybatch.json. Exiting.", "ERROR")
+                return
+        except json.JSONDecodeError as e:
+            log_and_print(f"Error decoding batchbybatch.json: {str(e)}. Exiting.", "ERROR")
+            return
+        
+        log_and_print(f"Loaded {len(batch_markets)} markets from batchbybatch.json", "INFO")
+        
+        # Filter markets that are in both batchbybatch.json and MARKETS
+        valid_markets = [market for market in batch_markets if market in MARKETS]
+        if not valid_markets:
+            log_and_print("No valid markets found in both batchbybatch.json and MARKETS list. Exiting.", "ERROR")
+            return
+        
+        # Check M15 candle time left globally using the first valid market
+        default_market = valid_markets[0]
         timeframe = "M15"
         log_and_print(f"Checking M15 candle time left using market: {default_market}", "INFO")
         time_left, next_close_time = candletimeleft(default_market, timeframe, None, min_time_left=0.3)
@@ -4648,23 +5848,23 @@ def main():
         
         log_and_print(f"M15 candle time left: {time_left:.2f} minutes. Proceeding with execution.", "INFO")
 
-        # Create tasks for market-timeframe combinations with valid status
+        # Create tasks for market-timeframe combinations with valid verification.json
         tasks = []
-        status_chart_identified_count = 0
-        for market in MARKETS:
-            for timeframe in TIMEFRAMES:
-                if check_status_json(market, timeframe):
+        markets_with_all_timeframes_verified = []
+        for market in valid_markets:
+            if check_verification_json(market):
+                markets_with_all_timeframes_verified.append(market)
+                for timeframe in TIMEFRAMES:
                     tasks.append((market, timeframe))
-                    status_chart_identified_count += 1
-                else:
-                    log_and_print(f"Skipped {market}, {timeframe}: Invalid status in status.json", "INFO")
+            else:
+                log_and_print(f"Skipping market {market}: verification.json not valid or missing 'chart_identified' or 'all_timeframes' verified", "WARNING")
         
-        allfound = len(tasks)  # Total number of market-timeframe pairs with valid status
+        allfound = len(tasks)
         if not tasks:
-            log_and_print("No market-timeframe combinations with 'chart_identified' or 'order_free' status found. Exiting.", "WARNING")
+            log_and_print("No markets with valid verification.json found for processing. Exiting.", "WARNING")
             return
         
-        log_and_print(f"Processing {allfound} market-timeframe combinations with 'chart_identified' or 'order_free' status", "INFO")
+        log_and_print(f"Processing {allfound} market-timeframe combinations with valid verification.json", "INFO")
         success_data = []
         no_pending_data = []
         failed_data = []
@@ -4756,19 +5956,6 @@ def main():
                 "timestamp": cabp_status.get("timestamp", time.strftime("%Y-%m-%d %H:%M:%S")),
                 "warnings": cabp_status.get("warnings", [])
             })
-            # Collect executioncandle_after_breakoutparent status
-            exec_status = process_messages.get("executioncandle_after_breakoutparent", {})
-            executioner_candle_statuses.append({
-                "market": market,
-                "timeframe": timeframe,
-                "exec_status": exec_status.get("status", "unknown"),
-                "exec_message": exec_status.get("message", "No executioner candle data"),
-                "trendlines_processed": exec_status.get("trendlines_processed", 0),
-                "executioner_candles_found": exec_status.get("executioner_candles_found", 0),
-                "executioner_candles_not_found": exec_status.get("executioner_candles_not_found", 0),
-                "timestamp": exec_status.get("timestamp", time.strftime("%Y-%m-%d %H:%M:%S")),
-                "warnings": exec_status.get("warnings", [])
-            })
             # Collect getorderholderpriceswithlotsizeandrisk status
             order_holder_prices_status = process_messages.get("getorderholderpriceswithlotsizeandrisk", {})
             order_holder_prices_statuses.append({
@@ -4776,8 +5963,8 @@ def main():
                 "timeframe": timeframe,
                 "order_holder_prices_status": "success" if isinstance(order_holder_prices_status, str) and "Calculated prices" in order_holder_prices_status else "failed",
                 "order_holder_prices_message": order_holder_prices_status if isinstance(order_holder_prices_status, str) else "No order holder prices data",
-                "orders_processed": 0,  # Will update below
-                "verified_order_count": 0,  # Will update below
+                "orders_processed": 0,
+                "verified_order_count": 0,
                 "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "warnings": []
             })
@@ -4798,8 +5985,8 @@ def main():
                 "timeframe": timeframe,
                 "pending_order_updater_status": "success" if isinstance(pending_order_updater_status, str) and "Tracked breakeven" in pending_order_updater_status else "failed",
                 "pending_order_updater_message": pending_order_updater_status if isinstance(pending_order_updater_status, str) else "No pending order updater data",
-                "orders_updated": 0,  # Will update below
-                "verified_order_count": 0,  # Will update below
+                "orders_updated": 0,
+                "verified_order_count": 0,
                 "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "warnings": []
             })
@@ -4813,6 +6000,8 @@ def main():
                         pending_order_updater_statuses[-1]["verified_order_count"] = len(pricecandle_data)
                 except Exception as e:
                     pending_order_updater_statuses[-1]["warnings"].append(f"Error reading pricecandle.json: {str(e)}")
+
+
             # Collect collect_all_pending_orders status
             collect_pending_orders_status = process_messages.get("collect_all_pending_orders", {})
             collect_pending_orders_statuses.append({
@@ -4820,8 +6009,8 @@ def main():
                 "timeframe": timeframe,
                 "collect_pending_status": "success" if isinstance(collect_pending_orders_status, str) and "Collected" in collect_pending_orders_status else "failed",
                 "collect_pending_message": collect_pending_orders_status if isinstance(collect_pending_orders_status, str) else "No collect pending orders data",
-                "pending_orders_collected": 0,  # Will update below
-                "verified_pending_count": 0,  # Will update below
+                "pending_orders_collected": 0,
+                "verified_pending_count": 0,
                 "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "warnings": []
             })
@@ -4842,7 +6031,7 @@ def main():
                 "timeframe": timeframe,
                 "lock_pending_status": "success" if isinstance(lock_pending_status, str) and "Saved" in lock_pending_status else "failed",
                 "lock_pending_message": lock_pending_status if isinstance(lock_pending_status, str) else "No lock pending orders data",
-                "orders_locked": 0,  # Will update below
+                "orders_locked": 0,
                 "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "warnings": []
             })
@@ -4855,28 +6044,6 @@ def main():
                         lock_pending_orders_statuses[-1]["orders_locked"] = locked_data.get("temp_pendingorders", 0)
                 except Exception as e:
                     lock_pending_orders_statuses[-1]["warnings"].append(f"Error reading lockedpendingorders.json: {str(e)}")
-            # Collect collect_all_executionercandle_orders status
-            collect_executioner_status = process_messages.get("collect_all_executionercandle_orders", {})
-            collect_executioner_orders_statuses.append({
-                "market": market,
-                "timeframe": timeframe,
-                "collect_executioner_status": "success" if isinstance(collect_executioner_status, str) and "Collected" in collect_executioner_status else "failed",
-                "collect_executioner_message": collect_executioner_status if isinstance(collect_executioner_status, str) else "No collect executioner orders data",
-                "executioner_orders_collected": 0,  # Will update below
-                "verified_executioner_count": 0,  # Will update below
-                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-                "warnings": []
-            })
-            if isinstance(collect_executioner_status, str) and "Collected" in collect_executioner_status:
-                try:
-                    executed_orders_json_path = os.path.join(BASE_OUTPUT_FOLDER, market.replace(" ", "_"), timeframe.lower(), 'executedorders.json')
-                    if os.path.exists(executed_orders_json_path):
-                        with open(executed_orders_json_path, 'r') as f:
-                            executed_data = json.load(f)
-                        collect_executioner_orders_statuses[-1]["executioner_orders_collected"] = len(executed_data)
-                        collect_executioner_orders_statuses[-1]["verified_executioner_count"] = len(executed_data)
-                except Exception as e:
-                    collect_executioner_orders_statuses[-1]["warnings"].append(f"Error reading executedorders.json: {str(e)}")
             # Collect marketsliststatus status
             markets_list_status = process_messages.get("marketsliststatus", {})
             markets_list_statuses.append({
@@ -4884,7 +6051,7 @@ def main():
                 "timeframe": timeframe,
                 "markets_list_status": "success" if isinstance(markets_list_status, str) and "Generated" in markets_list_status else "failed",
                 "markets_list_message": markets_list_status if isinstance(markets_list_status, str) else "No markets list status data",
-                "markets_processed": 0,  # Will update below
+                "markets_processed": 0,
                 "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
                 "warnings": []
             })
@@ -4921,6 +6088,7 @@ def main():
                     "processed_at": time.strftime("%Y-%m-%d %H:%M:%S"),
                     "process_messages": process_messages
                 })
+        marketsliststatus()
 
         log_and_print("===== SUMMARY =====", "TITLE")
         success_count = len(success_data)
@@ -4987,16 +6155,27 @@ def main():
         log_and_print(f"Markets list status summary: {markets_list_success_count}/{allfound} successful, {markets_list_failed_count} failed, total markets processed: {total_markets_processed}", "INFO")
         log_and_print(f"Match trendline summary: {match_success_count}/{allfound} successful, {match_failed_count} failed, {match_no_pending_count} with no pending orders, total trendlines matched: {total_trendlines_matched}, total warnings: {total_warnings}", "INFO")
         log_and_print(f"Sum success / allfound: {success_count}/{allfound}", "SUCCESS")
-        log_and_print(f"Status with chart_identified: {status_chart_identified_count}", "INFO")
+        log_and_print(f"Markets with verification.json and all timeframes 'verified': {len(markets_with_all_timeframes_verified)}", "INFO")
         log_and_print(f"Result: {success_count}/{failed_count}", "INFO")
         
     except Exception as e:
         log_and_print(f"Error in main processing: {str(e)}", "ERROR")
     finally:
         log_and_print("===== Fetch and Process Candle Data Completed =====", "TITLE")
-                     
+
 if __name__ == "__main__":
-    #executefetchlotsizeandrisk()
+    #executeinsertprocessedorderstodb()
+    #===============================#
+    execute_fetch_processed_bouncestream_signals()
+    execute_fetch_pending_bouncestream_signals()
+    #==============================#
     main()
+    executeinsertpendingorderstodb()
     #executeinsertpendingorderstodb()
+    time.sleep(180)
+    executefetchlotsizeandrisk()
+    deletependingorders()
+    validatesignals()
+    executeinsertpendingorderstodb()
+    deletependingorders()
     

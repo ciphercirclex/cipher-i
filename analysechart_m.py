@@ -2227,9 +2227,9 @@ def main_trendlinetocandleposition(position):
     return str(pos)
 
 def process_5minutes_timeframe():
-    """Process all markets for the 5-minute (M5) timeframe if status is 'chart identified' or 'chart_identified'."""
+    """Process markets for the 5-minute (M5) timeframe where verification.json has all timeframes chart_identified, all_timeframes verified, and market is in batchbybatch.json."""
     def check_status_json(market):
-        """Check if the status.json file for a market and M5 timeframe has 'chart identified' or 'chart_identified' status."""
+        """Check if the status.json file for a market and M5 timeframe has 'chart_identified' status."""
         try:
             normalized_tf = normalize_timeframe("M5")
             market_folder_name = market.replace(" ", "_")
@@ -2252,18 +2252,49 @@ def process_5minutes_timeframe():
             with open(status_file, 'r') as f:
                 status_data = json.load(f)
             status = status_data.get("status", "")
-            if status in ["order_free", "chart_identified"]:
-                #print(f"Status '{status}' found for {market} timeframe M5")
-                return True
-            else:
-                #print(f"Status '{status}' for {market} timeframe M5, skipping processing")
-                return False
+            return status == "chart_identified"
         except Exception as e:
             print(f"Error reading or creating status file for {market} timeframe M5: {e}")
             return False
 
+    def check_verification_json(market):
+        """Check if verification.json exists and all timeframes are 'chart_identified' with 'all_timeframes' set to 'verified'."""
+        try:
+            market_folder_name = market.replace(" ", "_")
+            verification_file = os.path.join(BASE_INPUT_FOLDER, market_folder_name, "verification.json")
+            if not os.path.exists(verification_file):
+                print(f"Verification file not found for {market}: {verification_file}")
+                return False
+            
+            with open(verification_file, 'r') as f:
+                verification_data = json.load(f)
+            
+            required_timeframes = ["m5", "m15", "m30", "h1", "h4"]
+            all_timeframes_valid = all(
+                verification_data.get(tf, "") == "chart_identified" for tf in required_timeframes
+            ) and verification_data.get("all_timeframes", "") == "verified"
+            
+            return all_timeframes_valid
+        except Exception as e:
+            print(f"Error reading verification file for {market}: {e}")
+            return False
+
+    def load_batchbybatch_markets():
+        """Load markets from batchbybatch.json."""
+        batchbybatch_path = r"C:\xampp\htdocs\CIPHER\cipher i\programmes\chart\batches\batchbybatch.json"
+        try:
+            if not os.path.exists(batchbybatch_path):
+                print(f"batchbybatch.json not found at {batchbybatch_path}")
+                return []
+            with open(batchbybatch_path, 'r') as f:
+                batch_data = json.load(f)
+            return batch_data.get("markets", [])
+        except Exception as e:
+            print(f"Error loading batchbybatch.json: {e}")
+            return []
+
     try:
-        # Load markets and credentials
+        # Load markets and timeframes
         global MARKETS, TIMEFRAMES
         MARKETS, TIMEFRAMES = load_markets_and_timeframes(MARKETS_JSON_PATH)
         
@@ -2271,8 +2302,22 @@ def process_5minutes_timeframe():
             print("No markets defined in MARKETS list. Exiting.")
             return
         
-        # Check M5 candle time left using the first market
-        default_market = MARKETS[0]
+        # Load markets from batchbybatch.json
+        batch_markets = load_batchbybatch_markets()
+        if not batch_markets:
+            print("No markets found in batchbybatch.json. Exiting.")
+            return
+        
+        # Filter MARKETS to only include those present in batchbybatch.json
+        valid_markets = [market for market in MARKETS if market in batch_markets]
+        if not valid_markets:
+            print("No markets from MARKETS found in batchbybatch.json. Exiting.")
+            return
+        
+        print(f"Valid markets from batchbybatch.json: {valid_markets}")
+
+        # Check M5 candle time left using the first valid market
+        default_market = valid_markets[0]
         timeframe = "M5"
         print(f"Checking M5 candle time left using market: {default_market}")
         time_left, next_close_time = candletimeleft_5minutes(default_market, None, min_time_left=1)
@@ -2283,14 +2328,24 @@ def process_5minutes_timeframe():
         
         print(f"M5 candle time left: {time_left:.2f} minutes. Proceeding with execution.")
         
-        # Create a list of markets with valid status for M5
+        # Create a list of markets with valid verification.json, valid M5 status, and in batchbybatch.json
         tasks = []
-        for market in MARKETS:
-            if check_status_json(market):
-                tasks.append((market, timeframe))
+        status_chart_identified_count = 0
+        verification_all_timeframes_count = 0
+        for market in valid_markets:
+            if check_verification_json(market):
+                verification_all_timeframes_count += 1
+                if check_status_json(market):
+                    tasks.append((market, timeframe))
+                    status_chart_identified_count += 1
+                    print(f"Market {market} has all timeframes chart_identified in verification.json and valid M5 status")
+                else:
+                    print(f"Market {market} has valid verification.json but invalid M5 status, skipping")
+            else:
+                print(f"Market {market} does not have all timeframes chart_identified in verification.json, skipping")
         
         if not tasks:
-            print("No markets with 'chart identified' or 'chart_identified' status for M5 timeframe found. Exiting.")
+            print("No markets with valid verification.json, 'chart_identified' status for M5, and in batchbybatch.json found. Exiting.")
             return
         
         print(f"Processing {len(tasks)} markets for M5 timeframe")
@@ -2301,11 +2356,12 @@ def process_5minutes_timeframe():
         
         # Print summary of processing
         success_count = sum(1 for result in results if result)
+        print(f"Status with chart identified for M5: {status_chart_identified_count}")
+        print(f"Markets with all timeframes chart_identified in verification.json: {verification_all_timeframes_count}")
         print(f"Processing completed: {success_count}/{len(tasks)} markets processed successfully for M5 timeframe")
         
     except Exception as e:
         print(f"Error in process_5minutes_timeframe: {e}")
-
 
 def process_market_timeframe(market, timeframe):
     """Process a single market and timeframe combination."""
@@ -2409,22 +2465,20 @@ def process_market_timeframe(market, timeframe):
 
 def main():
     def check_status_json(market, timeframe):
-        """Check if the status.json file for a market and timeframe has 'chart identified' or 'chart_identified' status.
+        """Check if the status.json file for a market and timeframe has 'chart_identified' status.
         Create a default status.json if it doesn't exist."""
         try:
-            normalized_tf = normalize_timeframe(timeframe)  # Normalize timeframe for folder path
+            normalized_tf = normalize_timeframe(timeframe)
             market_folder_name = market.replace(" ", "_")
             status_file = os.path.join(BASE_INPUT_FOLDER, market_folder_name, normalized_tf, "status.json")
-            # Create the directory if it doesn't exist
             os.makedirs(os.path.dirname(status_file), exist_ok=True)
             
-            # Check if status file exists, if not create it with default values
             if not os.path.exists(status_file):
                 print(f"Status file not found for {market} timeframe {timeframe}: {status_file}. Creating default status.json")
                 default_status = {
                     "market": market,
                     "timeframe": timeframe,
-                    "normalized_timeframe": normalized_tf,  # Include normalized timeframe
+                    "normalized_timeframe": normalized_tf,
                     "timestamp": "",
                     "status": "order_free",
                     "elligible_status": "order_free"
@@ -2432,32 +2486,78 @@ def main():
                 with open(status_file, 'w') as f:
                     json.dump(default_status, f, indent=4)
             
-            # Read the status file
             with open(status_file, 'r') as f:
                 status_data = json.load(f)
             status = status_data.get("status", "")
-            if status in ["order_free", "chart_identified"]:
-                #print(f"Status '{status}' found for {market} timeframe {timeframe}")
-                return True
-            else:
-                #print(f"Status '{status}' for {market} timeframe {timeframe}, skipping processing")
-                return False
+            return status == "chart_identified"
         except Exception as e:
             print(f"Error reading or creating status file for {market} timeframe {timeframe}: {e}")
             return False
 
+    def check_verification_json(market):
+        """Check if verification.json exists and all timeframes are 'chart_identified' with 'all_timeframes' set to 'verified'."""
+        try:
+            market_folder_name = market.replace(" ", "_")
+            verification_file = os.path.join(BASE_INPUT_FOLDER, market_folder_name, "verification.json")
+            if not os.path.exists(verification_file):
+                print(f"Verification file not found for {market}: {verification_file}")
+                return False
+            
+            with open(verification_file, 'r') as f:
+                verification_data = json.load(f)
+            
+            required_timeframes = ["m5", "m15", "m30", "h1", "h4"]
+            all_timeframes_valid = all(
+                verification_data.get(tf, "") == "chart_identified" for tf in required_timeframes
+            ) and verification_data.get("all_timeframes", "") == "verified"
+            
+            return all_timeframes_valid
+        except Exception as e:
+            print(f"Error reading verification file for {market}: {e}")
+            return False
+
+    def load_batchbybatch_markets():
+        """Load markets from batchbybatch.json."""
+        batchbybatch_path = r"C:\xampp\htdocs\CIPHER\cipher i\programmes\chart\batches\batchbybatch.json"
+        try:
+            if not os.path.exists(batchbybatch_path):
+                print(f"batchbybatch.json not found at {batchbybatch_path}")
+                return []
+            with open(batchbybatch_path, 'r') as f:
+                batch_data = json.load(f)
+            return batch_data.get("markets", [])
+        except Exception as e:
+            print(f"Error loading batchbybatch.json: {e}")
+            return []
+
     def chart_identified_main():
-        """Main function to process markets and timeframes with 'chart identified' or 'chart_identified' status."""
+        """Main function to process markets with all timeframes chart_identified in verification.json and present in batchbybatch.json."""
         try:
             # Load markets, timeframes, and credentials
             global MARKETS, TIMEFRAMES
             MARKETS, TIMEFRAMES = load_markets_and_timeframes(MARKETS_JSON_PATH)
             
             if not MARKETS or not TIMEFRAMES:
-                print("No markets defined in MARKETS list. Exiting.")
+                print("No markets or timeframes defined. Exiting.")
                 return
-            default_market = MARKETS[0]  # Use the first market for candle time check
-            timeframe = "M15"  # Changed to M15
+            
+            # Load markets from batchbybatch.json
+            batch_markets = load_batchbybatch_markets()
+            if not batch_markets:
+                print("No markets found in batchbybatch.json. Exiting.")
+                return
+            
+            # Filter MARKETS to only include those present in batchbybatch.json
+            valid_markets = [market for market in MARKETS if market in batch_markets]
+            if not valid_markets:
+                print("No markets from MARKETS found in batchbybatch.json. Exiting.")
+                return
+            
+            print(f"Valid markets from batchbybatch.json: {valid_markets}")
+            
+            # Check M15 candle time left using the first valid market
+            default_market = valid_markets[0]
+            timeframe = "M15"
             print(f"Checking M15 candle time left using market: {default_market}")
             time_left, next_close_time = candletimeleft(default_market, timeframe, None, min_time_left=0.3)
             
@@ -2467,40 +2567,36 @@ def main():
             
             print(f"M15 candle time left: {time_left:.2f} minutes. Proceeding with execution.")
             
-            print(f"Markets to check: {MARKETS}")
+            print(f"Markets to check: {valid_markets}")
             
-            # Create a list of market and timeframe combinations with valid status
+            # Create a list of market-timeframe combinations with valid verification.json and status
             tasks = []
             status_chart_identified_count = 0
-            for market in MARKETS:
-                for timeframe in TIMEFRAMES:
-                    if check_status_json(market, timeframe):
-                        tasks.append((market, timeframe))
+            verification_all_timeframes_count = 0
+            non_verified_markets = []
+            for market in valid_markets:
+                if check_verification_json(market):
+                    verification_all_timeframes_count += 1
+                    valid_timeframes = [tf for tf in TIMEFRAMES if check_status_json(market, tf)]
+                    for tf in valid_timeframes:
+                        tasks.append((market, tf))
                         status_chart_identified_count += 1
-                    else:
-                        print(f"Skipped {market}, {timeframe}: Invalid status in status.json")
+                        print(f"Market {market} timeframe {tf} has valid verification.json and status")
+                    if not valid_timeframes:
+                        print(f"Market {market} has valid verification.json but no valid timeframes, skipping")
+                else:
+                    non_verified_markets.append(market)
+                    print(f"Market {market} does not have all timeframes chart_identified in verification.json, skipping")
             
             if not tasks:
-                print("No market-timeframe combinations with 'chart identified' or 'chart_identified' status found. Exiting.")
+                print("No market-timeframe combinations with valid verification.json, 'chart_identified' status, and in batchbybatch.json found. Exiting.")
                 return
             
-            print(f"Processing {len(tasks)} market-timeframe combinations with 'chart identified' or 'chart_identified' status")
-            
-            # Count markets with valid verification.json and collect non-verified markets
-            verification_valid_count = 0
-            non_verified_markets = []  # List to store markets without valid verification.json
-            for market in MARKETS:
-                if check_market_verification(market):
-                    valid_timeframes = [tf for tf in TIMEFRAMES if check_status_json(market, tf)]
-                    verification_valid_count += len(valid_timeframes)
-                    print(f"Market {market} has {len(valid_timeframes)} valid timeframes in verification.json")
-                else:
-                    non_verified_markets.append(market)  # Add market to non-verified list
-                    print(f"Market {market} failed verification check")
+            print(f"Processing {len(tasks)} market-timeframe combinations with valid verification.json and 'chart_identified' status")
             
             # Save non-verified markets to nonverifiedmarkets.json
             non_verified_json_path = os.path.join(BASE_OUTPUT_FOLDER, "nonverifiedmarkets.json")
-            os.makedirs(BASE_OUTPUT_FOLDER, exist_ok=True)  # Ensure output folder exists
+            os.makedirs(BASE_OUTPUT_FOLDER, exist_ok=True)
             non_verified_data = {"markets_with_no_verificationjson": non_verified_markets}
             try:
                 with open(non_verified_json_path, 'w') as f:
@@ -2509,19 +2605,21 @@ def main():
             except Exception as e:
                 print(f"Error saving nonverifiedmarkets.json: {e}")
             
-            # Use multiprocessing to process valid market-timeframe combinations in parallel
+            # Use multiprocessing to process valid market-timeframe combinations
             with multiprocessing.Pool(processes=multiprocessing.cpu_count()) as pool:
                 results = pool.starmap(process_market_timeframe, tasks)
             
             # Print summary of processing
             success_count = sum(1 for result in results if result)
             print(f"Status with chart identified: {status_chart_identified_count}")
-            print(f"Verification JSON valid: {verification_valid_count}")
+            print(f"Markets with all timeframes chart_identified in verification.json: {verification_all_timeframes_count}")
             print(f"Processing completed: {success_count}/{len(tasks)} market-timeframe combinations processed successfully")
             
         except Exception as e:
             print(f"Error in main processing: {e}")
+    
     chart_identified_main()
 
 if __name__ == "__main__":
      main()
+     process_5minutes_timeframe()
