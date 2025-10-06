@@ -159,16 +159,19 @@ def get_eligible_market_timeframes():
                     with open(status_file, 'r') as f:
                         status_data = json.load(f)
                         elligible_status = status_data.get("elligible_status", "")
-                        if elligible_status == "order_free":
+                        # Modified condition: eligible if elligible_status is not 'active' or 'chart_identified'
+                        if elligible_status not in ["active", "chart_identified"]:
                             eligible_pairs.append((market, tf))
                 else:
+                    # If status.json doesn't exist, consider the pair eligible
                     eligible_pairs.append((market, tf))
             except Exception as e:
                 logger.warning(f"Error reading status.json for {market} ({tf}): {e}")
+                # If there's an error reading status.json, consider the pair eligible to ensure processing
                 eligible_pairs.append((market, tf))
     logger.debug(f"Eligible market-timeframe pairs: {eligible_pairs}")
     return eligible_pairs
-
+    
 def clear_all_market_files():
     """Clear market-related PNG files in Downloads and destination folders for markets with elligible_status 'order_free'."""
     logger.debug("Clearing market-related files for eligible markets in Downloads and destination folders")

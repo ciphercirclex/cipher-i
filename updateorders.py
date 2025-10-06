@@ -2169,6 +2169,7 @@ def getorderholderpriceswithlotsizeandrisk(market: str, timeframe: str, json_dir
         mt5.shutdown()
         return False, status_report
 
+
 def PendingOrderUpdater(market: str, timeframe: str, json_dir: str) -> tuple[bool, dict]:
     """Update pending orders in pricecandle.json based on calculatedprices.json, handling duplicates."""
     log_and_print(f"Updating pending orders for market={market}, timeframe={timeframe}", "INFO")
@@ -2733,6 +2734,111 @@ def collect_all_pending_orders(market: str, timeframe: str, json_dir: str) -> tu
         status_report["message"] = f"Unexpected error: {str(e)}"
         return False, status_report
 
+def move_fetchedpendingordersto_temppendingorders():
+    # File paths
+    pending_orders_path = r"C:\xampp\htdocs\CIPHER\cipher i\programmes\chart\orders\fetchedpendingorders.json"
+    lotsizes_path = r"C:\xampp\htdocs\CIPHER\cipher i\programmes\chart\orders\lotsizes.json"
+    temp_pendingorders_path = r"C:\xampp\htdocs\CIPHER\cipher i\programmes\chart\orders\temp_pendingorders.json"
+    
+    try:
+        # Read pending orders
+        with open(pending_orders_path, 'r') as f:
+            pending_orders_data = json.load(f)
+        
+        # Read lotsizes
+        with open(lotsizes_path, 'r') as f:
+            lotsizes_data = json.load(f)
+        
+        # Read temp_pendingorders (or initialize if it doesn't exist)
+        try:
+            with open(temp_pendingorders_path, 'r') as f:
+                temp_pendingorders_data = json.load(f)
+        except FileNotFoundError:
+            temp_pendingorders_data = {
+                "temp_pendingorders": 0,
+                "5minutes pending orders": 0,
+                "15minutes pending orders": 0,
+                "30minutes pending orders": 0,
+                "1Hour pending orders": 0,
+                "4Hours pending orders": 0,
+                "orders": []
+            }
+        
+        # Create a mapping of pair-timeframe to lot_size
+        lotsize_map = {}
+        for lotsize in lotsizes_data:
+            # Normalize timeframe format (e.g., "5minutes" to "M5")
+            timeframe = lotsize['timeframe']
+            if timeframe == "5minutes":
+                timeframe = "M5"
+            elif timeframe == "15minutes":
+                timeframe = "M15"
+            elif timeframe == "30minutes":
+                timeframe = "M30"
+            elif timeframe == "1hour":
+                timeframe = "H1"
+            elif timeframe == "4hours":
+                timeframe = "H4"
+            key = (lotsize['pair'], timeframe)
+            lotsize_map[key] = lotsize['lot_size']
+        
+        # Process orders
+        new_orders = []
+        for order in pending_orders_data['orders']:
+            # Get the pair and timeframe
+            pair = order['pair']
+            timeframe = order['timeframe']
+            
+            # Find matching lot size
+            lot_size = lotsize_map.get((pair, timeframe), 0.01)  # Default to 0.01 if not found
+            
+            # Determine trendline_type based on order_type
+            trendline_type = 'pl-to-pl' if order['order_type'] == 'sell_limit' else 'ph-to-ph' if order['order_type'] == 'buy_limit' else ''
+            
+            # Create new order dictionary with fields in desired order
+            new_order = {
+                'market': order['market'],
+                'pair': order['pair'],
+                'timeframe': order['timeframe'],
+                'order_type': order['order_type'],
+                'entry_price': order['entry_price'],
+                'exit_price': order['exit_price'],
+                '1:0.5_price': order['1:0.5_price'],
+                '1:1_price': order['1:1_price'],
+                '1:2_price': order['1:2_price'],
+                'profit_price': order['profit_price'],
+                'lot_size': lot_size,
+                'trendline_type': trendline_type,
+                'order_holder_timestamp': order['created_at']
+            }
+            new_orders.append(new_order)
+        
+        # Append new orders to temp_pendingorders
+        temp_pendingorders_data['orders'].extend(new_orders)
+        
+        # Update summary counts
+        temp_pendingorders_data['temp_pendingorders'] += pending_orders_data['summary']['total_valid_orders']
+        temp_pendingorders_data['5minutes pending orders'] += pending_orders_data['summary']['5m_valid_orders']
+        temp_pendingorders_data['15minutes pending orders'] += pending_orders_data['summary']['15m_valid_orders']
+        temp_pendingorders_data['30minutes pending orders'] += pending_orders_data['summary']['30m_valid_orders']
+        temp_pendingorders_data['1Hour pending orders'] += pending_orders_data['summary']['1h_valid_orders']
+        temp_pendingorders_data['4Hours pending orders'] += pending_orders_data['summary']['4h_valid_orders']
+        
+        # Save to temp_pendingorders file
+        os.makedirs(os.path.dirname(temp_pendingorders_path), exist_ok=True)
+        with open(temp_pendingorders_path, 'w') as f:
+            json.dump(temp_pendingorders_data, f, indent=4)
+        
+        print(f"Successfully appended orders to {temp_pendingorders_path}")
+        
+    except FileNotFoundError as e:
+        print(f"Error: File not found - {e}")
+    except json.JSONDecodeError as e:
+        print(f"Error: Invalid JSON format - {e}")
+    except Exception as e:
+        print(f"Error: {e}")
+
+
 def validatesignals():
     """Initialize MT5, fetch available symbols, validate signals from temp_pendingorders.json, place limit orders for valid signals, and categorize as valid or invalid price."""
     log_and_print("===== Verifying Signals with Server =====", "TITLE")
@@ -3112,7 +3218,7 @@ def validatesignals():
         mt5.shutdown()
         return 0, 0, 0, 0, 0, 0, 0
 
-def deletependingorders():
+def cancel_limitorders():
     """Delete all pending orders in the MT5 account."""
     
     # Define MT5 credentials and terminal path
@@ -3238,7 +3344,7 @@ def deletependingorders():
         return 0
 
 def marketsliststatus() -> tuple[bool, dict]:
-    """Generate a status report for all markets and timeframes, summarizing valid pending and invalid executed orders."""
+    """Generate a status report for all markets and timeframes, summarizing invalid pending orders."""
     log_and_print("Generating markets list status", "INFO")
     
     # Initialize status report
@@ -3249,21 +3355,18 @@ def marketsliststatus() -> tuple[bool, dict]:
         "warnings": [],
         "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
         "market_timeframe_status": {},
-        "total_valid_pending_orders": 0,
-        "total_invalid_executed_orders": 0
+        "total_invalid_pending_orders": 0
     }
     
     # Define file paths
     BASE_OUTPUT_FOLDER = r"C:\xampp\htdocs\CIPHER\cipher i\programmes\chart\orders"
     output_json_path = os.path.join(BASE_OUTPUT_FOLDER, "marketsliststatus.json")
     valid_pending_path = os.path.join(BASE_OUTPUT_FOLDER, "validpendingorders.json")
-    invalid_executed_path = os.path.join(BASE_OUTPUT_FOLDER, "invalidexecutedorders.json")
     
     try:
         # Initialize market status
         market_status = {}
-        total_valid_pending = 0
-        total_invalid_executed = 0
+        total_invalid_pending = 0
         
         # Load valid pending orders
         valid_pending_orders = []
@@ -3272,59 +3375,42 @@ def marketsliststatus() -> tuple[bool, dict]:
                 with open(valid_pending_path, 'r') as f:
                     pending_data = json.load(f)
                 valid_pending_orders = pending_data.get("orders", [])
-                total_valid_pending = len(valid_pending_orders)
-                log_and_print(f"Loaded {total_valid_pending} valid pending orders from {valid_pending_path}", "INFO")
+                log_and_print(f"Loaded {len(valid_pending_orders)} orders from {valid_pending_path}", "INFO")
             except Exception as e:
                 log_and_print(f"Error reading validpendingorders.json: {str(e)}", "WARNING")
                 status_report["warnings"].append(f"Error reading validpendingorders.json: {str(e)}")
-        
-        # Load invalid executed orders
-        invalid_executed_orders = []
-        if os.path.exists(invalid_executed_path):
-            try:
-                with open(invalid_executed_path, 'r') as f:
-                    executed_data = json.load(f)
-                invalid_executed_orders = executed_data.get("orders", [])
-                total_invalid_executed = len(invalid_executed_orders)
-                log_and_print(f"Loaded {total_invalid_executed} invalid executed orders from {invalid_executed_path}", "INFO")
-            except Exception as e:
-                log_and_print(f"Error reading invalidexecutedorders.json: {str(e)}", "WARNING")
-                status_report["warnings"].append(f"Error reading invalidexecutedorders.json: {str(e)}")
         
         # Process each market and timeframe
         for market in MARKETS:
             formatted_market = market.replace(" ", "_")
             market_status[market] = {}
             for timeframe in TIMEFRAMES:
-                # Initialize counts
-                valid_pending_count = 0
-                invalid_executed_count = 0
+                # Initialize count
+                invalid_pending_count = 0
                 
-                # Count valid pending orders for this market and timeframe
-                valid_pending_count = sum(1 for order in valid_pending_orders if order["market"] == market and order["timeframe"] == timeframe)
-                
-                # Count invalid executed orders for this market and timeframe
-                invalid_executed_count = sum(1 for order in invalid_executed_orders if order["market"] == market and order["timeframe"] == timeframe)
+                # Count invalid pending orders for this market and timeframe
+                invalid_pending_count = sum(1 for order in valid_pending_orders 
+                                          if order["market"] == market 
+                                          and order["timeframe"] == timeframe 
+                                          and order.get("is_valid") == False)
                 
                 market_status[market][timeframe] = {
-                    "valid_pending_orders": valid_pending_count,
-                    "invalid_executed_orders": invalid_executed_count
+                    "invalid_pending_orders": invalid_pending_count
                 }
                 status_report["market_timeframe_status"][f"{market}_{timeframe}"] = {
-                    "valid_pending_orders": valid_pending_count,
-                    "invalid_executed_orders": invalid_executed_count
+                    "invalid_pending_orders": invalid_pending_count
                 }
                 status_report["markets_processed"] += 1
+                total_invalid_pending += invalid_pending_count
                 log_and_print(
-                    f"Market: {market}, Timeframe: {timeframe}, Valid Pending: {valid_pending_count}, Invalid Executed: {invalid_executed_count}",
+                    f"Market: {market}, Timeframe: {timeframe}, Invalid Pending: {invalid_pending_count}",
                     "DEBUG"
                 )
         
         # Prepare output data
         output_data = {
             "timestamp": status_report["timestamp"],
-            "total_valid_pending_orders": total_valid_pending,
-            "total_invalid_executed_orders": total_invalid_executed,
+            "total_invalid_pending_orders": total_invalid_pending,
             "markets": market_status
         }
         
@@ -3335,8 +3421,7 @@ def marketsliststatus() -> tuple[bool, dict]:
             log_and_print(f"Saved markets list status to {output_json_path}", "SUCCESS")
             status_report["status"] = "success"
             status_report["message"] = f"Processed {status_report['markets_processed']} market-timeframe combinations"
-            status_report["total_valid_pending_orders"] = total_valid_pending
-            status_report["total_invalid_executed_orders"] = total_invalid_executed
+            status_report["total_invalid_pending_orders"] = total_invalid_pending
             return True, status_report
         except Exception as e:
             log_and_print(f"Error saving marketsliststatus.json: {str(e)}", "ERROR")
@@ -3348,222 +3433,15 @@ def marketsliststatus() -> tuple[bool, dict]:
         status_report["message"] = f"Unexpected error: {str(e)}"
         return False, status_report
 
-def fetch_processed_bouncestream_signals(json_dir: str = r"C:\xampp\htdocs\CIPHER\cipher i\programmes\chart\orders") -> bool:
-    """Fetch all processed bouncestream signals data from cipher_processed_bouncestreamsignals table and save to fetchedprocessedmarkets.json."""
-    log_and_print("Fetching all processed bouncestream signals data", "INFO")
-    
-    # Initialize error log list
-    error_log = []
-    
-    # Define error log file path
-    error_json_path = os.path.join(BASE_ERROR_FOLDER, "fetchprocessedsignalserror.json")
-    
-    # Helper function to save errors to JSON
-    def save_errors():
-        try:
-            with open(error_json_path, 'w') as f:
-                json.dump(error_log, f, indent=4)
-            log_and_print(f"Errors saved to {error_json_path}", "INFO")
-        except Exception as e:
-            log_and_print(f"Failed to save errors to {error_json_path}: {str(e)}", "ERROR")
-    
-    # Helper function to normalize timeframe values
-    def normalize_timeframe(timeframe: str) -> str:
-        timeframe_map = {
-            '15minutes': 'M15',
-            '30minutes': 'M30',
-            '1hour': 'H1',
-            '4hour': 'H4',
-            '5minutes': 'M5'
-        }
-        # Convert to lowercase and remove spaces for consistency
-        normalized = timeframe.lower().replace(' ', '')
-        return timeframe_map.get(normalized, timeframe)  # Return mapped value or original if not found
-    
-    # SQL query to fetch all rows
-    sql_query = """
-        SELECT id, pair, timeframe, order_type, entry_price, exit_price, 
-               ratio_0_5_price, ratio_1_price, ratio_2_price, profit_price, message, created_at
-        FROM cipher_processed_bouncestreamsignals
-    """
-    
-    # Create output directory if it doesn't exist
-    if not os.path.exists(json_dir):
-        try:
-            os.makedirs(json_dir)
-            log_and_print(f"Created output directory: {json_dir}", "INFO")
-        except Exception as e:
-            error_log.append({
-                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-                "error": f"Error creating directory {json_dir}: {str(e)}"
-            })
-            save_errors()
-            log_and_print(f"Error creating directory {json_dir}: {str(e)}", "ERROR")
-            return False
-    
-    # Execute query with retries
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            result = db.execute_query(sql_query)
-            log_and_print(f"Raw query result for processed signals: {json.dumps(result, indent=2)}", "DEBUG")
-            
-            if not isinstance(result, dict):
-                error_log.append({
-                    "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-                    "error": f"Invalid result format on attempt {attempt}: Expected dict, got {type(result)}"
-                })
-                save_errors()
-                log_and_print(f"Invalid result format on attempt {attempt}: Expected dict, got {type(result)}", "ERROR")
-                continue
-                
-            if result.get('status') != 'success':
-                error_message = result.get('message', 'No message provided')
-                error_log.append({
-                    "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-                    "error": f"Query failed on attempt {attempt}: {error_message}"
-                })
-                save_errors()
-                log_and_print(f"Query failed on attempt {attempt}: {error_message}", "ERROR")
-                continue
-                
-            # Handle both 'data' and 'results' keys
-            rows = None
-            if 'data' in result and 'rows' in result['data'] and isinstance(result['data']['rows'], list):
-                rows = result['data']['rows']
-            elif 'results' in result and isinstance(result['results'], list):
-                rows = result['results']
-            else:
-                error_log.append({
-                    "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-                    "error": f"Invalid or missing rows in result on attempt {attempt}: {json.dumps(result, indent=2)}"
-                })
-                save_errors()
-                log_and_print(f"Invalid or missing rows in result on attempt {attempt}: {json.dumps(result, indent=2)}", "ERROR")
-                continue
-            
-            # Prepare summary counts
-            summary = {
-                "total_valid_orders": len(rows),
-                "4h_valid_orders": 0,
-                "1h_valid_orders": 0,
-                "30m_valid_orders": 0,
-                "15m_valid_orders": 0,
-                "5m_valid_orders": 0
-            }
-            
-            # Prepare data for JSON
-            orders = []
-            for row in rows:
-                normalized_timeframe = normalize_timeframe(row.get('timeframe', 'N/A'))
-                # Update summary counts based on normalized timeframe
-                if normalized_timeframe == 'H4':
-                    summary['4h_valid_orders'] += 1
-                elif normalized_timeframe == 'H1':
-                    summary['1h_valid_orders'] += 1
-                elif normalized_timeframe == 'M30':
-                    summary['30m_valid_orders'] += 1
-                elif normalized_timeframe == 'M15':
-                    summary['15m_valid_orders'] += 1
-                elif normalized_timeframe == 'M5':
-                    summary['5m_valid_orders'] += 1
-                
-                orders.append({
-                    "market": row.get('pair', 'N/A'),
-                    "pair": row.get('pair', 'N/A'),
-                    "timeframe": normalized_timeframe,
-                    "order_type": row.get('order_type', 'N/A'),
-                    "entry_price": float(row.get('entry_price', 0.0)) if row.get('entry_price') is not None else None,
-                    "exit_price": float(row.get('exit_price', 0.0)) if row.get('exit_price') is not None else None,
-                    "1:0.5_price": float(row.get('ratio_0_5_price', 0.0)) if row.get('ratio_0_5_price') is not None else None,
-                    "1:1_price": float(row.get('ratio_1_price', 0.0)) if row.get('ratio_1_price') is not None else None,
-                    "1:2_price": float(row.get('ratio_2_price', 0.0)) if row.get('ratio_2_price') is not None else None,
-                    "profit_price": float(row.get('profit_price', 0.0)) if row.get('profit_price') is not None else None,
-                    "created_at": row.get('created_at', 'N/A'),
-                    "message": row.get('message', '')
-                })
-            
-            # Combine summary and orders
-            output_data = {
-                "summary": summary,
-                "orders": orders
-            }
-            
-            # Define output path
-            output_json_path = os.path.join(json_dir, "fetchedprocessedmarkets.json")
-            
-            # Delete existing file if it exists
-            if os.path.exists(output_json_path):
-                try:
-                    os.remove(output_json_path)
-                    log_and_print(f"Existing {output_json_path} deleted", "INFO")
-                except Exception as e:
-                    error_log.append({
-                        "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-                        "error": f"Error deleting existing {output_json_path}: {str(e)}"
-                    })
-                    save_errors()
-                    log_and_print(f"Error deleting existing {output_json_path}: {str(e)}", "ERROR")
-                    return False
-            
-            # Save to JSON
-            try:
-                with open(output_json_path, 'w') as f:
-                    json.dump(output_data, f, indent=4)
-                log_and_print(f"Processed bouncestream signals saved to {output_json_path}", "SUCCESS")
-                return True
-            except Exception as e:
-                error_log.append({
-                    "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-                    "error": f"Error saving {output_json_path}: {str(e)}"
-                })
-                save_errors()
-                log_and_print(f"Error saving {output_json_path}: {str(e)}", "ERROR")
-                return False
-                
-        except Exception as e:
-            error_log.append({
-                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-                "error": f"Exception on attempt {attempt}: {str(e)}"
-            })
-            save_errors()
-            log_and_print(f"Exception on attempt {attempt}: {str(e)}", "ERROR")
-            
-        if attempt < MAX_RETRIES:
-            delay = RETRY_DELAY * (2 ** (attempt - 1))
-            log_and_print(f"Retrying after {delay} seconds...", "INFO")
-            time.sleep(delay)
-        else:
-            error_log.append({
-                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-                "error": "Max retries reached for fetching processed bouncestream signals"
-            })
-            save_errors()
-            log_and_print("Max retries reached for fetching processed bouncestream signals", "ERROR")
-            return False
-    
-    error_log.append({
-        "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-        "error": "Function exited without success"
-    })
-    save_errors()
-    return False
-def execute_fetch_processed_bouncestream_signals():
-    """Execute the fetch_processed_bouncestream_signals function."""
-    if not fetch_processed_bouncestream_signals():
-        log_and_print("Failed to fetch processed bouncestream signals data. Exiting.", "ERROR")
-        return False
-    return True
-
-def insertprocessedorderstodb() -> bool:
-    """Insert all invalid executed orders from invalidexecutedorders.json into cipher_processed_bouncestreamsignals table after validation, removing only duplicate orders."""
-    json_path = r"C:\xampp\htdocs\CIPHER\cipher i\programmes\chart\orders\invalidexecutedorders.json"
+def insertinvalidexecutedorderstodb(json_path: str = r"C:\xampp\htdocs\CIPHER\cipher i\programmes\chart\orders\invalidexecutedorders.json") -> bool:
+    """Insert all invalid executed orders from invalidexecutedorders.json into cipher_processed_bouncestreamsignals table after validation, 
+    removing only duplicate orders."""
     log_and_print("Inserting all invalid executed orders into cipher_processed_bouncestreamsignals table", "INFO")
-    
     # Initialize error log list
     error_log = []
     
-    # Define error log file path
-    error_json_path = os.path.join(BASE_PROCESSING_FOLDER, "insertprocessedorderserror.json")
+    # Define paths
+    error_json_path = os.path.join(BASE_PROCESSING_FOLDER, "insertinvalidexecutedorderserror.json")
     
     # Helper function to save errors to JSON
     def save_errors():
@@ -3664,23 +3542,31 @@ def insertprocessedorderstodb() -> bool:
             order_type = order.get('order_type', 'N/A')
             entry_price = float(order.get('entry_price', 0.0))
             exit_price = float(order.get('exit_price', 0.0))
-            ratio0_5_price = float(order.get('1:0.5_price', 0.0))
+            ratio_0_5_price = float(order.get('1:0.5_price', 0.0))
             ratio_1_price = float(order.get('1:1_price', 0.0))
             ratio_2_price = float(order.get('1:2_price', 0.0))
             profit_price = float(order.get('profit_price', 0.0))
-            message = order.get('reason', 'N/A')
+            message = order.get('reason', None)  # Map 'reason' to 'message' column
+            created_at = order.get('order_holder_timestamp', 'N/A')  # Map order_holder_timestamp to created_at
+            
+            if created_at == 'N/A':
+                raise ValueError("Missing order_holder_timestamp")
             
             # Validate numeric fields
             for field_name, value in [
                 ('entry_price', entry_price),
                 ('exit_price', exit_price),
-                ('1:0.5_price', ratio0_5_price),
+                ('1:0.5_price', ratio_0_5_price),
                 ('1:1_price', ratio_1_price),
                 ('1:2_price', ratio_2_price),
                 ('profit_price', profit_price)
             ]:
                 if not (MIN_NUMERIC_VALUE <= value <= MAX_NUMERIC_VALUE):
                     raise ValueError(f"{field_name} out of range: {value}")
+            
+            # Validate message (can be NULL, so no strict validation needed)
+            if message is not None and not isinstance(message, str):
+                raise ValueError(f"Invalid message format: {message}")
             
             order_key = (pair, timeframe, order_type, entry_price)
             if order_key in json_order_keys:
@@ -3691,7 +3577,19 @@ def insertprocessedorderstodb() -> bool:
                 log_and_print(f"Duplicate order in JSON: {pair}, {timeframe}, {order_type}, {entry_price}", "WARNING")
                 continue
             json_order_keys.add(order_key)
-            valid_orders.append(order)
+            valid_orders.append({
+                'pair': pair,
+                'timeframe': timeframe,
+                'order_type': order_type,
+                'entry_price': entry_price,
+                'exit_price': exit_price,
+                '1:0.5_price': ratio_0_5_price,
+                '1:1_price': ratio_1_price,
+                '1:2_price': ratio_2_price,
+                'profit_price': profit_price,
+                'message': message,
+                'created_at': created_at
+            })
         except (ValueError, TypeError) as e:
             error_log.append({
                 "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
@@ -3730,10 +3628,6 @@ def insertprocessedorderstodb() -> bool:
             log_and_print(f"Invalid data in existing signal {signal.get('pair', 'unknown')}: {str(e)}", "ERROR")
             continue
     
-    # Initialize counters for batch processing
-    insert_batch_counts = []
-    duplicate_batch_counts = []
-    
     # Batch delete duplicates
     DELETE_BATCH_SIZE = 80
     if duplicates_to_remove:
@@ -3757,7 +3651,6 @@ def insertprocessedorderstodb() -> bool:
                 delete_query = f"DELETE FROM cipher_processed_bouncestreamsignals WHERE {' OR '.join(delete_conditions)}"
                 result = db.execute_query(delete_query)
                 affected_rows = result.get('results', {}).get('affected_rows', 0) if isinstance(result, dict) else 0
-                duplicate_batch_counts.append((batch_number, affected_rows))  # Track duplicate deletion count
                 log_and_print(f"Successfully removed {affected_rows} duplicate orders in batch {batch_number}", "SUCCESS")
             except Exception as e:
                 error_log.append({
@@ -3774,7 +3667,7 @@ def insertprocessedorderstodb() -> bool:
         INSERT INTO cipher_processed_bouncestreamsignals (
             pair, timeframe, order_type, entry_price, exit_price,
             ratio_0_5_price, ratio_1_price, ratio_2_price, 
-            profit_price, message
+            profit_price, message, created_at
         ) VALUES 
     """
     value_strings = []
@@ -3782,21 +3675,22 @@ def insertprocessedorderstodb() -> bool:
     for order in valid_orders:
         try:
             pair = order.get('pair', 'N/A')
-            timeframe = DB_TIMEFRAME_MAPPING.get(order.get('timeframe', 'N/A'), order.get('timeframe', 'N/A'))
+            timeframe = order.get('timeframe', 'N/A')
             order_type = order.get('order_type', 'N/A')
             entry_price = float(order.get('entry_price', 0.0))
             exit_price = float(order.get('exit_price', 0.0))
-            ratio0_5_price = float(order.get('1:0.5_price', 0.0))
+            ratio_0_5_price = float(order.get('1:0.5_price', 0.0))
             ratio_1_price = float(order.get('1:1_price', 0.0))
             ratio_2_price = float(order.get('1:2_price', 0.0))
             profit_price = float(order.get('profit_price', 0.0))
-            message = order.get('reason', 'N/A')
+            message = order.get('message', None)
+            created_at = order.get('created_at', 'N/A')
             
             # Re-validate numeric fields
             for field_name, value in [
                 ('entry_price', entry_price),
                 ('exit_price', exit_price),
-                ('1:0.5_price', ratio0_5_price),
+                ('1:0.5_price', ratio_0_5_price),
                 ('1:1_price', ratio_1_price),
                 ('1:2_price', ratio_2_price),
                 ('profit_price', profit_price)
@@ -3804,16 +3698,24 @@ def insertprocessedorderstodb() -> bool:
                 if not (MIN_NUMERIC_VALUE <= value <= MAX_NUMERIC_VALUE):
                     raise ValueError(f"{field_name} out of range: {value}")
             
+            if created_at == 'N/A':
+                raise ValueError("Missing created_at")
+            
+            # Validate message
+            if message is not None and not isinstance(message, str):
+                raise ValueError(f"Invalid message format: {message}")
+            
             order_key = (pair, timeframe, order_type, entry_price)
             
             if order_key not in db_order_keys:
                 pair_escaped = pair.replace("'", "''")
                 timeframe_escaped = timeframe.replace("'", "''")
                 order_type_escaped = order_type.replace("'", "''")
-                message_escaped = message.replace("'", "''")
+                created_at_escaped = created_at.replace("'", "''")
+                message_escaped = "'" + message.replace("'", "''") + "'" if message is not None else 'NULL'
                 value_string = (
                     f"('{pair_escaped}', '{timeframe_escaped}', '{order_type_escaped}', {entry_price}, {exit_price}, "
-                    f"{ratio0_5_price}, {ratio_1_price}, {ratio_2_price}, {profit_price}, '{message_escaped}')"
+                    f"{ratio_0_5_price}, {ratio_1_price}, {ratio_2_price}, {profit_price}, {message_escaped}, '{created_at_escaped}')"
                 )
                 value_strings.append(value_string)
         except (ValueError, TypeError) as e:
@@ -3835,6 +3737,7 @@ def insertprocessedorderstodb() -> bool:
     
     # Execute batch INSERT in chunks of BATCH_SIZE with retries
     success = True
+    insert_batch_counts = []
     for i in range(0, len(value_strings), BATCH_SIZE):
         batch = value_strings[i:i + BATCH_SIZE]
         batch_number = i // BATCH_SIZE + 1
@@ -3892,8 +3795,6 @@ def insertprocessedorderstodb() -> bool:
                     success = False
     
     # Log batch processing counts
-    for batch_number, count in duplicate_batch_counts:
-        log_and_print(f"Duplicate batch {batch_number} processed: {count}", "INFO")
     for batch_number, count in insert_batch_counts:
         log_and_print(f"Insert batch {batch_number} processed: {count}", "INFO")
     
@@ -3908,453 +3809,25 @@ def insertprocessedorderstodb() -> bool:
     
     log_and_print(f"All batches processed successfully", "SUCCESS")
     return True
-def executeinsertprocessedorderstodb():
+
+def executeinsertinvalidexecutedorderstodb():
     """Execute the insertion of invalid executed orders into the database."""
     log_and_print("===== Execute Insert Invalid Executed Orders to Database =====", "TITLE")
-    if not insertprocessedorderstodb():
+    if not insertinvalidexecutedorderstodb():
         log_and_print("Failed to insert invalid executed orders into database. Exiting.", "ERROR")
         return
     log_and_print("===== Insert Invalid Executed Orders to Database Completed =====", "TITLE")
 
 
-def fetch_pending_bouncestream_signals(json_dir: str = r"C:\xampp\htdocs\CIPHER\cipher i\programmes\chart\orders") -> bool:
-    """Fetch all pending bouncestream signals data from cipherbouncestream_signals table and save to fetchedpendingorders.json."""
-    log_and_print("Fetching all pending bouncestream signals data", "INFO")
-    
-    # Initialize error log list
-    error_log = []
-    
-    # Define error log file path
-    error_json_path = os.path.join(BASE_ERROR_FOLDER, "fetchpendingsignalserror.json")
-    
-    # Helper function to save errors to JSON
-    def save_errors():
-        try:
-            with open(error_json_path, 'w') as f:
-                json.dump(error_log, f, indent=4)
-            log_and_print(f"Errors saved to {error_json_path}", "INFO")
-        except Exception as e:
-            log_and_print(f"Failed to save errors to {error_json_path}: {str(e)}", "ERROR")
-    
-    # Helper function to normalize timeframe values
-    def normalize_timeframe(timeframe: str) -> str:
-        timeframe_map = {
-            '15minutes': 'M15',
-            '30minutes': 'M30',
-            '1hour': 'H1',
-            '4hour': 'H4',
-            '5minutes': 'M5'
-        }
-        # Convert to lowercase and remove spaces for consistency
-        normalized = timeframe.lower().replace(' ', '')
-        return timeframe_map.get(normalized, timeframe)  # Return mapped value or original if not found
-    
-    # SQL query to fetch all rows
-    sql_query = """
-        SELECT id, pair, timeframe, order_type, entry_price, exit_price, 
-               ratio_0_5_price, ratio_1_price, ratio_2_price, profit_price, created_at
-        FROM cipherbouncestream_signals
-    """
-    
-    # Create output directory if it doesn't exist
-    if not os.path.exists(json_dir):
-        try:
-            os.makedirs(json_dir)
-            log_and_print(f"Created output directory: {json_dir}", "INFO")
-        except Exception as e:
-            error_log.append({
-                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-                "error": f"Error creating directory {json_dir}: {str(e)}"
-            })
-            save_errors()
-            log_and_print(f"Error creating directory {json_dir}: {str(e)}", "ERROR")
-            return False
-    
-    # Execute query with retries
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            result = db.execute_query(sql_query)
-            log_and_print(f"Raw query result for pending signals: {json.dumps(result, indent=2)}", "DEBUG")
-            
-            if not isinstance(result, dict):
-                error_log.append({
-                    "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-                    "error": f"Invalid result format on attempt {attempt}: Expected dict, got {type(result)}"
-                })
-                save_errors()
-                log_and_print(f"Invalid result format on attempt {attempt}: Expected dict, got {type(result)}", "ERROR")
-                continue
-                
-            if result.get('status') != 'success':
-                error_message = result.get('message', 'No message provided')
-                error_log.append({
-                    "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-                    "error": f"Query failed on attempt {attempt}: {error_message}"
-                })
-                save_errors()
-                log_and_print(f"Query failed on attempt {attempt}: {error_message}", "ERROR")
-                continue
-                
-            # Handle both 'data' and 'results' keys
-            rows = None
-            if 'data' in result and 'rows' in result['data'] and isinstance(result['data']['rows'], list):
-                rows = result['data']['rows']
-            elif 'results' in result and isinstance(result['results'], list):
-                rows = result['results']
-            else:
-                error_log.append({
-                    "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-                    "error": f"Invalid or missing rows in result on attempt {attempt}: {json.dumps(result, indent=2)}"
-                })
-                save_errors()
-                continue
-            
-            # Prepare summary counts
-            summary = {
-                "total_valid_orders": len(rows),
-                "4h_valid_orders": 0,
-                "1h_valid_orders": 0,
-                "30m_valid_orders": 0,
-                "15m_valid_orders": 0,
-                "5m_valid_orders": 0
-            }
-            
-            # Prepare data for JSON
-            orders = []
-            for row in rows:
-                normalized_timeframe = normalize_timeframe(row.get('timeframe', 'N/A'))
-                # Update summary counts based on normalized timeframe
-                if normalized_timeframe == 'H4':
-                    summary['4h_valid_orders'] += 1
-                elif normalized_timeframe == 'H1':
-                    summary['1h_valid_orders'] += 1
-                elif normalized_timeframe == 'M30':
-                    summary['30m_valid_orders'] += 1
-                elif normalized_timeframe == 'M15':
-                    summary['15m_valid_orders'] += 1
-                elif normalized_timeframe == 'M5':
-                    summary['5m_valid_orders'] += 1
-                
-                orders.append({
-                    "market": row.get('pair', 'N/A'),
-                    "pair": row.get('pair', 'N/A'),
-                    "timeframe": normalized_timeframe,
-                    "order_type": row.get('order_type', 'N/A'),
-                    "entry_price": float(row.get('entry_price', 0.0)) if row.get('entry_price') is not None else None,
-                    "exit_price": float(row.get('exit_price', 0.0)) if row.get('exit_price') is not None else None,
-                    "1:0.5_price": float(row.get('ratio_0_5_price', 0.0)) if row.get('ratio_0_5_price') is not None else None,
-                    "1:1_price": float(row.get('ratio_1_price', 0.0)) if row.get('ratio_1_price') is not None else None,
-                    "1:2_price": float(row.get('ratio_2_price', 0.0)) if row.get('ratio_2_price') is not None else None,
-                    "profit_price": float(row.get('profit_price', 0.0)) if row.get('profit_price') is not None else None,
-                    "created_at": row.get('created_at', 'N/A')
-                })
-            
-            # Combine summary and orders
-            output_data = {
-                "summary": summary,
-                "orders": orders
-            }
-            
-            # Define output path
-            output_json_path = os.path.join(json_dir, "fetchedpendingorders.json")
-            
-            # Delete existing file if it exists
-            if os.path.exists(output_json_path):
-                try:
-                    os.remove(output_json_path)
-                    log_and_print(f"Existing {output_json_path} deleted", "INFO")
-                except Exception as e:
-                    error_log.append({
-                        "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-                        "error": f"Error deleting existing {output_json_path}: {str(e)}"
-                    })
-                    save_errors()
-                    log_and_print(f"Error deleting existing {output_json_path}: {str(e)}", "ERROR")
-                    return False
-            
-            # Save to JSON
-            try:
-                with open(output_json_path, 'w') as f:
-                    json.dump(output_data, f, indent=4)
-                log_and_print(f"Pending bouncestream signals saved to {output_json_path}", "SUCCESS")
-                return True
-            except Exception as e:
-                error_log.append({
-                    "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-                    "error": f"Error saving {output_json_path}: {str(e)}"
-                })
-                save_errors()
-                log_and_print(f"Error saving {output_json_path}: {str(e)}", "ERROR")
-                return False
-                
-        except Exception as e:
-            error_log.append({
-                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-                "error": f"Exception on attempt {attempt}: {str(e)}"
-            })
-            save_errors()
-            log_and_print(f"Exception on attempt {attempt}: {str(e)}", "ERROR")
-            
-        if attempt < MAX_RETRIES:
-            delay = RETRY_DELAY * (2 ** (attempt - 1))
-            log_and_print(f"Retrying after {delay} seconds...", "INFO")
-            time.sleep(delay)
-        else:
-            error_log.append({
-                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-                "error": "Max retries reached for fetching pending bouncestream signals"
-            })
-            save_errors()
-            log_and_print("Max retries reached for fetching pending bouncestream signals", "ERROR")
-            return False
-    
-    error_log.append({
-        "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-        "error": "Function exited without success"
-    })
-    save_errors()
-    return False
-def execute_fetch_pending_bouncestream_signals():
-    """Execute the fetch_pending_bouncestream_signals function."""
-    if not fetch_pending_bouncestream_signals():
-        log_and_print("Failed to fetch pending bouncestream signals data. Exiting.", "ERROR")
-        return False
-    return True
-
-def remove_processed_from_pending_orders(
-    pending_json_path: str = r"C:\xampp\htdocs\CIPHER\cipher i\programmes\chart\orders\fetchedpendingorders.json",
-    processed_json_path: str = r"C:\xampp\htdocs\CIPHER\cipher i\programmes\chart\orders\fetchedprocessedmarkets.json"
-) -> bool:
-    """
-    Read fetchedpendingorders.json and fetchedprocessedmarkets.json, remove orders from pending JSON that exist in
-    processed JSON based on pair, timeframe, order_type, and entry_price, and overwrite fetchedpendingorders.json
-    with the filtered orders and updated summary.
-    
-    Args:
-        pending_json_path (str): Path to fetchedpendingorders.json
-        processed_json_path (str): Path to fetchedprocessedmarkets.json
-    
-    Returns:
-        bool: True if the operation succeeds, False if any errors occur
-    """
-    log_and_print("Starting removal of processed orders from pending orders", "INFO")
-    
-    # Initialize error log list
-    error_log = []
-    error_json_path = os.path.join(os.path.dirname(pending_json_path), "removeprocessedorderserror.json")
-    
-    # Helper function to save errors to JSON
-    def save_errors():
-        try:
-            with open(error_json_path, 'w') as f:
-                json.dump(error_log, f, indent=4)
-            log_and_print(f"Errors saved to {error_json_path}", "INFO")
-        except Exception as e:
-            log_and_print(f"Failed to save errors to {error_json_path}: {str(e)}", "ERROR")
-
-    # Load processed orders from fetchedprocessedmarkets.json
-    try:
-        if not os.path.exists(processed_json_path):
-            error_log.append({
-                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-                "error": f"Processed orders JSON file not found at: {processed_json_path}"
-            })
-            save_errors()
-            log_and_print(f"Processed orders JSON file not found at: {processed_json_path}", "ERROR")
-            return False
-        
-        with open(processed_json_path, 'r') as f:
-            processed_data = json.load(f)
-        
-        processed_orders = processed_data.get('orders', [])
-        if not processed_orders:
-            error_log.append({
-                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-                "error": "No orders found in fetchedprocessedmarkets.json or 'orders' key is missing"
-            })
-            save_errors()
-            log_and_print("No orders found in fetchedprocessedmarkets.json or 'orders' key is missing", "INFO")
-            # Continue as there are no processed orders to remove
-        
-        log_and_print(f"Loaded {len(processed_orders)} processed orders from {processed_json_path}", "INFO")
-        
-    except Exception as e:
-        error_log.append({
-            "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-            "error": f"Error loading fetchedprocessedmarkets.json: {str(e)}"
-        })
-        save_errors()
-        log_and_print(f"Error loading fetchedprocessedmarkets.json: {str(e)}", "ERROR")
-        return False
-    
-    # Load pending orders from fetchedpendingorders.json
-    try:
-        if not os.path.exists(pending_json_path):
-            error_log.append({
-                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-                "error": f"Pending orders JSON file not found at: {pending_json_path}"
-            })
-            save_errors()
-            log_and_print(f"Pending orders JSON file not found at: {pending_json_path}", "ERROR")
-            return False
-        
-        with open(pending_json_path, 'r') as f:
-            pending_data = json.load(f)
-        
-        pending_orders = pending_data.get('orders', [])
-        if not pending_orders:
-            error_log.append({
-                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-                "error": "No orders found in fetchedpendingorders.json or 'orders' key is missing"
-            })
-            save_errors()
-            log_and_print("No orders found in fetchedpendingorders.json or 'orders' key is missing", "INFO")
-            return True  # No pending orders to process, but not an error
-        
-        pending_summary = pending_data.get('summary', {})
-        log_and_print(f"Loaded {len(pending_orders)} pending orders from {pending_json_path}", "INFO")
-        
-    except Exception as e:
-        error_log.append({
-            "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-            "error": f"Error loading fetchedpendingorders.json: {str(e)}"
-        })
-        save_errors()
-        log_and_print(f"Error loading fetchedpendingorders.json: {str(e)}", "ERROR")
-        return False
-    
-    # Create a set of processed order keys for efficient lookup
-    processed_order_keys = set()
-    for order in processed_orders:
-        try:
-            pair = order.get('pair', 'N/A')
-            timeframe = order.get('timeframe', 'N/A')
-            order_type = order.get('order_type', 'N/A')
-            entry_price = float(order.get('entry_price', 0.0))
-            order_key = (pair, timeframe, order_type, entry_price)
-            processed_order_keys.add(order_key)
-        except (ValueError, TypeError) as e:
-            error_log.append({
-                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-                "error": f"Invalid data in processed order {order.get('pair', 'unknown')}: {str(e)}"
-            })
-            log_and_print(f"Invalid data in processed order {order.get('pair', 'unknown')}: {str(e)}", "ERROR")
-            continue
-    
-    # Filter pending orders, keeping only those not in processed_order_keys
-    filtered_orders = []
-    removed_orders_count = 0
-    filtered_summary = {
-        "total_valid_orders": 0,
-        "4h_valid_orders": 0,
-        "1h_valid_orders": 0,
-        "30m_valid_orders": 0,
-        "15m_valid_orders": 0,
-        "5m_valid_orders": 0
-    }
-    
-    for order in pending_orders:
-        try:
-            pair = order.get('pair', 'N/A')
-            timeframe = order.get('timeframe', 'N/A')
-            order_type = order.get('order_type', 'N/A')
-            entry_price = float(order.get('entry_price', 0.0))
-            order_key = (pair, timeframe, order_type, entry_price)
-            
-            if order_key in processed_order_keys:
-                removed_orders_count += 1
-                log_and_print(f"Removed order from pending: {pair}, {timeframe}, {order_type}, {entry_price}", "INFO")
-                continue  # Skip this order as it's found in processed orders
-            
-            # Add to filtered orders
-            filtered_orders.append(order)
-            
-            # Update summary counts
-            timeframe_mapped = {
-                'H4': '4h_valid_orders',
-                '1H': '1h_valid_orders',
-                'M30': '30m_valid_orders',
-                'M15': '15m_valid_orders',
-                'M5': '5m_valid_orders'
-            }.get(timeframe, None)
-            if timeframe_mapped:
-                filtered_summary[timeframe_mapped] += 1
-            else:
-                error_log.append({
-                    "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-                    "error": f"Unknown timeframe {timeframe} in order {pair}"
-                })
-                log_and_print(f"Unknown timeframe {timeframe} in order {pair}", "WARNING")
-        
-        except (ValueError, TypeError) as e:
-            error_log.append({
-                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-                "error": f"Invalid data in pending order {order.get('pair', 'unknown')}: {str(e)}"
-            })
-            log_and_print(f"Invalid data in pending order {order.get('pair', 'unknown')}: {str(e)}", "ERROR")
-            continue
-    
-    filtered_summary['total_valid_orders'] = len(filtered_orders)
-    
-    # Verify summary counts
-    calculated_counts = {
-        "4h_valid_orders": sum(1 for order in filtered_orders if order.get('timeframe') == 'H4'),
-        "1h_valid_orders": sum(1 for order in filtered_orders if order.get('timeframe') == '1H'),
-        "30m_valid_orders": sum(1 for order in filtered_orders if order.get('timeframe') == 'M30'),
-        "15m_valid_orders": sum(1 for order in filtered_orders if order.get('timeframe') == 'M15'),
-        "5m_valid_orders": sum(1 for order in filtered_orders if order.get('timeframe') == 'M5')
-    }
-    
-    for timeframe_key, count in calculated_counts.items():
-        if filtered_summary[timeframe_key] != count:
-            error_log.append({
-                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-                "error": f"Mismatch in {timeframe_key}: summary count {filtered_summary[timeframe_key]}, calculated count {count}"
-            })
-            log_and_print(f"Mismatch in {timeframe_key}: summary count {filtered_summary[timeframe_key]}, calculated count {count}", "WARNING")
-            filtered_summary[timeframe_key] = count  # Update to correct count
-    
-    # Save filtered orders back to fetchedpendingorders.json
-    filtered_data = {
-        "summary": filtered_summary,
-        "orders": filtered_orders
-    }
-    
-    try:
-        os.makedirs(os.path.dirname(pending_json_path), exist_ok=True)
-        with open(pending_json_path, 'w') as f:
-            json.dump(filtered_data, f, indent=4)
-        log_and_print(f"Successfully updated {pending_json_path} with {len(filtered_orders)} filtered pending orders", "SUCCESS")
-        log_and_print(f"Removed {removed_orders_count} orders that were found in processed orders", "INFO")
-        
-    except Exception as e:
-        error_log.append({
-            "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-            "error": f"Failed to update {pending_json_path}: {str(e)}"
-        })
-        save_errors()
-        log_and_print(f"Failed to update {pending_json_path}: {str(e)}", "ERROR")
-        return False
-    
-    # Save errors if any
-    if error_log:
-        save_errors()
-    
-    log_and_print("Completed removal of processed orders from pending orders", "SUCCESS")
-    return True
-
 def insertpendingorderstodb(json_path: str = os.path.join(BASE_OUTPUT_FOLDER, "validpendingorders.json")) -> bool:
     """Insert all pending orders from validpendingorders.json into cipherbouncestream_signals table after validation, 
-    removing only duplicate orders. Fetch all orders older than or equal to 4 days, insert them into 
-    cipher_processed_bouncestreamsignals with message 'older than <old_range_limit>', and save to oldestpendingorders.json."""
+    removing only duplicate orders."""
     log_and_print("Inserting all pending orders into cipherbouncestream_signals table", "INFO")
-    
     # Initialize error log list
     error_log = []
     
     # Define paths
     error_json_path = os.path.join(BASE_PROCESSING_FOLDER, "insertpendingorderserror.json")
-    oldest_orders_path = r"C:\xampp\htdocs\CIPHER\cipher i\programmes\chart\orders\oldestpendingorders.json"
     
     # Helper function to save errors to JSON
     def save_errors():
@@ -4364,278 +3837,6 @@ def insertpendingorderstodb(json_path: str = os.path.join(BASE_OUTPUT_FOLDER, "v
             log_and_print(f"Errors saved to {error_json_path}", "INFO")
         except Exception as e:
             log_and_print(f"Failed to save errors to {error_json_path}: {str(e)}", "ERROR")
-    
-    # Helper function to calculate order age
-    def calculate_order_age(created_at_str: str) -> str:
-        try:
-            # Parse created_at as offset-naive
-            created_at = datetime.strptime(created_at_str, '%Y-%m-%d %H:%M:%S')
-            # Make created_at offset-aware with Africa/Lagos timezone
-            lagos_tz = pytz.timezone('Africa/Lagos')
-            created_at = lagos_tz.localize(created_at)
-            # Get current time in Africa/Lagos timezone
-            current_time = datetime.now(lagos_tz)
-            time_diff = current_time - created_at
-            
-            days = time_diff.days
-            hours = time_diff.seconds // 3600
-            minutes = (time_diff.seconds % 3600) // 60
-            
-            if days > 0:
-                return f"{days} day{'s' if days > 1 else ''} old"
-            elif hours > 0:
-                return f"{hours} hour{'s' if hours > 1 else ''} old"
-            else:
-                return f"{minutes} minute{'s' if minutes > 1 else ''} old"
-        except Exception as e:
-            log_and_print(f"Error calculating age for created_at {created_at_str}: {str(e)}", "ERROR")
-            return "Unknown age"
-
-    # Fetch all orders older than or equal to 4 days from the database
-    try:
-        old_range_limit = (datetime.now(pytz.timezone('Africa/Lagos')) - timedelta(days=4)).strftime('%Y-%m-%d %H:%M:%S')
-        fetch_oldest_query = f"""
-            SELECT pair, timeframe, order_type, entry_price, exit_price, 
-                   ratio_0_5_price, ratio_1_price, ratio_2_price, profit_price, created_at
-            FROM cipherbouncestream_signals
-            WHERE created_at <= '{old_range_limit}'
-            ORDER BY created_at ASC
-        """
-        oldest_result = db.execute_query(fetch_oldest_query)
-        log_and_print(f"Raw query result for fetching oldest orders: {json.dumps(oldest_result, indent=2)}", "DEBUG")
-        
-        oldest_orders = []
-        if isinstance(oldest_result, dict):
-            if oldest_result.get('status') != 'success':
-                error_log.append({
-                    "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-                    "error": f"Oldest orders query failed: {oldest_result.get('message', 'No message provided')}"
-                })
-                save_errors()
-                log_and_print(f"Oldest orders query failed: {oldest_result.get('message', 'No message provided')}", "ERROR")
-            else:
-                oldest_orders = oldest_result.get('data', {}).get('rows', []) or oldest_result.get('results', [])
-        elif isinstance(oldest_result, list):
-            oldest_orders = oldest_result
-        else:
-            error_log.append({
-                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-                "error": f"Invalid result format for oldest orders: Expected dict or list, got {type(oldest_result)}"
-            })
-            save_errors()
-            log_and_print(f"Invalid result format for oldest orders: Expected dict or list, got {type(oldest_result)}", "ERROR")
-        
-        # Initialize summary dictionary
-        summary = {
-            "total_valid_orders": 0,
-            "4h_valid_orders": 0,
-            "1h_valid_orders": 0,
-            "30m_valid_orders": 0,
-            "15m_valid_orders": 0,
-            "5m_valid_orders": 0
-        }
-        
-        formatted_orders = []
-        if oldest_orders:
-            # Process all orders older than or equal to old_range_limit
-            for order in oldest_orders:
-                timeframe = order.get('timeframe', 'N/A')
-                # Map timeframe to the correct format if necessary
-                timeframe = DB_TIMEFRAME_MAPPING.get(timeframe, timeframe)
-                
-                # Increment timeframe counters
-                if timeframe == '4Hour':
-                    summary['4h_valid_orders'] += 1
-                elif timeframe == '1Hour':
-                    summary['1h_valid_orders'] += 1
-                elif timeframe == '30minutes':
-                    summary['30m_valid_orders'] += 1
-                elif timeframe == '15minutes':
-                    summary['15m_valid_orders'] += 1
-                elif timeframe == '5minutes':
-                    summary['5m_valid_orders'] += 1
-                
-                formatted_orders.append({
-                    "market": order.get('pair', 'N/A'),
-                    "pair": order.get('pair', 'N/A'),
-                    "timeframe": timeframe,
-                    "order_type": order.get('order_type', 'N/A'),
-                    "entry_price": float(order.get('entry_price', 0.0)),
-                    "exit_price": float(order.get('exit_price', 0.0)),
-                    "1:0.5_price": float(order.get('ratio_0_5_price', 0.0)),
-                    "1:1_price": float(order.get('ratio_1_price', 0.0)),
-                    "1:2_price": float(order.get('ratio_2_price', 0.0)),
-                    "profit_price": float(order.get('profit_price', 0.0)),
-                    "created_at": order.get('created_at', ''),
-                    "old_range": calculate_order_age(order.get('created_at', ''))
-                })
-            
-            summary["total_valid_orders"] = len(formatted_orders)
-        
-        # Verify summary counts against formatted_orders
-        calculated_counts = {
-            "4h_valid_orders": sum(1 for order in formatted_orders if order['timeframe'] == '4Hour'),
-            "1h_valid_orders": sum(1 for order in formatted_orders if order['timeframe'] == '1Hour'),
-            "30m_valid_orders": sum(1 for order in formatted_orders if order['timeframe'] == '30minutes'),
-            "15m_valid_orders": sum(1 for order in formatted_orders if order['timeframe'] == '15minutes'),
-            "5m_valid_orders": sum(1 for order in formatted_orders if order['timeframe'] == '5minutes')
-        }
-        
-        for timeframe_key, count in calculated_counts.items():
-            if summary[timeframe_key] != count:
-                error_log.append({
-                    "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-                    "error": f"Mismatch in {timeframe_key}: summary count {summary[timeframe_key]}, calculated count {count}"
-                })
-                log_and_print(f"Mismatch in {timeframe_key}: summary count {summary[timeframe_key]}, calculated count {count}", "WARNING")
-                # Update summary to reflect correct counts
-                summary[timeframe_key] = count
-        
-        # Insert oldest orders into cipher_processed_bouncestreamsignals
-        if formatted_orders:
-            DELETE_BATCH_SIZE = 80
-            processed_insert_success = True
-            insert_batch_counts = []
-            sql_insert_base = """
-                INSERT INTO cipher_processed_bouncestreamsignals (
-                    pair, timeframe, order_type, entry_price, exit_price,
-                    ratio_0_5_price, ratio_1_price, ratio_2_price, 
-                    profit_price, message
-                ) VALUES 
-            """
-            value_strings = []
-            
-            for order in formatted_orders:
-                try:
-                    pair = order['pair'].replace("'", "''")
-                    timeframe = order['timeframe'].replace("'", "''")
-                    order_type = order['order_type'].replace("'", "''")
-                    entry_price = float(order['entry_price'])
-                    exit_price = float(order['exit_price'])
-                    ratio_0_5_price = float(order['1:0.5_price'])
-                    ratio_1_price = float(order['1:1_price'])
-                    ratio_2_price = float(order['1:2_price'])
-                    profit_price = float(order['profit_price'])
-                    message = f"older than {old_range_limit}"
-                    message_escaped = message.replace("'", "''")
-                    
-                    value_string = (
-                        f"('{pair}', '{timeframe}', '{order_type}', {entry_price}, {exit_price}, "
-                        f"{ratio_0_5_price}, {ratio_1_price}, {ratio_2_price}, {profit_price}, '{message_escaped}')"
-                    )
-                    value_strings.append(value_string)
-                except (ValueError, TypeError) as e:
-                    error_log.append({
-                        "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-                        "error": f"Invalid data format in order {order.get('pair', 'unknown')} {order.get('timeframe', 'unknown')} for processed table: {str(e)}"
-                    })
-                    log_and_print(f"Invalid data format in order {order.get('pair', 'unknown')} {order.get('timeframe', 'unknown')} for processed table: {str(e)}", "ERROR")
-                    processed_insert_success = False
-                    continue
-            
-            # Execute batch INSERT into cipher_processed_bouncestreamsignals
-            for i in range(0, len(value_strings), DELETE_BATCH_SIZE):
-                batch = value_strings[i:i + DELETE_BATCH_SIZE]
-                batch_number = i // DELETE_BATCH_SIZE + 1
-                sql_query = sql_insert_base + ", ".join(batch)
-                
-                for attempt in range(1, MAX_RETRIES + 1):
-                    try:
-                        result = db.execute_query(sql_query)
-                        log_and_print(f"Raw query result for inserting batch {batch_number} into processed table: {json.dumps(result, indent=2)}", "DEBUG")
-                        
-                        if not isinstance(result, dict):
-                            error_log.append({
-                                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-                                "error": f"Invalid result format on attempt {attempt} for batch {batch_number} in processed table: Expected dict, got {type(result)}"
-                            })
-                            save_errors()
-                            log_and_print(f"Invalid result format on attempt {attempt} for batch {batch_number} in processed table: Expected dict, got {type(result)}", "ERROR")
-                            processed_insert_success = False
-                            continue
-                        
-                        if result.get('status') != 'success':
-                            error_log.append({
-                                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-                                "error": f"Insert query failed on attempt {attempt} for batch {batch_number} in processed table: {result.get('message', 'No message provided')}"
-                            })
-                            save_errors()
-                            log_and_print(f"Insert query failed on attempt {attempt} for batch {batch_number} in processed table: {result.get('message', 'No message provided')}", "ERROR")
-                            processed_insert_success = False
-                            continue
-                        
-                        affected_rows = result.get('results', {}).get('affected_rows', 0)
-                        insert_batch_counts.append((batch_number, affected_rows))
-                        log_and_print(f"Successfully inserted {affected_rows} orders into cipher_processed_bouncestreamsignals in batch {batch_number}", "SUCCESS")
-                        break  # Exit retry loop on success
-                        
-                    except Exception as e:
-                        error_log.append({
-                            "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-                            "error": f"Exception on attempt {attempt} for batch {batch_number} in processed table: {str(e)}"
-                        })
-                        save_errors()
-                        log_and_print(f"Exception on attempt {attempt} for batch {batch_number} in processed table: {str(e)}", "ERROR")
-                        
-                        if attempt < MAX_RETRIES:
-                            delay = RETRY_DELAY * (2 ** (attempt - 1))
-                            log_and_print(f"Retrying batch {batch_number} for processed table after {delay} seconds...", "INFO")
-                            time.sleep(delay)
-                        else:
-                            error_log.append({
-                                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-                                "error": f"Max retries reached for batch {batch_number} in processed table"
-                            })
-                            save_errors()
-                            log_and_print(f"Max retries reached for batch {batch_number} in processed table", "ERROR")
-                            processed_insert_success = False
-            
-            # Log batch processing counts for processed table
-            for batch_number, count in insert_batch_counts:
-                log_and_print(f"Processed table insert batch {batch_number} processed: {count}", "INFO")
-            
-            if not processed_insert_success:
-                error_log.append({
-                    "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-                    "error": "Failed to insert all orders into cipher_processed_bouncestreamsignals"
-                })
-                save_errors()
-                log_and_print("Failed to insert all orders into cipher_processed_bouncestreamsignals", "ERROR")
-                return False
-        
-        # Save oldest orders to JSON
-        oldest_orders_data = {
-            "summary": summary,
-            "orders": formatted_orders
-        }
-        try:
-            os.makedirs(os.path.dirname(oldest_orders_path), exist_ok=True)
-            with open(oldest_orders_path, 'w') as f:
-                json.dump(oldest_orders_data, f, indent=4)
-            log_and_print(f"Successfully saved {len(formatted_orders)} oldest orders to {oldest_orders_path}", "SUCCESS")
-        
-        except Exception as e:
-            error_log.append({
-                "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-                "error": f"Failed to save oldest orders to {oldest_orders_path}: {str(e)}"
-            })
-            save_errors()
-            log_and_print(f"Failed to save oldest orders to {oldest_orders_path}: {str(e)}", "ERROR")
-            return False
-        
-    except Exception as e:
-        error_log.append({
-            "timestamp": datetime.now(pytz.timezone('Africa/Lagos')).strftime('%Y-%m-%d %H:%M:%S.%f+01:00'),
-            "error": f"Error fetching oldest orders: {str(e)}"
-        })
-        save_errors()
-        log_and_print(f"Error fetching oldest orders: {str(e)}", "ERROR")
-        # Continue with the rest of the function despite error in fetching oldest orders
-
-    #===============#
-    remove_processed_from_pending_orders()
-    #validatesignals()
-    #===============#
     
     # Load pending orders from JSON
     try:
@@ -4982,12 +4183,14 @@ def insertpendingorderstodb(json_path: str = os.path.join(BASE_OUTPUT_FOLDER, "v
     
     log_and_print(f"All batches processed successfully", "SUCCESS")
     return True
+
 def executeinsertpendingorderstodb():
     """Execute the insertion of pending orders into the database."""
     log_and_print("===== Execute Insert Pending Orders to Database =====", "TITLE")
     if not insertpendingorderstodb():
         log_and_print("Failed to insert pending orders into database. Exiting.", "ERROR")
         return
+    executeinsertinvalidexecutedorderstodb()
     log_and_print("===== Insert Pending Orders to Database Completed =====", "TITLE")
 
 def check_verification_json(market: str) -> bool:
@@ -5005,9 +4208,8 @@ def check_verification_json(market: str) -> bool:
         
         required_timeframes = ["m5", "m15", "m30", "h1", "h4"]
         all_timeframes_verified = all(
-            verification_data.get(tf) == "chart_identified" for tf in required_timeframes
+            verification_data.get(tf) in ["chart_identified", "active"] for tf in required_timeframes
         ) and verification_data.get("all_timeframes") == "verified"
-        
         if all_timeframes_verified:
             log_and_print(f"All timeframes in verification.json for {market} are 'chart_identified' and 'all_timeframes' is 'verified'", "INFO")
             return True
@@ -5315,6 +4517,8 @@ def process_5minutes_timeframe():
                 except Exception as e:
                     collect_pending_orders_statuses[-1]["warnings"].append(f"Error reading contractpendingorders.json: {str(e)}")
             
+            
+
             # Collect lockpendingorders status
             lock_pending_status = market_process_messages.get("lockpendingorders", {})
             lock_pending_orders_statuses.append({
@@ -6161,21 +5365,11 @@ def main():
     except Exception as e:
         log_and_print(f"Error in main processing: {str(e)}", "ERROR")
     finally:
+        cancel_limitorders()
         log_and_print("===== Fetch and Process Candle Data Completed =====", "TITLE")
 
 if __name__ == "__main__":
-    #executeinsertprocessedorderstodb()
-    #===============================#
-    execute_fetch_processed_bouncestream_signals()
-    execute_fetch_pending_bouncestream_signals()
-    #==============================#
     main()
     executeinsertpendingorderstodb()
-    #executeinsertpendingorderstodb()
-    time.sleep(180)
-    executefetchlotsizeandrisk()
-    deletependingorders()
-    validatesignals()
-    executeinsertpendingorderstodb()
-    deletependingorders()
+    
     

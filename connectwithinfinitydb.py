@@ -22,17 +22,21 @@ colorama.init()
 
 # Configuration
 primary_servers = {
-    'query_page': 'https://adminpanelc.infy.uk/phpmyadmintemplate.php',
-    'fetch': 'https://adminpanelc.infy.uk/phpmyadmin_tablesfetch.php'
+    'query_page': 'https://connectwithinfinitydb.wuaze.com/phpmyadmintemplate.php',
+    'fetch': 'https://connectwithinfinitydb.wuaze.com/phpmyadmin_tablesfetch.php'
 }
 backup_servers = {
-    'query_page': 'https://xevhtoaljedpik.infy.uk/phpmyadmintemplate.php',
-    'fetch': 'https://xevhtoaljedpik.infy.uk/phpmyadmin_tablesfetch.php'
+    'query_page': 'https://connectwithinfinitydb.wuaze.com/phpmyadmintemplate.php',
+    'fetch': 'https://connectwithinfinitydb.wuaze.com/phpmyadmin_tablesfetch.php'
 }
 server3 = {
     'query_page': 'https://connectwithinfinitydb.wuaze.com/phpmyadmintemplate.php',
     'fetch': 'https://connectwithinfinitydb.wuaze.com/phpmyadmin_tablesfetch.php'
 }
+# 'query_page': 'https://xevhtoaljedpik.infy.uk/phpmyadmintemplate.php',
+#   'fetch': 'https://xevhtoaljedpik.infy.uk/phpmyadmin_tablesfetch.php'
+#    'query_page': 'https://adminpanelc.infy.uk/phpmyadmintemplate.php',
+#    'fetch': 'https://adminpanelc.infy.uk/phpmyadmin_tablesfetch.php'
 admin_email = 'ciphercirclex12@gmail.com'
 admin_password = '@ciphercircleadminauthenticator#'
 temp_download_dir = r'C:\xampp\htdocs\CIPHER\temp_downloads'
